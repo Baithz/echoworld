@@ -2,15 +2,8 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-21)
+ * Version      : 1.0.1 (2026-01-21)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism
- * -----------------------------------------------------------------------------
- * Description  :
- * - Navigation sticky en haut de page
- * - Logo + Menu + Language + User
- * - Glassmorphism effect
- * - Responsive mobile
- * - Scroll detection (shadow on scroll)
  * =============================================================================
  */
 
@@ -27,13 +20,10 @@ export default function Header() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Detect scroll for shadow effect
   useEffect(() => {
-    const handleScroll = () => {
-      setIsScrolled(window.scrollY > 10);
-    };
-
-    window.addEventListener('scroll', handleScroll);
+    const handleScroll = () => setIsScrolled(window.scrollY > 10);
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
@@ -44,19 +34,20 @@ export default function Header() {
     { href: '/about', label: t('nav.about'), icon: Info },
   ];
 
+  const closeMobile = () => setIsMobileMenuOpen(false);
+
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
+      className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ${
         isScrolled
-          ? 'bg-slate-950/80 backdrop-blur-xl border-b border-white/10 shadow-lg shadow-black/20'
+          ? 'border-b border-white/10 bg-slate-950/80 shadow-lg shadow-black/20 backdrop-blur-xl'
           : 'bg-transparent'
       }`}
     >
       <div className="mx-auto max-w-7xl px-6">
         <div className="flex h-20 items-center justify-between">
-          {/* Logo */}
-          <Link href="/" className="group flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-linear-to-br from-violet-500 to-sky-500 shadow-lg shadow-violet-500/30 transition-transform group-hover:scale-105">
+          <Link href="/" className="group flex items-center gap-3" onClick={closeMobile}>
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-sky-500 shadow-lg shadow-violet-500/30 transition-transform group-hover:scale-105">
               <Heart className="h-6 w-6 fill-white text-white" />
             </div>
             <div>
@@ -65,7 +56,6 @@ export default function Header() {
             </div>
           </Link>
 
-          {/* Desktop Navigation */}
           <nav className="hidden items-center gap-8 lg:flex">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -82,14 +72,11 @@ export default function Header() {
             })}
           </nav>
 
-          {/* Right actions */}
           <div className="flex items-center gap-4">
-            {/* Language selector (desktop) */}
             <div className="hidden lg:block">
               <LanguageSelect />
             </div>
 
-            {/* User menu */}
             <Link
               href="/login"
               className="hidden items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:border-white/20 hover:bg-white/10 lg:flex"
@@ -98,12 +85,13 @@ export default function Header() {
               {t('nav.login')}
             </Link>
 
-            {/* Mobile menu toggle */}
             <button
               type="button"
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              onClick={() => setIsMobileMenuOpen((v) => !v)}
               className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white backdrop-blur-sm transition-colors hover:bg-white/10 lg:hidden"
               aria-label="Toggle menu"
+              aria-expanded={isMobileMenuOpen}
+              aria-controls="mobile-nav"
             >
               {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
@@ -111,9 +99,8 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile Menu */}
       {isMobileMenuOpen && (
-        <div className="border-t border-white/10 bg-slate-950/95 backdrop-blur-xl lg:hidden">
+        <div id="mobile-nav" className="border-t border-white/10 bg-slate-950/95 backdrop-blur-xl lg:hidden">
           <nav className="mx-auto max-w-7xl px-6 py-6">
             <div className="space-y-4">
               {navItems.map((item) => {
@@ -122,7 +109,7 @@ export default function Header() {
                   <Link
                     key={item.href}
                     href={item.href}
-                    onClick={() => setIsMobileMenuOpen(false)}
+                    onClick={closeMobile}
                     className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-base font-medium text-white transition-colors hover:bg-white/10"
                   >
                     <Icon className="h-5 w-5" />
@@ -131,16 +118,14 @@ export default function Header() {
                 );
               })}
 
-              {/* Language selector (mobile) */}
-              <div className="pt-4 border-t border-white/10">
+              <div className="border-t border-white/10 pt-4">
                 <LanguageSelect />
               </div>
 
-              {/* Login (mobile) */}
               <Link
                 href="/login"
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="flex items-center justify-center gap-2 rounded-xl bg-linear-to-r from-violet-500 to-sky-500 px-4 py-3 text-base font-semibold text-white shadow-lg transition-transform hover:scale-[1.02]"
+                onClick={closeMobile}
+                className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-sky-500 px-4 py-3 text-base font-semibold text-white shadow-lg transition-transform hover:scale-[1.02]"
               >
                 <User className="h-5 w-5" />
                 {t('nav.login')}
