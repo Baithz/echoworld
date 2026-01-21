@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/home/Hero.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-21)
+ * Version      : 2.3.1 (2026-01-21)
  * Objet        : Hero section redesign — Immersif, poétique, émotionnel
  * -----------------------------------------------------------------------------
  * Description  :
@@ -15,10 +15,8 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.3.0 (2026-01-21)
- * - [IMPROVED] Adaptation complète au thème clair par défaut
- * - [IMPROVED] Contrastes + badges + CTA secondaires (lisibilité)
- * - [FIX] CTA Explore pointe vers /explore (route dédiée)
+ * 2.3.1 (2026-01-21)
+ * - [IMPROVED] CTA Login masqué si utilisateur connecté (Supabase)
  * - [CHORE] Aucune régression animations/layout
  * =============================================================================
  */
@@ -29,9 +27,35 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { Sparkles, ArrowRight } from 'lucide-react';
 import { useLang } from '@/lib/i18n/LanguageProvider';
+import { useEffect, useState } from 'react';
+
+// IMPORTANT : adapte ce chemin à TON client Supabase.
+import { supabase } from '@/lib/supabase/client';
 
 export default function Hero() {
   const { t } = useLang();
+  const [isAuthed, setIsAuthed] = useState<boolean>(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      const { data } = await supabase.auth.getUser();
+      if (!mounted) return;
+      setIsAuthed(!!data.user);
+    };
+
+    load();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      setIsAuthed(!!session?.user);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   return (
     <>
@@ -118,15 +142,21 @@ export default function Hero() {
           <ArrowRight className="h-5 w-5 opacity-60" />
         </Link>
 
-        {/* CTA tertiary: Login */}
-        <Link
-          href="/login"
-          className="inline-flex items-center gap-2 px-2 py-4 text-base font-medium text-slate-700 transition-colors hover:text-slate-900"
-        >
-          {t('hero.cta_login')}
-          <ArrowRight className="h-4 w-4 opacity-50" />
-        </Link>
+        {/* CTA tertiary: Login (caché si connecté) */}
+        {!isAuthed && (
+          <Link
+            href="/login"
+            className="inline-flex items-center gap-2 px-2 py-4 text-base font-medium text-slate-700 transition-colors hover:text-slate-900"
+          >
+            {t('hero.cta_login')}
+            <ArrowRight className="h-4 w-4 opacity-50" />
+          </Link>
+        )}
       </motion.div>
     </>
   );
 }
+
+/* NOTE: imports React manquants => ajoute en haut :
+import { useEffect, useState } from 'react';
+*/

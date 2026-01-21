@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/globals.css
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-21)
+ * Version      : 2.3.0 (2026-01-21)
  * Objet        : Styles globaux + Animations immersives + Fond cinéma
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.3.0 (2026-01-21)
+ * - [A11Y] Restaure un focus-visible explicite (sans casser le style global)
+ * - [FIX] Harmonise le contraste des <option> (évite blanc sur blanc selon OS)
+ * - [A11Y] Respecte prefers-reduced-motion (désactive animations si demandé)
  * 2.2.0 (2026-01-21)
  * - [IMPROVED] Base light : color-scheme + bg/text par défaut (sans casser animations)
  * - [IMPROVED] Overlays noise/vignette adaptés au thème clair (blend/opacity)
@@ -248,6 +252,37 @@ body {
    Focus (sans override Tailwind, base safe)
    ============================================================================= */
 
+/* Focus visible (A11Y) : on ne laisse pas un "outline: none" sans alternative */
 :where(a, button, input, select, textarea):focus-visible {
-  outline: none;
+  outline: 2px solid rgba(59, 130, 246, 0.55); /* blue-500 */
+  outline-offset: 3px;
+  border-radius: 10px;
+}
+
+/* =============================================================================
+   Select/Options (évite contrastes OS)
+   ============================================================================= */
+
+select option {
+  background: #0f172a; /* slate-900 */
+  color: #ffffff;
+}
+
+/* =============================================================================
+   Reduced motion (A11Y)
+   ============================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  .ecg-line,
+  .heartbeat,
+  .glow-breathe,
+  .float,
+  .float-delay-1,
+  .float-delay-2,
+  .map-pulse,
+  .ripple,
+  .fade-in-up,
+  .shimmer {
+    animation: none !important;
+  }
 }
