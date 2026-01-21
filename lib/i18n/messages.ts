@@ -2,18 +2,12 @@
  * =============================================================================
  * Fichier      : lib/i18n/messages.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.1 (2026-01-21)
- * Objet        : Dictionnaires i18n - Refonte Home immersive "WOW"
+ * Version      : 3.0.0 (2026-01-21)
+ * Objet        : Dictionnaires i18n - Ajout navigation + refonte complète
  * -----------------------------------------------------------------------------
- * Description  :
- * - Messages UI Hero redesign (poétique, émotionnel)
- * - World Globe (monde vivant intégré)
- * - Pulse Heart (cœur + ECG)
- * - Connections (humain, chaleureux)
- * - Plus de tabs, plus de KPI froids
- *
- * Correctifs (sans régression) :
- * - [FIX] Apostrophes dans les chaînes (évite erreurs TS/ESLint "unterminated")
+ * Nouveautés v3 :
+ * - Ajout clés navigation (nav.home, nav.explore, nav.share, nav.about, nav.login)
+ * - Conservation de tous les messages existants
  * =============================================================================
  */
 
@@ -22,6 +16,13 @@ import type { AppLang } from './i18n';
 export type I18nKey =
   // Common
   | 'ui.language'
+
+  // Navigation (NEW)
+  | 'nav.home'
+  | 'nav.explore'
+  | 'nav.share'
+  | 'nav.about'
+  | 'nav.login'
 
   // Hero (redesign)
   | 'hero.badge_prefix'
@@ -78,6 +79,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'Language',
 
+    // Navigation
+    'nav.home': 'Home',
+    'nav.explore': 'Explore',
+    'nav.share': 'Share Story',
+    'nav.about': 'About',
+    'nav.login': 'Sign in',
+
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
     'hero.badge_suffix': 'A living layer of humanity',
@@ -131,6 +139,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
   fr: {
     // Common
     'ui.language': 'Langue',
+
+    // Navigation
+    'nav.home': 'Accueil',
+    'nav.explore': 'Explorer',
+    'nav.share': 'Partager',
+    'nav.about': 'À propos',
+    'nav.login': 'Connexion',
 
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
@@ -187,6 +202,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'Idioma',
 
+    // Navigation
+    'nav.home': 'Inicio',
+    'nav.explore': 'Explorar',
+    'nav.share': 'Compartir',
+    'nav.about': 'Acerca de',
+    'nav.login': 'Iniciar sesión',
+
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
     'hero.badge_suffix': 'Una capa viva de humanidad',
@@ -229,7 +251,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
 
     // Connections
     'connections.title': 'Almas que te reflejan',
-    'connections.subtitle': 'Personas reales. Viajes similares. Esperando conectar.',
+    'connections.subtitle':
+      'Personas reales. Viajes similares. Esperando conectar.',
     'connections.suggested_for_you': 'Sugerido para ti',
     'connections.shared_experience': 'Experiencia compartida:',
     'connections.match_score': 'resonancia',
@@ -241,15 +264,22 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'Sprache',
 
+    // Navigation
+    'nav.home': 'Startseite',
+    'nav.explore': 'Erkunden',
+    'nav.share': 'Teilen',
+    'nav.about': 'Über uns',
+    'nav.login': 'Anmelden',
+
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
-    'hero.badge_suffix': 'Eine lebendige Schicht der Menschheit',
+    'hero.badge_suffix': 'Eine lebendige Schicht der Menschlichkeit',
     'hero.title_line1': 'Deine Geschichte, ihr Echo,',
     'hero.title_line2': 'unsere Welt.',
     'hero.subtitle':
-      'Sieh den Planeten atmen. Beobachte Geschichten über Grenzen hinweg pulsieren. Fühle den Herzschlag der Menschheit.',
-    'hero.cta_share': 'Dein Echo teilen',
-    'hero.cta_explore': 'Welt erkunden',
+      'Beobachte, wie der Planet atmet. Sieh Geschichten über Grenzen hinweg pulsieren. Fühle den Herzschlag der Menschheit.',
+    'hero.cta_share': 'Teile dein Echo',
+    'hero.cta_explore': 'Erkunde die Welt',
     'hero.cta_login': 'Anmelden',
 
     // World Globe
@@ -257,14 +287,14 @@ export const MESSAGES: Record<AppLang, Dict> = {
     'world.live_indicator': 'LIVE',
     'world.story_count': 'atmende Geschichten',
     'world.countries_count': 'verbundene Länder',
-    'world.hover_tip': 'Überfahren, um ein Echo zu spüren',
-    'world.click_explore': 'Klicken zum Eintauchen',
+    'world.hover_tip': 'Schwebe, um ein Echo zu fühlen',
+    'world.click_explore': 'Klicken, um tiefer einzutauchen',
     'world.zoom_hint': 'Zoomen, ziehen, entdecken',
 
     // Story overlay
     'story.just_shared': 'Gerade geteilt',
-    'story.minutes_ago': 'Min',
-    'story.from': 'Aus',
+    'story.minutes_ago': 'Min.',
+    'story.from': 'Von',
     'story.read_more': 'Die ganze Geschichte lesen',
     'story.anonymous': 'Anonym',
 
@@ -282,8 +312,9 @@ export const MESSAGES: Record<AppLang, Dict> = {
     'pulse.breathing_world': 'Die Welt atmet mit dir.',
 
     // Connections
-    'connections.title': 'Seelen, die dir ähneln',
-    'connections.subtitle': 'Echte Menschen. Ähnliche Reisen. Bereit zu verbinden.',
+    'connections.title': 'Seelen, die dich spiegeln',
+    'connections.subtitle':
+      'Echte Menschen. Ähnliche Reisen. Warten auf Verbindung.',
     'connections.suggested_for_you': 'Für dich vorgeschlagen',
     'connections.shared_experience': 'Geteilte Erfahrung:',
     'connections.match_score': 'Resonanz',
@@ -294,6 +325,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
   it: {
     // Common
     'ui.language': 'Lingua',
+
+    // Navigation
+    'nav.home': 'Home',
+    'nav.explore': 'Esplora',
+    'nav.share': 'Condividi',
+    'nav.about': 'Chi siamo',
+    'nav.login': 'Accedi',
 
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
@@ -350,6 +388,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'Idioma',
 
+    // Navigation
+    'nav.home': 'Início',
+    'nav.explore': 'Explorar',
+    'nav.share': 'Compartilhar',
+    'nav.about': 'Sobre',
+    'nav.login': 'Entrar',
+
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
     'hero.badge_suffix': 'Uma camada viva de humanidade',
@@ -404,6 +449,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'اللغة',
 
+    // Navigation
+    'nav.home': 'الرئيسية',
+    'nav.explore': 'استكشاف',
+    'nav.share': 'مشاركة',
+    'nav.about': 'حول',
+    'nav.login': 'تسجيل الدخول',
+
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',
     'hero.badge_suffix': 'طبقة حيّة من الإنسانية',
@@ -457,6 +509,13 @@ export const MESSAGES: Record<AppLang, Dict> = {
   ja: {
     // Common
     'ui.language': '言語',
+
+    // Navigation
+    'nav.home': 'ホーム',
+    'nav.explore': '探索',
+    'nav.share': '投稿',
+    'nav.about': '概要',
+    'nav.login': 'サインイン',
 
     // Hero (redesign)
     'hero.badge_prefix': 'EchoWorld',

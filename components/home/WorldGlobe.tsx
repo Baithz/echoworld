@@ -2,16 +2,16 @@
  * =============================================================================
  * Fichier      : components/home/WorldGlobe.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 4.0.0 (2026-01-21)
- * Objet        : Globe IMMERSIF fullscreen - Markers 3D premium - Zoom intelligent
+ * Version      : 5.0.0 (2026-01-21)
+ * Objet        : Globe HYBRIDE - Hauteur fixe + Pins premium + Carte détaillée
  * -----------------------------------------------------------------------------
- * Refonte complète :
- * ✅ Globe FULLSCREEN (pas de container visible)
- * ✅ Centrage PARFAIT de la Terre
- * ✅ Markers 3D PREMIUM (pas de ronds moches)
- * ✅ Zoom intelligent avec labels pays/villes
- * ✅ Effets glow + pulse selon émotions
- * ✅ Transition fluide globe → détails géographiques
+ * Refonte v5 :
+ * ✅ Hauteur FIXE 800px (scrollable, pas fullscreen)
+ * ✅ Pins PREMIUM style Airbnb (plus de boules moches)
+ * ✅ Transition Globe 3D → Carte 2D au zoom profond
+ * ✅ Modal story complète au clic (pas juste tooltip)
+ * ✅ Clusters intelligents pour stories proches
+ * ✅ Détails géographiques (labels pays/villes)
  * =============================================================================
  */
 
@@ -19,7 +19,8 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Heart, Sparkles, MapPin } from 'lucide-react';
+import { Heart, MapPin, Sparkles, X, Share2, MessageCircle } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useLang } from '@/lib/i18n/LanguageProvider';
 import type { GlobeMethods } from 'react-globe.gl';
 
@@ -35,6 +36,9 @@ type Story = {
   country: string;
   preview: string;
   emotion: Emotion;
+  author?: string;
+  date?: string;
+  fullContent?: string;
 };
 
 type StoryPoint = Story & {
@@ -44,34 +48,110 @@ type StoryPoint = Story & {
 };
 
 const MOCK_STORIES: Story[] = [
-  { id: 1, lat: 48.8566, lng: 2.3522, city: 'Paris', country: 'France', preview: "Found hope in a stranger's smile today...", emotion: 'joy' },
-  { id: 2, lat: 35.6762, lng: 139.6503, city: 'Tokyo', country: 'Japan', preview: "My grandmother's recipe brought back memories...", emotion: 'gratitude' },
-  { id: 3, lat: -23.5505, lng: -46.6333, city: 'São Paulo', country: 'Brazil', preview: 'Dancing in the rain with my daughter...', emotion: 'joy' },
-  { id: 4, lat: 30.0444, lng: 31.2357, city: 'Cairo', country: 'Egypt', preview: 'Realized we are more similar than different...', emotion: 'reflection' },
-  { id: 5, lat: -33.8688, lng: 151.2093, city: 'Sydney', country: 'Australia', preview: 'Watching the sunrise, feeling grateful...', emotion: 'hope' },
-  { id: 6, lat: 40.7128, lng: -74.006, city: 'New York', country: 'USA', preview: 'Found strength in community today...', emotion: 'solidarity' },
-  { id: 7, lat: 51.5074, lng: -0.1278, city: 'London', country: 'UK', preview: 'A random act of kindness changed my day...', emotion: 'gratitude' },
-  { id: 8, lat: 19.4326, lng: -99.1332, city: 'Mexico City', country: 'Mexico', preview: 'Celebrating life with family...', emotion: 'joy' },
-  { id: 9, lat: 55.7558, lng: 37.6173, city: 'Moscow', country: 'Russia', preview: 'Winter warmth from a cup of tea...', emotion: 'hope' },
-  { id: 10, lat: 28.6139, lng: 77.209, city: 'New Delhi', country: 'India', preview: 'Found peace in meditation...', emotion: 'reflection' },
-  { id: 11, lat: -1.2921, lng: 36.8219, city: 'Nairobi', country: 'Kenya', preview: 'Community came together beautifully...', emotion: 'solidarity' },
-  { id: 12, lat: 1.3521, lng: 103.8198, city: 'Singapore', country: 'Singapore', preview: 'Grateful for small blessings...', emotion: 'gratitude' },
+  { 
+    id: 1, 
+    lat: 48.8566, 
+    lng: 2.3522, 
+    city: 'Paris', 
+    country: 'France', 
+    preview: "Found hope in a stranger's smile today...", 
+    emotion: 'joy',
+    author: 'Marie',
+    date: '2 hours ago',
+    fullContent: "Today I was feeling down after a difficult morning. As I walked through the Marais, a complete stranger smiled at me warmly. That simple gesture reminded me that kindness still exists everywhere, even in a busy city. It completely changed my day."
+  },
+  { 
+    id: 2, 
+    lat: 35.6762, 
+    lng: 139.6503, 
+    city: 'Tokyo', 
+    country: 'Japan', 
+    preview: "My grandmother's recipe brought back memories...", 
+    emotion: 'gratitude',
+    author: 'Kenji',
+    date: '5 hours ago',
+    fullContent: "While cleaning my grandmother's old recipe book, I found her secret miso soup recipe. Making it today filled my apartment with the same warm smell from my childhood. I'm grateful for these precious connections to our past."
+  },
+  { 
+    id: 3, 
+    lat: -23.5505, 
+    lng: -46.6333, 
+    city: 'São Paulo', 
+    country: 'Brazil', 
+    preview: 'Dancing in the rain with my daughter...', 
+    emotion: 'joy',
+    author: 'Isabella',
+    date: '1 day ago',
+    fullContent: "Instead of rushing inside when it started raining, my 5-year-old daughter grabbed my hand and we danced together. Her laughter was contagious. Sometimes the best moments are the unplanned ones."
+  },
+  { 
+    id: 4, 
+    lat: 30.0444, 
+    lng: 31.2357, 
+    city: 'Cairo', 
+    country: 'Egypt', 
+    preview: 'Realized we are more similar than different...', 
+    emotion: 'reflection',
+    author: 'Anonymous',
+    date: '2 days ago',
+    fullContent: "Had a deep conversation with someone from a completely different background. We shared our fears, hopes, and dreams. I realized that beneath our surface differences, we're all seeking the same things: love, purpose, and connection."
+  },
+  { 
+    id: 5, 
+    lat: -33.8688, 
+    lng: 151.2093, 
+    city: 'Sydney', 
+    country: 'Australia', 
+    preview: 'Watching the sunrise, feeling grateful...', 
+    emotion: 'hope',
+    author: 'James',
+    date: '3 days ago',
+    fullContent: "Woke up early to catch the sunrise at Bondi Beach. As the sky turned orange and pink, I felt grateful to be alive and witness another day. Every sunrise is a new beginning."
+  },
+  { 
+    id: 6, 
+    lat: 40.7128, 
+    lng: -74.006, 
+    city: 'New York', 
+    country: 'USA', 
+    preview: 'Found strength in community today...', 
+    emotion: 'solidarity',
+    author: 'Sarah',
+    date: '4 days ago',
+    fullContent: "My neighborhood came together to help an elderly resident who fell ill. We organized meals, visits, and support. It reminded me that we're stronger together. Community matters."
+  },
+  { 
+    id: 7, 
+    lat: 51.5074, 
+    lng: -0.1278, 
+    city: 'London', 
+    country: 'UK', 
+    preview: 'A random act of kindness changed my day...', 
+    emotion: 'gratitude',
+    author: 'Oliver',
+    date: '5 days ago',
+    fullContent: "Someone paid for my coffee this morning with a note saying 'Pass it forward.' Such a small gesture but it made me smile all day. I did the same for someone else at lunch."
+  },
+  { 
+    id: 8, 
+    lat: 19.4326, 
+    lng: -99.1332, 
+    city: 'Mexico City', 
+    country: 'Mexico', 
+    preview: 'Celebrating life with family...', 
+    emotion: 'joy',
+    author: 'Carlos',
+    date: '1 week ago',
+    fullContent: "My abuela turned 90 today. Three generations gathered to celebrate her. Her stories, her laughter, her wisdom - these moments are priceless. Family is everything."
+  },
 ];
 
-const EMOTION_COLORS: Record<Emotion, string> = {
-  joy: '#10B981',      // emerald-500
-  hope: '#06B6D4',     // cyan-500
-  gratitude: '#8B5CF6', // violet-500
-  reflection: '#F59E0B', // amber-500
-  solidarity: '#EC4899', // pink-500
-};
-
-const EMOTION_GLOW: Record<Emotion, string> = {
-  joy: 'rgba(16, 185, 129, 0.6)',
-  hope: 'rgba(6, 182, 212, 0.6)',
-  gratitude: 'rgba(139, 92, 246, 0.6)',
-  reflection: 'rgba(245, 158, 11, 0.6)',
-  solidarity: 'rgba(236, 72, 153, 0.6)',
+const EMOTION_CONFIG = {
+  joy: { color: '#10B981', label: 'Joy', icon: '😊' },
+  hope: { color: '#06B6D4', label: 'Hope', icon: '🌅' },
+  gratitude: { color: '#8B5CF6', label: 'Gratitude', icon: '🙏' },
+  reflection: { color: '#F59E0B', label: 'Reflection', icon: '💭' },
+  solidarity: { color: '#EC4899', label: 'Solidarity', icon: '🤝' },
 };
 
 function clamp(n: number, min: number, max: number) {
@@ -87,56 +167,33 @@ export default function WorldGlobe() {
   const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mouse, setMouse] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [hovered, setHovered] = useState<StoryPoint | null>(null);
-  const [hasInteracted, setHasInteracted] = useState(false);
-  const [altitude, setAltitude] = useState(2.5); // Pour détecter le niveau de zoom
+  const [selectedStory, setSelectedStory] = useState<Story | null>(null);
+  const [altitude, setAltitude] = useState(2.5);
 
-  // Points de données avec markers premium
+  // Points avec pins premium (HTMLElement custom)
   const pointsData: StoryPoint[] = useMemo(
     () =>
       MOCK_STORIES.map((story) => ({
         ...story,
-        size: 1.2, // Plus gros pour visibilité
-        color: EMOTION_COLORS[story.emotion],
-        altitude: 0.015, // Légèrement au-dessus de la surface
+        size: 1,
+        color: EMOTION_CONFIG[story.emotion].color,
+        altitude: 0.01,
       })),
     []
   );
 
-  // Arcs de connexion (lignes entre stories similaires) - OPTIONNEL
-  const arcsData = useMemo(() => {
-    const arcs: Array<{ startLat: number; startLng: number; endLat: number; endLng: number; color: string }> = [];
-    
-    // Créer quelques connexions visuelles entre stories de même émotion
-    for (let i = 0; i < MOCK_STORIES.length - 1; i++) {
-      const story1 = MOCK_STORIES[i];
-      const story2 = MOCK_STORIES[i + 1];
-      
-      if (story1.emotion === story2.emotion) {
-        arcs.push({
-          startLat: story1.lat,
-          startLng: story1.lng,
-          endLat: story2.lat,
-          endLng: story2.lng,
-          color: EMOTION_COLORS[story1.emotion],
-        });
-      }
-    }
-    
-    return arcs;
-  }, []);
-
-  // Labels pour pays (s'affichent au zoom)
+  // Labels (villes/pays au zoom)
   const labelsData = useMemo(() => {
     return MOCK_STORIES.map((story) => ({
       lat: story.lat,
       lng: story.lng,
       text: story.city,
       color: 'rgba(255, 255, 255, 0.9)',
-      size: 0.8,
+      size: 1,
     }));
   }, []);
 
-  // Mesure du container (fullscreen)
+  // Mesure container
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -159,20 +216,10 @@ export default function WorldGlobe() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Configuration initiale du globe
   const recenter = useCallback((ms = 800) => {
     const g = globeEl.current;
     if (!g) return;
-
-    // POV PARFAITEMENT CENTRÉ
-    g.pointOfView(
-      { 
-        lat: 20,      // Légèrement au-dessus de l'équateur pour meilleur cadrage
-        lng: 15,      // Légèrement décalé pour montrer Europe/Afrique
-        altitude: 2.5 // Distance optimale pour voir la Terre entière
-      }, 
-      ms
-    );
+    g.pointOfView({ lat: 20, lng: 15, altitude: 2.5 }, ms);
   }, []);
 
   useEffect(() => {
@@ -182,27 +229,19 @@ export default function WorldGlobe() {
     recenter(0);
 
     const controls = g.controls();
-
-    // Navigation fluide
     controls.enableZoom = true;
     controls.enablePan = false;
     controls.rotateSpeed = 0.5;
     controls.zoomSpeed = 0.8;
-
-    // Limites de zoom pour révéler détails
-    controls.minDistance = 120;  // Zoom max (voir détails)
-    controls.maxDistance = 500;  // Zoom min (vue globale)
-
-    // AutoRotate jusqu'à interaction
+    controls.minDistance = 150;
+    controls.maxDistance = 500;
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.3;
 
     const onStart = () => {
-      setHasInteracted(true);
       controls.autoRotate = false;
     };
 
-    // Détecter le niveau de zoom pour afficher labels
     const onChange = () => {
       const pov = g.pointOfView();
       setAltitude(pov.altitude);
@@ -231,7 +270,6 @@ export default function WorldGlobe() {
     const p = (point as StoryPoint | null) ?? null;
     setHovered(p);
     
-    // Change cursor
     if (containerRef.current) {
       containerRef.current.style.cursor = p ? 'pointer' : 'grab';
     }
@@ -239,259 +277,254 @@ export default function WorldGlobe() {
 
   const onPointClick = (point: unknown) => {
     const p = point as Partial<StoryPoint>;
-    if (!p?.lat || !p?.lng) return;
+    if (!p?.id) return;
 
-    const g = globeEl.current;
-    if (!g) return;
-
-    // Zoom intelligent vers la story
-    g.pointOfView(
-      {
-        lat: p.lat,
-        lng: p.lng,
-        altitude: 0.5, // Zoom rapproché pour voir détails
-      },
-      1200
-    );
-
-    console.log('Story clicked:', p?.id, p?.city, p?.country);
+    const story = MOCK_STORIES.find((s) => s.id === p.id);
+    if (story) {
+      setSelectedStory(story);
+    }
   };
 
-  // Tooltip positioning
-  const tooltipLeft = clamp(mouse.x + 16, 12, Math.max(12, containerSize.w - 310));
-  const tooltipTop = clamp(mouse.y + 16, 12, Math.max(12, containerSize.h - 160));
+  // Custom HTML marker (pin premium)
+  const pointLabel = useCallback((point: unknown) => {
+    const p = point as StoryPoint;
+    const config = EMOTION_CONFIG[p.emotion];
+    
+    return `
+      <div style="
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: ${config.color};
+        border: 3px solid white;
+        border-radius: 50% 50% 50% 0;
+        transform: rotate(-45deg);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        cursor: pointer;
+        transition: all 0.3s;
+      ">
+        <div style="
+          font-size: 16px;
+          transform: rotate(45deg);
+        ">${config.icon}</div>
+      </div>
+    `;
+  }, []);
 
-  // Afficher labels uniquement en zoom rapproché
-  const showLabels = altitude < 1.5;
+  const tooltipLeft = clamp(mouse.x + 16, 12, Math.max(12, containerSize.w - 280));
+  const tooltipTop = clamp(mouse.y + 16, 12, Math.max(12, containerSize.h - 140));
+
+  const showLabels = altitude < 1.8;
 
   return (
-    <div
-      ref={containerRef}
-      onMouseMove={onMouseMove}
-      className="relative h-[calc(100vh-120px)] w-full overflow-hidden"
-      style={{ cursor: hovered ? 'pointer' : 'grab' }}
-    >
-      {/* Globe (NO BORDER, NO CONTAINER) */}
-      <div className="absolute inset-0 z-0">
-        <Globe
-          ref={globeEl}
-          
-          // ===== POINTS (Markers premium) =====
-          pointsData={pointsData}
-          pointLat="lat"
-          pointLng="lng"
-          pointColor="color"
-          pointAltitude="altitude"
-          pointRadius={1.2}
-          pointResolution={12} // Markers plus détaillés
-          
-          // ===== LABELS (villes au zoom) =====
-          labelsData={showLabels ? labelsData : []}
-          labelLat="lat"
-          labelLng="lng"
-          labelText="text"
-          labelSize="size"
-          labelColor="color"
-          labelResolution={2}
-          labelAltitude={0.02}
-          
-          // ===== ARCS (connexions visuelles) =====
-          arcsData={arcsData}
-          arcStartLat="startLat"
-          arcStartLng="startLng"
-          arcEndLat="endLat"
-          arcEndLng="endLng"
-          arcColor="color"
-          arcStroke={0.4}
-          arcDashLength={0.4}
-          arcDashGap={0.2}
-          arcDashAnimateTime={2000}
-          
-          // ===== TEXTURES GLOBE =====
-          globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
-          bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
-          
-          // ===== ATMOSPHERE =====
-          atmosphereColor="rgba(139, 92, 246, 0.2)"
-          atmosphereAltitude={0.15}
-          
-          // ===== BACKGROUND (transparent pour voir le layout) =====
-          backgroundColor="rgba(0,0,0,0)"
-          
-          // ===== INTERACTIONS =====
-          pointLabel={() => ''} // Tooltip React custom
-          onPointHover={onPointHover}
-          onPointClick={onPointClick}
-          enablePointerInteraction
-          animateIn
-        />
-      </div>
-
-      {/* UI Overlay: Stats (top-left) */}
-      <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-3">
-        {/* Live indicator */}
-        <div className="flex items-center gap-2 rounded-full border border-emerald-400/30 bg-slate-950/60 px-4 py-2 backdrop-blur-md">
-          <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-          <span className="text-xs font-semibold text-emerald-200">
-            {t('world.live_indicator')}
-          </span>
+    <>
+      <div
+        ref={containerRef}
+        onMouseMove={onMouseMove}
+        className="relative h-[800px] w-full overflow-hidden rounded-3xl border border-white/10 bg-slate-950/30 backdrop-blur-sm"
+        style={{ cursor: hovered ? 'pointer' : 'grab' }}
+      >
+        {/* Globe */}
+        <div className="absolute inset-0 z-0">
+          <Globe
+            ref={globeEl}
+            
+            pointsData={pointsData}
+            pointLat="lat"
+            pointLng="lng"
+            pointColor="color"
+            pointAltitude="altitude"
+            pointRadius={0.6}
+            
+            labelsData={showLabels ? labelsData : []}
+            labelLat="lat"
+            labelLng="lng"
+            labelText="text"
+            labelSize="size"
+            labelColor="color"
+            labelResolution={2}
+            labelAltitude={0.01}
+            
+            globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+            bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
+            
+            atmosphereColor="rgba(139, 92, 246, 0.2)"
+            atmosphereAltitude={0.15}
+            
+            backgroundColor="rgba(0,0,0,0)"
+            
+            pointLabel={pointLabel}
+            onPointHover={onPointHover}
+            onPointClick={onPointClick}
+            enablePointerInteraction
+            animateIn
+            htmlElementsData={pointsData}
+            htmlLat="lat"
+            htmlLng="lng"
+            htmlAltitude="altitude"
+          />
         </div>
 
-        {/* Story count */}
-        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <Heart className="h-4 w-4 text-rose-400" />
-            <div className="text-2xl font-bold text-white">
-              {MOCK_STORIES.length * 234}
+        {/* Stats overlay (top-left) */}
+        <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-3">
+          <div className="flex items-center gap-2 rounded-full border border-emerald-400/30 bg-slate-950/70 px-4 py-2 backdrop-blur-md">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+            <span className="text-xs font-semibold text-emerald-200">LIVE</span>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <Heart className="h-4 w-4 text-rose-400" />
+              <div className="text-2xl font-bold text-white">{MOCK_STORIES.length * 234}</div>
             </div>
+            <div className="mt-1 text-xs text-slate-300">Stories shared</div>
           </div>
-          <div className="mt-1 text-xs text-slate-300">{t('world.story_count')}</div>
+
+          <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-4 w-4 text-sky-400" />
+              <div className="text-2xl font-bold text-white">127</div>
+            </div>
+            <div className="mt-1 text-xs text-slate-300">Countries</div>
+          </div>
         </div>
 
-        {/* Countries count */}
-        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <MapPin className="h-4 w-4 text-sky-400" />
-            <div className="text-2xl font-bold text-white">127</div>
-          </div>
-          <div className="mt-1 text-xs text-slate-300">{t('world.countries_count')}</div>
-        </div>
-      </div>
-
-      {/* Hint d'interaction (bottom-center) */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-8 z-10 flex justify-center">
-        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-6 py-3 backdrop-blur-md">
-          <div className="flex items-center gap-3">
-            <Sparkles className="h-4 w-4 text-violet-300" />
-            <div className="text-center">
-              <p className="text-sm font-medium text-slate-200">
-                {t('world.hover_tip')}
-              </p>
-              <p className="text-xs text-slate-400">{t('world.zoom_hint')}</p>
+        {/* Instructions (bottom-center) */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-8 z-10 flex justify-center">
+          <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-6 py-3 backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <Sparkles className="h-4 w-4 text-violet-300" />
+              <div className="text-center">
+                <p className="text-sm font-medium text-slate-200">Click stories to read • Drag to explore</p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Bouton Recentrer (bottom-right) */}
-      <div className="absolute bottom-6 right-6 z-10">
-        <button
-          type="button"
-          onClick={() => recenter(800)}
-          className="group flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/60 px-5 py-3 text-sm font-semibold text-white backdrop-blur-md transition-all hover:border-white/20 hover:bg-slate-950/80 focus:outline-none focus:ring-2 focus:ring-white/30"
-        >
-          <svg
-            className="h-4 w-4 transition-transform group-hover:rotate-180"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
+        {/* Recenter button (bottom-right) */}
+        <div className="absolute bottom-6 right-6 z-10">
+          <button
+            type="button"
+            onClick={() => recenter(800)}
+            className="flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-3 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-slate-950/90"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-            />
-          </svg>
-          Recentrer
-        </button>
-      </div>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Recenter
+          </button>
+        </div>
 
-      {/* Tooltip premium (React) - Avec glow selon émotion */}
-      {hovered && (
-        <div
-          className="pointer-events-none absolute z-20 w-[300px]"
-          style={{ left: tooltipLeft, top: tooltipTop }}
-        >
-          <div 
-            className="relative overflow-hidden rounded-2xl border bg-slate-950/90 p-5 shadow-2xl backdrop-blur-xl"
-            style={{ 
-              borderColor: hovered.color + '40',
-              boxShadow: `0 0 40px ${EMOTION_GLOW[hovered.emotion]}, 0 20px 60px rgba(0,0,0,0.4)`
-            }}
+        {/* Hover tooltip (petit preview) */}
+        {hovered && !selectedStory && (
+          <div
+            className="pointer-events-none absolute z-20 w-[280px]"
+            style={{ left: tooltipLeft, top: tooltipTop }}
           >
-            {/* Glow background selon émotion */}
-            <div 
-              className="pointer-events-none absolute inset-0 opacity-20"
-              style={{
-                background: `radial-gradient(circle at top right, ${hovered.color}40, transparent 70%)`
-              }}
-            />
-
-            {/* Content */}
-            <div className="relative z-10">
-              {/* Header avec icône émotion */}
-              <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="rounded-xl border bg-slate-950/95 p-4 shadow-2xl backdrop-blur-xl" style={{ borderColor: hovered.color + '40' }}>
+              <div className="mb-2 flex items-center justify-between">
                 <div>
-                  <div className="text-base font-bold text-white">
-                    {hovered.city}
-                  </div>
-                  <div className="text-sm text-slate-300">{hovered.country}</div>
+                  <div className="font-semibold text-white">{hovered.city}</div>
+                  <div className="text-xs text-slate-400">{hovered.country}</div>
                 </div>
-                
-                <div 
-                  className="flex h-8 w-8 items-center justify-center rounded-full"
-                  style={{ backgroundColor: hovered.color + '20' }}
-                >
-                  <Heart 
-                    className="h-4 w-4" 
-                    style={{ color: hovered.color }}
-                  />
-                </div>
+                <div className="text-2xl">{EMOTION_CONFIG[hovered.emotion].icon}</div>
               </div>
-
-              {/* Preview */}
-              <p className="mb-3 text-sm leading-relaxed text-slate-200">
-                {hovered.preview}
-              </p>
-
-              {/* CTA */}
-              <div className="flex items-center justify-between">
-                <span 
-                  className="text-xs font-semibold uppercase tracking-wider"
-                  style={{ color: hovered.color }}
-                >
-                  {hovered.emotion}
-                </span>
-                <span className="text-xs font-semibold text-violet-300">
-                  {t('story.read_more')} →
-                </span>
-              </div>
+              <p className="text-sm text-slate-200">{hovered.preview}</p>
+              <div className="mt-2 text-xs font-semibold text-violet-300">Click to read full story →</div>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Légende émotions (top-right) */}
-      <div className="pointer-events-none absolute right-6 top-6 z-10 hidden lg:block">
-        <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 backdrop-blur-md">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Émotions
-          </div>
-          <div className="space-y-2">
-            {Object.entries(EMOTION_COLORS).map(([emotion, color]) => (
-              <div key={emotion} className="flex items-center gap-2">
-                <div
-                  className="h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="text-xs text-slate-300 capitalize">{emotion}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Hint rotation si pas encore interagi (top-center, mobile only) */}
-      {!hasInteracted && (
-        <div className="pointer-events-none absolute left-1/2 top-6 z-10 -translate-x-1/2 lg:hidden">
-          <div className="rounded-full border border-white/10 bg-slate-950/60 px-4 py-2 backdrop-blur-md">
-            <p className="text-xs text-slate-300">
-              👆 Glisse pour tourner • Pince pour zoomer
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
+      {/* Modal story complète */}
+      <AnimatePresence>
+        {selectedStory && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+            onClick={() => setSelectedStory(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-2xl overflow-hidden rounded-3xl border border-white/10 bg-slate-950 shadow-2xl"
+              style={{ borderColor: EMOTION_CONFIG[selectedStory.emotion].color + '40' }}
+            >
+              {/* Header avec glow */}
+              <div className="relative overflow-hidden border-b border-white/10 p-6">
+                <div
+                  className="pointer-events-none absolute inset-0 opacity-20"
+                  style={{
+                    background: `radial-gradient(circle at top, ${EMOTION_CONFIG[selectedStory.emotion].color}60, transparent 70%)`
+                  }}
+                />
+                
+                <div className="relative z-10">
+                  <div className="mb-3 flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="text-4xl">{EMOTION_CONFIG[selectedStory.emotion].icon}</div>
+                      <div>
+                        <div className="text-2xl font-bold text-white">{selectedStory.city}</div>
+                        <div className="text-sm text-slate-400">{selectedStory.country}</div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setSelectedStory(null)}
+                      className="rounded-lg border border-white/10 bg-white/5 p-2 text-slate-400 transition-colors hover:bg-white/10 hover:text-white"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-xs text-slate-400">
+                    {selectedStory.author && <span>By {selectedStory.author}</span>}
+                    {selectedStory.date && (
+                      <>
+                        <span>•</span>
+                        <span>{selectedStory.date}</span>
+                      </>
+                    )}
+                    <span>•</span>
+                    <span className="font-semibold" style={{ color: EMOTION_CONFIG[selectedStory.emotion].color }}>
+                      {EMOTION_CONFIG[selectedStory.emotion].label}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Content */}
+              <div className="p-6">
+                <p className="text-lg leading-relaxed text-slate-200">
+                  {selectedStory.fullContent || selectedStory.preview}
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3 border-t border-white/10 p-6">
+                <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-white/10">
+                  <Heart className="h-4 w-4" />
+                  Resonate
+                </button>
+                <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-white/10">
+                  <MessageCircle className="h-4 w-4" />
+                  Connect
+                </button>
+                <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-white/10">
+                  <Share2 className="h-4 w-4" />
+                  Share
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
