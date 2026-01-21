@@ -148,7 +148,7 @@ export default function MirrorPreview() {
           {/* World Map (left) */}
           <div className="rounded-3xl border border-white/10 bg-white/3 p-5 md:p-6">
             <div className="rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_50%_50%,rgba(56,189,248,0.08),transparent_55%)] p-4">
-              <div className="relative h-[420px] overflow-hidden rounded-2xl">
+              <div className="relative h-105 overflow-hidden rounded-2xl">
                 <WorldMapSilhouette stories={STORIES_MOCK} />
                 <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(2,6,23,0.0),rgba(2,6,23,0.60))]" />
               </div>
@@ -359,7 +359,7 @@ function WorldMapSilhouette({ stories }: { stories: Story[] }) {
       </g>
 
       {/* Markers */}
-      {stories.map((story, idx) => {
+      {stories.map((story) => {
         const x = ((story.lng + 180) / 360) * 1100;
         const y = ((90 - story.lat) / 180) * 520;
         const color = EMOTION_COLORS[story.emotion];
