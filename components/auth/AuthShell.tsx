@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/auth/AuthShell.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-21)
+ * Version      : 1.0.1 (2026-01-21)
  * Objet        : Shell Auth - Tabs Connexion/Inscription + layout cohérent thème clair
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,18 +10,25 @@
  * - Layout premium (glass clair + borders slate)
  * - Colonne droite : bénéfices + micro-copy (optionnel)
  * - Intègre LoginForm / RegisterForm + OAuthButtons
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.0.1 (2026-01-21)
+ * - [FIX] Remplace <a> par <Link> (Next.js) pour navigation interne
+ * - [IMPROVED] Accessibilité tabs (role=tablist/tab + aria-controls)
+ * - [CHORE] Aucune régression UI/animations
  * =============================================================================
  */
 
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, Sparkles, HeartHandshake, ArrowRight } from 'lucide-react';
 import LoginForm from './LoginForm';
 import RegisterForm from './RegisterForm';
 import OAuthButtons from './OAuthButtons';
-
 
 type Tab = 'login' | 'register';
 
@@ -31,6 +38,8 @@ export default function AuthShell() {
   const tabLabel = useMemo(() => {
     return tab === 'login' ? 'Connexion' : 'Inscription';
   }, [tab]);
+
+  const isLogin = tab === 'login';
 
   return (
     <section className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20 md:pt-32">
@@ -64,35 +73,41 @@ export default function AuthShell() {
           <div className="p-6 md:p-10">
             {/* Tabs */}
             <div className="mb-6 flex items-center justify-between gap-3">
-              <div className="inline-flex rounded-2xl border border-slate-200 bg-white/70 p-1 shadow-sm">
+              <div
+                className="inline-flex rounded-2xl border border-slate-200 bg-white/70 p-1 shadow-sm"
+                role="tablist"
+                aria-label="Authentification"
+              >
                 <button
+                  id="tab-login"
                   type="button"
                   onClick={() => setTab('login')}
                   className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                    tab === 'login'
-                      ? 'bg-slate-950 text-white shadow-sm'
-                      : 'text-slate-700 hover:bg-white'
+                    isLogin ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-white'
                   }`}
-                  aria-pressed={tab === 'login'}
+                  role="tab"
+                  aria-selected={isLogin}
+                  aria-controls="panel-login"
                 >
                   Connexion
                 </button>
                 <button
+                  id="tab-register"
                   type="button"
                   onClick={() => setTab('register')}
                   className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                    tab === 'register'
-                      ? 'bg-slate-950 text-white shadow-sm'
-                      : 'text-slate-700 hover:bg-white'
+                    !isLogin ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-white'
                   }`}
-                  aria-pressed={tab === 'register'}
+                  role="tab"
+                  aria-selected={!isLogin}
+                  aria-controls="panel-register"
                 >
                   Inscription
                 </button>
               </div>
 
               <div className="hidden text-sm text-slate-600 md:block">
-                {tab === 'login' ? (
+                {isLogin ? (
                   <span>
                     Pas de compte ?{' '}
                     <button
@@ -123,17 +138,18 @@ export default function AuthShell() {
 
             <div className="my-6 flex items-center gap-3">
               <div className="h-px flex-1 bg-slate-200" />
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                ou
-              </span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">ou</span>
               <div className="h-px flex-1 bg-slate-200" />
             </div>
 
             {/* Active form */}
             <AnimatePresence mode="wait">
-              {tab === 'login' ? (
+              {isLogin ? (
                 <motion.div
                   key="login"
+                  id="panel-login"
+                  role="tabpanel"
+                  aria-labelledby="tab-login"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -144,6 +160,9 @@ export default function AuthShell() {
               ) : (
                 <motion.div
                   key="register"
+                  id="panel-register"
+                  role="tabpanel"
+                  aria-labelledby="tab-register"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -196,13 +215,13 @@ export default function AuthShell() {
                 </div>
               </div>
 
-              <a
+              <Link
                 href="/explore"
                 className="group inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm font-semibold text-slate-900 transition hover:bg-white"
               >
                 Explorer sans compte
                 <ArrowRight className="h-4 w-4 opacity-70 transition-transform group-hover:translate-x-0.5" />
-              </a>
+              </Link>
             </div>
           </div>
         </div>

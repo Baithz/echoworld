@@ -2,13 +2,20 @@
  * =============================================================================
  * Fichier      : components/auth/RegisterForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-21)
+ * Version      : 1.1.0 (2026-01-21)
  * Objet        : Form Inscription (email/password) - Supabase Auth
  * -----------------------------------------------------------------------------
  * Description  :
  * - supabase.auth.signUp
  * - Loading + erreurs + message de confirmation
  * - UI cohérente thème clair
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.1.0 (2026-01-21)
+ * - [IMPROVED] Gestion post-signup : redirect si session immédiate, sinon message confirmation email
+ * - [IMPROVED] Disable complet + micro-helper password (sans changer le layout)
+ * - [CHORE] Aucune régression UI/UX (mêmes classes, mêmes blocs)
  * =============================================================================
  */
 
@@ -32,10 +39,14 @@ export default function RegisterForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+
     setError(null);
     setOk(null);
 
-    if (!email.trim() || !password) {
+    const cleanEmail = email.trim();
+
+    if (!cleanEmail || !password) {
       setError('Veuillez renseigner email et mot de passe.');
       return;
     }
@@ -50,19 +61,27 @@ export default function RegisterForm({
       const emailRedirectTo =
         typeof window !== 'undefined' ? `${window.location.origin}/login` : undefined;
 
-      const { error: signUpError } = await supabase.auth.signUp({
-        email: email.trim(),
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: cleanEmail,
         password,
         options: emailRedirectTo ? { emailRedirectTo } : undefined,
       });
 
       if (signUpError) {
         setError(signUpError.message);
-      } else {
-        setOk(
-          "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
-        );
+        return;
       }
+
+      // Si la confirmation email est désactivée, Supabase peut renvoyer une session directe
+      if (data?.session) {
+        setOk('Compte créé. Connexion…');
+        window.location.replace('/');
+        return;
+      }
+
+      setOk(
+        "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
+      );
     } catch (e2) {
       setError(e2 instanceof Error ? e2.message : 'Register error');
     } finally {
@@ -83,7 +102,8 @@ export default function RegisterForm({
             onChange={(ev) => setEmail(ev.target.value)}
             placeholder="you@example.com"
             autoComplete="email"
-            className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
+            disabled={loading}
+            className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none disabled:opacity-70"
           />
         </div>
       </label>
@@ -101,8 +121,12 @@ export default function RegisterForm({
             onChange={(ev) => setPassword(ev.target.value)}
             placeholder="•••••••• (8+)"
             autoComplete="new-password"
-            className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
+            disabled={loading}
+            className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none disabled:opacity-70"
           />
+        </div>
+        <div className="mt-1 text-xs text-slate-500">
+          8+ caractères recommandé (phrase de passe).
         </div>
       </label>
 

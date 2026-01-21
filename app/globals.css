@@ -263,7 +263,8 @@ body {
    Select/Options (évite contrastes OS)
    ============================================================================= */
 
-select option {
+/* Options dark uniquement quand on le demande (évite de casser le thème clair) */
+.ew-options-dark option {
   background: #0f172a; /* slate-900 */
   color: #ffffff;
 }
