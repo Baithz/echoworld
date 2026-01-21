@@ -2,12 +2,13 @@
  * =============================================================================
  * Fichier      : app/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
- * Objet        : Page d'accueil (Hero + Mirror Preview)
+ * Version      : 1.1.1 (2026-01-21)
+ * Objet        : Page d'accueil (Hero + Global Mirror Preview)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Affiche le Hero existant (inchangé)
- * - Ajoute une section "Global Mirror" avec tabs via URL (?tab=...)
+ * - Affiche le Hero premium existant (inchangé)
+ * - Intègre la section "Global Mirror" (MirrorPreview)
+ * - Largeur étendue et cohérente avec l’UI glass
  * =============================================================================
  */
 
@@ -16,9 +17,14 @@ import MirrorPreview from '@/components/home/MirrorPreview';
 
 export default function HomePage() {
   return (
-    <main>
+    <main className="flex flex-col">
+      {/* Hero section (plein impact, inchangée) */}
       <Hero />
-      <MirrorPreview />
+
+      {/* Global Mirror preview */}
+      <section className="mx-auto w-full max-w-7xl px-6">
+        <MirrorPreview />
+      </section>
     </main>
   );
 }

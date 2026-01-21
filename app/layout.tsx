@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/layout.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.3 (2026-01-21)
+ * Version      : 1.0.4 (2026-01-21)
  * Objet        : Layout racine Next.js (App Router) + fond premium Tailwind v4
  *               + Provider global de langue (détection + persistance)
  * -----------------------------------------------------------------------------
@@ -21,6 +21,7 @@
  */
 
 import './globals.css';
+import type { ReactNode } from 'react';
 import { LanguageProvider } from '@/lib/i18n/LanguageProvider';
 
 export const metadata = {
@@ -28,7 +29,7 @@ export const metadata = {
   description: 'Your Story, Their Echo, Our World',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body className="min-h-screen bg-slate-950 text-white antialiased">
