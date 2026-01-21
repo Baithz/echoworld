@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/home/Hero.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-21)
+ * Version      : 2.1.0 (2026-01-21)
  * Objet        : Hero section redesign — Immersif, poétique, émotionnel
  * -----------------------------------------------------------------------------
  * Description  :
@@ -11,7 +11,7 @@
  * - Badge + language select (discrets)
  * - CTAs premium (glow, transitions)
  * - Pas de cards features plates
- * - Introduction visuelle au monde vivant en dessous
+ * - Composant flexible (sans wrapper section) pour grid layout
  * =============================================================================
  */
 
@@ -27,14 +27,14 @@ export default function Hero() {
   const { t } = useLang();
 
   return (
-    <section className="relative mx-auto max-w-7xl px-6 pt-20 pb-32 md:pt-28 md:pb-40">
+    <>
       {/* Floating gradient accent */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="pointer-events-none absolute -inset-10 overflow-hidden">
         <div className="absolute -top-20 left-1/2 h-100 w-100 -translate-x-1/2 rounded-full bg-linear-to-br from-violet-400/20 via-sky-400/15 to-transparent blur-3xl" />
       </div>
 
       {/* Top row: badge + language */}
-      <div className="relative z-10 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="relative z-10 mb-12 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -65,7 +65,7 @@ export default function Hero() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8, delay: 0.2 }}
-        className="relative z-10 mt-16 max-w-5xl"
+        className="relative z-10 max-w-4xl"
       >
         <h1 className="text-balance text-5xl font-bold leading-[1.1] tracking-tight sm:text-6xl md:text-7xl lg:text-8xl">
           <span className="block text-white">{t('hero.title_line1')}</span>
@@ -127,20 +127,6 @@ export default function Hero() {
           <ArrowRight className="h-4 w-4 opacity-50" />
         </Link>
       </motion.div>
-
-      {/* Visual bridge (introduction monde vivant) */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 1.2, delay: 0.8 }}
-        className="pointer-events-none relative z-10 mt-20 flex items-center justify-center"
-      >
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-16 w-px bg-linear-to-b from-transparent via-white/20 to-transparent" />
-          <div className="h-2 w-2 rounded-full bg-white/40 animate-pulse" />
-          <div className="h-8 w-px bg-linear-to-b from-white/20 to-transparent" />
-        </div>
-      </motion.div>
-    </section>
+    </>
   );
 }

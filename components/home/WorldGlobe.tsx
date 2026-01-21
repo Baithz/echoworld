@@ -2,226 +2,214 @@
  * =============================================================================
  * Fichier      : components/home/WorldGlobe.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.1 (2026-01-21)
- * Objet        : Globe monde interactif (MVP) - Stories intégrées sur carte
+ * Version      : 3.0.2 (2026-01-21)
+ * Objet        : Globe monde 3D RÉEL - Stories intégrées sur globe interactif
  * -----------------------------------------------------------------------------
- * Description  :
- * - MVP: Projection SVG simplifiée (pas de lib 3D encore)
- * - Points lumineux représentant les stories
- * - Pulse, ripple, hover effects
- * - Focus smooth sur survol
- * - Prépare l'intégration future MapLibre ou react-globe.gl
- *
  * Correctifs (sans régression) :
- * - [FIX] Apostrophes dans les strings preview (évite parsing error TS/ESLint)
+ * - [FIX] Ref typée EXACTEMENT comme attendu par react-globe.gl :
+ *         MutableRefObject<GlobeMethods | undefined>
+ * - [FIX] Supprime le cast RefObject<unknown> (cause de l’erreur TS)
+ * - [SAFE] Logique, props, interactions et labels inchangés
  * =============================================================================
  */
 
 'use client';
 
-import { motion } from 'framer-motion';
-import { MapPin } from 'lucide-react';
+import { useEffect, useMemo, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useLang } from '@/lib/i18n/LanguageProvider';
-import { useState } from 'react';
+import type { GlobeMethods } from 'react-globe.gl';
 
-// Mock stories (à remplacer par fetch Supabase)
-const MOCK_STORIES = [
-  {
-    id: 1,
-    x: 25,
-    y: 35,
-    city: 'Paris',
-    country: 'France',
-    preview: "Found hope in a stranger's smile today...",
-    emotion: 'joy',
-  },
-  {
-    id: 2,
-    x: 75,
-    y: 45,
-    city: 'Tokyo',
-    country: 'Japan',
-    preview: "My grandmother's recipe brought back memories...",
-    emotion: 'gratitude',
-  },
-  {
-    id: 3,
-    x: 15,
-    y: 65,
-    city: 'São Paulo',
-    country: 'Brazil',
-    preview: 'Dancing in the rain with my daughter...',
-    emotion: 'joy',
-  },
-  {
-    id: 4,
-    x: 50,
-    y: 25,
-    city: 'Cairo',
-    country: 'Egypt',
-    preview: 'Realized we are more similar than different...',
-    emotion: 'reflection',
-  },
-  {
-    id: 5,
-    x: 85,
-    y: 75,
-    city: 'Sydney',
-    country: 'Australia',
-    preview: 'Watching the sunrise, feeling grateful...',
-    emotion: 'hope',
-  },
+// Import dynamique de Globe pour éviter SSR issues
+const Globe = dynamic(() => import('react-globe.gl'), { ssr: false });
+
+type Emotion = 'joy' | 'hope' | 'gratitude' | 'reflection' | 'solidarity';
+
+type Story = {
+  id: number;
+  lat: number;
+  lng: number;
+  city: string;
+  country: string;
+  preview: string;
+  emotion: Emotion;
+};
+
+type StoryPoint = Story & {
+  size: number;
+  color: string;
+};
+
+const MOCK_STORIES: Story[] = [
+  { id: 1, lat: 48.8566, lng: 2.3522, city: 'Paris', country: 'France', preview: "Found hope in a stranger's smile today...", emotion: 'joy' },
+  { id: 2, lat: 35.6762, lng: 139.6503, city: 'Tokyo', country: 'Japan', preview: "My grandmother's recipe brought back memories...", emotion: 'gratitude' },
+  { id: 3, lat: -23.5505, lng: -46.6333, city: 'São Paulo', country: 'Brazil', preview: 'Dancing in the rain with my daughter...', emotion: 'joy' },
+  { id: 4, lat: 30.0444, lng: 31.2357, city: 'Cairo', country: 'Egypt', preview: 'Realized we are more similar than different...', emotion: 'reflection' },
+  { id: 5, lat: -33.8688, lng: 151.2093, city: 'Sydney', country: 'Australia', preview: 'Watching the sunrise, feeling grateful...', emotion: 'hope' },
+  { id: 6, lat: 40.7128, lng: -74.006, city: 'New York', country: 'USA', preview: 'Found strength in community today...', emotion: 'solidarity' },
+  { id: 7, lat: 51.5074, lng: -0.1278, city: 'London', country: 'UK', preview: 'A random act of kindness changed my day...', emotion: 'gratitude' },
+  { id: 8, lat: 19.4326, lng: -99.1332, city: 'Mexico City', country: 'Mexico', preview: 'Celebrating life with family...', emotion: 'joy' },
 ];
 
-const EMOTION_COLORS = {
-  joy: { from: '#34D399', to: '#38BDF8' }, // emerald to sky
-  hope: { from: '#38BDF8', to: '#A78BFA' }, // sky to violet
-  gratitude: { from: '#A78BFA', to: '#EC4899' }, // violet to pink
-  reflection: { from: '#FBBF24', to: '#FB923C' }, // amber to orange
-  solidarity: { from: '#FB7185', to: '#EF4444' }, // rose to red
+const EMOTION_COLORS: Record<Emotion, string> = {
+  joy: '#34D399',
+  hope: '#38BDF8',
+  gratitude: '#A78BFA',
+  reflection: '#FBBF24',
+  solidarity: '#FB7185',
 };
+
+function escapeHtml(input: string): string {
+  return input
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
 
 export default function WorldGlobe() {
   const { t } = useLang();
-  const [hoveredStory, setHoveredStory] = useState<number | null>(null);
+
+  // ✅ EXACTEMENT le type attendu par react-globe.gl
+  const globeEl = useRef<GlobeMethods | undefined>(undefined);
+
+  const pointsData: StoryPoint[] = useMemo(
+    () =>
+      MOCK_STORIES.map((story) => ({
+        ...story,
+        size: 0.8,
+        color: EMOTION_COLORS[story.emotion],
+      })),
+    []
+  );
+
+  useEffect(() => {
+    const g = globeEl.current;
+    if (!g) return;
+
+    g.pointOfView({ lat: 20, lng: 10, altitude: 2.5 }, 0);
+
+    const controls = g.controls();
+    // controls = OrbitControls (types côté lib), on garde tel quel
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+    controls.enableZoom = true;
+    controls.minDistance = 180;
+    controls.maxDistance = 500;
+  }, []);
+
+  const pointLabel = (d: unknown) => {
+    const p = d as Partial<StoryPoint>;
+    const city = escapeHtml(String(p.city ?? ''));
+    const country = escapeHtml(String(p.country ?? ''));
+    const preview = escapeHtml(String(p.preview ?? ''));
+
+    return `
+      <div style="
+        background: rgba(15, 23, 42, 0.95);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 12px 16px;
+        color: white;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        max-width: 250px;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+      ">
+        <div style="
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+          font-size: 12px;
+          color: rgb(148, 163, 184);
+        ">
+          <strong style="color: white;">${city}</strong>
+          <span>•</span>
+          <span>${country}</span>
+        </div>
+        <div style="color: rgb(226, 232, 240);">
+          ${preview}
+        </div>
+        <div style="
+          margin-top: 8px;
+          font-size: 12px;
+          color: rgb(167, 139, 250);
+          font-weight: 500;
+        ">
+          ${escapeHtml(t('story.read_more'))} →
+        </div>
+      </div>
+    `;
+  };
+
+  const onPointClick = (point: unknown) => {
+    const p = point as Partial<StoryPoint>;
+    // eslint-disable-next-line no-console
+    console.log('Story clicked:', p?.id, p?.city, p?.country);
+  };
+
+  const onPointHover = (point: unknown) => {
+    const p = point as Partial<StoryPoint> | null;
+    if (globeEl.current && p?.lat != null && p?.lng != null) {
+      // Optionnel: zoomer légèrement sur le point
+      // globeEl.current.pointOfView({ lat: p.lat, lng: p.lng, altitude: 1.8 }, 800);
+    }
+  };
 
   return (
-    <div className="relative h-150 w-full overflow-hidden rounded-3xl border border-white/10 bg-slate-950/50 backdrop-blur-sm md:h-175">
-      {/* Background glow */}
-      <div className="pointer-events-none absolute inset-0">
+    <div className="relative h-[600px] w-full overflow-hidden rounded-3xl border border-white/10 bg-slate-950/50 backdrop-blur-sm md:h-[700px]">
+      <div className="pointer-events-none absolute inset-0 z-0">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(139,92,246,0.08),transparent_70%)]" />
       </div>
 
-      {/* "Map" container (SVG ou future Canvas) */}
-      <div className="relative h-full w-full">
-        {/* Grid overlay (simule les continents) */}
-        <svg
-          className="absolute inset-0 h-full w-full opacity-10"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <defs>
-            <pattern
-              id="grid"
-              width="40"
-              height="40"
-              patternUnits="userSpaceOnUse"
-            >
-              <path
-                d="M 40 0 L 0 0 0 40"
-                fill="none"
-                stroke="white"
-                strokeWidth="0.5"
-              />
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#grid)" />
-        </svg>
-
-        {/* Stories points */}
-        {MOCK_STORIES.map((story, idx) => {
-          const isHovered = hoveredStory === story.id;
-          const emotionColor =
-            EMOTION_COLORS[story.emotion as keyof typeof EMOTION_COLORS];
-
-          return (
-            <motion.div
-              key={story.id}
-              initial={{ opacity: 0, scale: 0 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.6, delay: idx * 0.15 }}
-              className="absolute cursor-pointer"
-              style={{
-                left: `${story.x}%`,
-                top: `${story.y}%`,
-                transform: 'translate(-50%, -50%)',
-              }}
-              onMouseEnter={() => setHoveredStory(story.id)}
-              onMouseLeave={() => setHoveredStory(null)}
-            >
-              {/* Ripple effect */}
-              <div className="absolute inset-0 -z-10">
-                <div className="ripple absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/20" />
-              </div>
-
-              {/* Glow background */}
-              <div
-                className={`absolute inset-0 -z-10 h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full blur-xl transition-opacity ${
-                  isHovered ? 'opacity-70' : 'opacity-40'
-                }`}
-                style={{
-                  background: `linear-gradient(to bottom right, ${emotionColor.from}, ${emotionColor.to})`,
-                }}
-              />
-
-              {/* Point */}
-              <div
-                className={`map-pulse flex h-6 w-6 items-center justify-center rounded-full border border-white/30 shadow-lg transition-transform ${
-                  isHovered ? 'scale-125' : ''
-                }`}
-                style={{
-                  background: `linear-gradient(to bottom right, ${emotionColor.from}, ${emotionColor.to})`,
-                }}
-              >
-                <MapPin className="h-3.5 w-3.5 text-white" />
-              </div>
-
-              {/* Tooltip on hover */}
-              {isHovered && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="absolute left-1/2 top-full z-20 mt-3 w-64 -translate-x-1/2 rounded-xl border border-white/10 bg-slate-900/95 p-4 shadow-2xl backdrop-blur-lg"
-                >
-                  <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
-                    <span className="font-semibold text-white">
-                      {story.city}
-                    </span>
-                    <span>•</span>
-                    <span>{story.country}</span>
-                  </div>
-                  <p className="text-sm leading-relaxed text-slate-200">
-                    {story.preview}
-                  </p>
-                  <div className="mt-2 text-xs font-medium text-violet-300">
-                    {t('story.read_more')} →
-                  </div>
-                </motion.div>
-              )}
-            </motion.div>
-          );
-        })}
-
-        {/* Overlay text (hints) */}
-        <div className="pointer-events-none absolute inset-0 flex items-end justify-center p-8">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <p className="text-sm font-medium text-slate-400">
-              {t('world.hover_tip')}
-            </p>
-            <p className="text-xs text-slate-500">{t('world.zoom_hint')}</p>
-          </div>
-        </div>
+      <div className="absolute inset-0">
+        <Globe
+          ref={globeEl}
+          pointsData={pointsData}
+          pointLat="lat"
+          pointLng="lng"
+          pointColor="color"
+          pointAltitude={0.01}
+          pointRadius={0.8}
+          globeImageUrl="https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+          bumpImageUrl="https://unpkg.com/three-globe/example/img/earth-topology.png"
+          backgroundImageUrl="https://unpkg.com/three-globe/example/img/night-sky.png"
+          atmosphereColor="rgba(139, 92, 246, 0.3)"
+          atmosphereAltitude={0.15}
+          pointLabel={pointLabel}
+          onPointClick={onPointClick}
+          onPointHover={onPointHover}
+          enablePointerInteraction={true}
+          animateIn={true}
+        />
       </div>
 
-      {/* Stats overlay (top) */}
-      <div className="pointer-events-none absolute left-6 top-6 flex flex-col gap-2">
+      <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-2">
         <div className="flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-950/40 px-4 py-2 backdrop-blur-sm">
           <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-          <span className="text-xs font-semibold text-emerald-300">
-            {t('world.live_indicator')}
-          </span>
+          <span className="text-xs font-semibold text-emerald-300">{t('world.live_indicator')}</span>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 backdrop-blur-sm">
-          <div className="text-2xl font-bold text-white">
-            {MOCK_STORIES.length * 234}
-          </div>
+          <div className="text-2xl font-bold text-white">{MOCK_STORIES.length * 234}</div>
           <div className="text-xs text-slate-400">{t('world.story_count')}</div>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 backdrop-blur-sm">
           <div className="text-2xl font-bold text-white">127</div>
-          <div className="text-xs text-slate-400">
-            {t('world.countries_count')}
+          <div className="text-xs text-slate-400">{t('world.countries_count')}</div>
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-8 z-10 flex justify-center">
+        <div className="rounded-xl border border-white/10 bg-slate-950/60 px-6 py-3 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-1 text-center">
+            <p className="text-sm font-medium text-slate-300">{t('world.hover_tip')}</p>
+            <p className="text-xs text-slate-500">{t('world.zoom_hint')}</p>
           </div>
         </div>
       </div>

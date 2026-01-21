@@ -2,19 +2,15 @@
  * =============================================================================
  * Fichier      : app/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.1 (2026-01-21)
- * Objet        : Page d'accueil redesign - Immersive, émotionnelle, WOW
+ * Version      : 2.1.0 (2026-01-21)
+ * Objet        : Page d'accueil redesign - Hero + Pulse côte à côte
  * -----------------------------------------------------------------------------
  * Description  :
- * - Hero poétique + introduction monde vivant
- * - Section "Monde vivant" : Globe + Pulse côte à côte
+ * - Hero + PulseHeart en grid (côte à côte)
+ * - Globe pleine largeur en dessous
  * - Connexions humaines en bas
  * - Plus de tabs, plus de KPI froids
  * - Tout est visible, tout respire ensemble
- *
- * Correctifs (sans régression) :
- * - [FIX] Imports en chemins relatifs (évite TS2307 si alias "@/..." non résolu
- *         pour certains fichiers / cache TS / config paths)
  * =============================================================================
  */
 
@@ -26,12 +22,24 @@ import ConnectionsStrip from '../components/home/ConnectionsStrip';
 export default function HomePage() {
   return (
     <main className="relative">
-      {/* Hero */}
-      <Hero />
+      {/* Hero + Pulse Heart - côte à côte */}
+      <section className="relative mx-auto max-w-7xl px-6 pt-20 pb-20 md:pt-28 md:pb-28">
+        <div className="grid gap-12 lg:grid-cols-[1fr_420px]">
+          {/* Hero content (gauche) */}
+          <div className="relative">
+            <Hero />
+          </div>
 
-      {/* Living World Section */}
+          {/* Pulse Heart (droite) - aligné verticalement au centre */}
+          <div className="flex items-center lg:items-start lg:pt-16">
+            <PulseHeart />
+          </div>
+        </div>
+      </section>
+
+      {/* Living World Section - Globe seul, pleine largeur */}
       <section className="relative mx-auto max-w-7xl px-6 pb-20">
-        {/* Section intro (optionnel, peut être supprimé si trop) */}
+        {/* Section intro */}
         <div className="mb-12 text-center">
           <h2 className="text-3xl font-bold text-white md:text-4xl">
             Watch the World Breathe
@@ -41,18 +49,8 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* Grid: Globe + Pulse */}
-        <div className="grid gap-8 lg:grid-cols-[1fr_400px]">
-          {/* Globe (large) */}
-          <div>
-            <WorldGlobe />
-          </div>
-
-          {/* Pulse (sidebar) */}
-          <div className="flex flex-col gap-8">
-            <PulseHeart />
-          </div>
-        </div>
+        {/* Globe (pleine largeur) */}
+        <WorldGlobe />
       </section>
 
       {/* Connections */}
