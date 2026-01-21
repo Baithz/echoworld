@@ -2,20 +2,23 @@
  * =============================================================================
  * Fichier      : components/home/Hero.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
+ * Version      : 1.1.2 (2026-01-21)
  * Objet        : Hero section premium (homepage) - UI moderne et novatrice
  *               + Sélecteur de langue + Textes traduits (t()) via Provider global
+ *               + Largeur élargie (layout plus immersif)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Hero : badge, headline gradient, CTA, cards features
  * - Animations légères (Framer Motion)
  * - Sélecteur de langue (LanguageSelect)
- * - Textes dynamiques via useLang().t() (toutes langues supportées)
+ * - Textes dynamiques via useLang().t()
+ * - Largeur : max-w-7xl (plus large, sans casser la lisibilité)
  *
  * Correctifs (sans régression) :
  * - [FIX] Classe canonical Tailwind v4 : bg-linear-to-r
+ * - [FIX] ESLint no-explicit-any : suppression des "as any" (typage strict)
  * - [ADD] Traductions dynamiques (t) sans changer la structure UI
- * - [SAFE] Aucun changement visuel hors textes
+ * - [IMPROVED] Conteneur élargi (max-w-7xl) pour une home plus premium
  * =============================================================================
  */
 
@@ -26,12 +29,19 @@ import { motion } from 'framer-motion';
 import { Globe, Sparkles, PenLine } from 'lucide-react';
 import LanguageSelect from '@/components/home/LanguageSelect';
 import { useLang } from '@/lib/i18n/LanguageProvider';
+import type { I18nKey } from '@/lib/i18n/messages';
+
+const FEATURE_KEYS: ReadonlyArray<{ title: I18nKey; desc: I18nKey }> = [
+  { title: 'hero.card1_title', desc: 'hero.card1_desc' },
+  { title: 'hero.card2_title', desc: 'hero.card2_desc' },
+  { title: 'hero.card3_title', desc: 'hero.card3_desc' },
+] as const;
 
 export default function Hero() {
   const { t } = useLang();
 
   return (
-    <section className="mx-auto max-w-6xl px-6 py-20 md:py-28">
+    <section className="mx-auto max-w-7xl px-6 py-20 md:py-28">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
@@ -105,14 +115,10 @@ export default function Hero() {
       </motion.div>
 
       <div className="mt-10 grid gap-3 sm:grid-cols-3">
-        {[
-          ['hero.card1_title', 'hero.card1_desc'],
-          ['hero.card2_title', 'hero.card2_desc'],
-          ['hero.card3_title', 'hero.card3_desc'],
-        ].map(([kt, kd]) => (
-          <div key={kt} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold">{t(kt as any)}</div>
-            <div className="mt-1 text-sm text-slate-300">{t(kd as any)}</div>
+        {FEATURE_KEYS.map(({ title, desc }) => (
+          <div key={title} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold">{t(title)}</div>
+            <div className="mt-1 text-sm text-slate-300">{t(desc)}</div>
           </div>
         ))}
       </div>
