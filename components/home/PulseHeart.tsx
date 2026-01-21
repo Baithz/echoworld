@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/home/PulseHeart.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-21)
+ * Version      : 2.1.0 (2026-01-21)
  * Objet        : Cœur émotionnel global - ECG + % + métaphore vivante
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,6 +12,13 @@
  * - Petit breakdown émotions (discret)
  * - État LIVE
  * - Pas de donut, pas de KPI techniques
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.1.0 (2026-01-21)
+ * - [IMPROVED] Adaptation complète au thème clair par défaut
+ * - [IMPROVED] Contrastes texte/borders ajustés (accessibilité + lisibilité)
+ * - [CHORE] Aucun changement logique ou animation (zéro régression)
  * =============================================================================
  */
 
@@ -36,25 +43,25 @@ export default function PulseHeart() {
   const { t } = useLang();
 
   return (
-    <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-slate-950/50 p-8 backdrop-blur-sm md:p-10">
+    <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white/70 p-8 backdrop-blur-md md:p-10">
       {/* Background accent */}
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(236,72,153,0.08),transparent_60%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(236,72,153,0.10),transparent_60%)]" />
       </div>
 
       {/* Header */}
       <div className="relative z-10 mb-8 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-white md:text-3xl">
+          <h2 className="text-2xl font-bold text-slate-900 md:text-3xl">
             {t('pulse.title')}
           </h2>
-          <p className="mt-1 text-sm text-slate-400">{t('pulse.global_mood')}</p>
+          <p className="mt-1 text-sm text-slate-500">{t('pulse.global_mood')}</p>
         </div>
 
         {/* Live indicator */}
-        <div className="flex items-center gap-2 rounded-full border border-rose-400/20 bg-rose-950/40 px-3 py-1.5 backdrop-blur-sm">
+        <div className="flex items-center gap-2 rounded-full border border-rose-300 bg-rose-50 px-3 py-1.5">
           <div className="h-2 w-2 animate-pulse rounded-full bg-rose-400" />
-          <span className="text-xs font-semibold text-rose-300">
+          <span className="text-xs font-semibold text-rose-600">
             {t('pulse.live_status')}
           </span>
         </div>
@@ -70,10 +77,10 @@ export default function PulseHeart() {
           className="relative"
         >
           {/* Glow */}
-          <div className="glow-breathe absolute inset-0 -z-10 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full bg-linear-to-br from-rose-400/40 via-pink-400/30 to-red-400/20 blur-3xl" />
+          <div className="glow-breathe absolute inset-0 -z-10 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full bg-linear-to-br from-rose-400/35 via-pink-400/25 to-red-400/15 blur-3xl" />
 
           {/* Heart icon */}
-          <Heart className="heartbeat h-24 w-24 fill-rose-400 text-rose-400 drop-shadow-2xl md:h-32 md:w-32" />
+          <Heart className="heartbeat h-24 w-24 fill-rose-500 text-rose-500 drop-shadow-xl md:h-32 md:w-32" />
         </motion.div>
 
         {/* Percentage */}
@@ -83,24 +90,23 @@ export default function PulseHeart() {
           transition={{ duration: 0.8, delay: 0.5 }}
           className="mt-6 text-center"
         >
-          <div className="text-6xl font-bold text-white md:text-7xl">
+          <div className="text-6xl font-bold text-slate-900 md:text-7xl">
             {GLOBAL_POSITIVITY}%
           </div>
-          <div className="mt-2 text-sm font-medium text-slate-300">
+          <div className="mt-2 text-sm font-medium text-slate-600">
             {t('pulse.positivity_label')}
           </div>
         </motion.div>
       </div>
 
       {/* ECG Line */}
-      <div className="relative z-10 mt-8 overflow-hidden rounded-xl border border-white/10 bg-slate-950/60 p-4">
-        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-slate-400">
+      <div className="relative z-10 mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white/80 p-4">
+        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-slate-500">
           <Activity className="h-4 w-4" />
           <span>{t('pulse.heartbeat_label')}</span>
         </div>
 
         <div className="relative h-16 overflow-hidden">
-          {/* ECG path (simplified) */}
           <svg
             className="ecg-line absolute inset-0 h-full w-[200%]"
             xmlns="http://www.w3.org/2000/svg"
@@ -110,7 +116,7 @@ export default function PulseHeart() {
             <defs>
               <linearGradient id="ecg-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="rgba(244,63,94,0)" />
-                <stop offset="50%" stopColor="rgba(244,63,94,1)" />
+                <stop offset="50%" stopColor="rgba(244,63,94,0.9)" />
                 <stop offset="100%" stopColor="rgba(244,63,94,0)" />
               </linearGradient>
             </defs>
@@ -126,7 +132,7 @@ export default function PulseHeart() {
         </div>
       </div>
 
-      {/* Emotion breakdown (discret) */}
+      {/* Emotion breakdown */}
       <div className="relative z-10 mt-6 space-y-2">
         {EMOTION_BREAKDOWN.map((emotion) => {
           const colors = {
@@ -137,7 +143,7 @@ export default function PulseHeart() {
             rose: '#FB7185',
           };
           const bgColor = colors[emotion.color as keyof typeof colors];
-          
+
           return (
             <div
               key={emotion.key}
@@ -148,9 +154,13 @@ export default function PulseHeart() {
                   className="h-2 w-2 rounded-full"
                   style={{ backgroundColor: bgColor }}
                 />
-                <span className="text-slate-300">{t(emotion.key as I18nKey)}</span>
+                <span className="text-slate-600">
+                  {t(emotion.key as I18nKey)}
+                </span>
               </div>
-              <span className="font-semibold text-white">{emotion.value}%</span>
+              <span className="font-semibold text-slate-900">
+                {emotion.value}%
+              </span>
             </div>
           );
         })}
@@ -161,7 +171,7 @@ export default function PulseHeart() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1, delay: 1 }}
-        className="relative z-10 mt-8 text-center text-sm italic text-slate-400"
+        className="relative z-10 mt-8 text-center text-sm italic text-slate-500"
       >
         {t('pulse.breathing_world')}
       </motion.p>

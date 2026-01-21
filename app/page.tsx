@@ -2,21 +2,21 @@
  * =============================================================================
  * Fichier      : app/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 4.0.0 (2026-01-21)
- * Objet        : Page accueil - Header + Globe scroll OK + Layout moderne
+ * Version      : 4.1.0 (2026-01-21)
+ * Objet        : Page accueil - Header + Layout moderne (sans globe sur Home)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Header navigation sticky
  * - Hero compact (padding-top pour header)
- * - Globe hauteur FIXE (scroll OK)
+ * - Hero + PulseHeart côte à côte
  * - Connexions humaines
  * - Footer CTA
+ * - Le globe 3D est déplacé vers /explore
  * =============================================================================
  */
 
 import Header from '../components/layout/Header';
 import Hero from '../components/home/Hero';
-import WorldGlobe from '../components/home/WorldGlobe';
 import PulseHeart from '../components/home/PulseHeart';
 import ConnectionsStrip from '../components/home/ConnectionsStrip';
 
@@ -40,29 +40,6 @@ export default function HomePage() {
               <PulseHeart />
             </div>
           </div>
-        </section>
-
-        {/* Living World Section - Globe avec hauteur fixe (scroll OK) */}
-        <section className="relative mx-auto max-w-7xl px-6 pb-20">
-          {/* Section intro */}
-          <div className="mb-12 text-center">
-            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-violet-400/20 bg-violet-950/30 px-4 py-2 backdrop-blur-sm">
-              <div className="h-2 w-2 rounded-full bg-violet-400" />
-              <span className="text-sm font-semibold text-violet-200">
-                Live Stories from Around the World
-              </span>
-            </div>
-
-            <h2 className="text-4xl font-bold text-white md:text-5xl">
-              Watch the World Breathe
-            </h2>
-            <p className="mt-4 text-lg text-slate-300">
-              Click any story pin to read. Drag to explore. Zoom to discover details.
-            </p>
-          </div>
-
-          {/* Globe (hauteur fixe 800px - scrollable) */}
-          <WorldGlobe />
         </section>
 
         {/* Connections humaines */}
@@ -93,7 +70,7 @@ export default function HomePage() {
                 </a>
 
                 <a
-                  href="/world-map"
+                  href="/explore"
                   className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/5 px-8 py-4 text-base font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20"
                 >
                   Explore deeper

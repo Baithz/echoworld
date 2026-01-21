@@ -2,12 +2,12 @@
  * =============================================================================
  * Fichier      : app/globals.css
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-21)
+ * Version      : 2.1.0 (2026-01-21)
  * Objet        : Styles globaux + Animations immersives + Fond cinéma
  * -----------------------------------------------------------------------------
  * Description  :
  * - Tailwind v4 (CSS-first)
- * - Base dark UI premium
+ * - Thème clair par défaut (le switch clair/sombre viendra via settings user)
  * - Animations ECG, heartbeat, glow, floating, pulse
  * - Grain léger optionnel (vignette subtile)
  * - Pas de reset agressif, juste une base harmonieuse
@@ -17,7 +17,7 @@
 @import "tailwindcss";
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 html,
@@ -197,25 +197,25 @@ body {
 .ew-noise {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E");
   background-size: 220px 220px;
-  mix-blend-mode: overlay;
-  opacity: 0.06;
+  mix-blend-mode: multiply;
+  opacity: 0.08;
 }
 
-/* Vignette subtile (bords sombres) */
+/* Vignette subtile (bords légèrement assombris) */
 .ew-vignette {
   background: radial-gradient(
     ellipse at center,
     rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.3) 100%
+    rgba(0, 0, 0, 0.14) 100%
   );
   pointer-events: none;
 }
 
 /* Glass morphism (backdropblur + border) */
 .glass {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(15, 23, 42, 0.1);
 }
 
 /* Glow box (halo doux) */
