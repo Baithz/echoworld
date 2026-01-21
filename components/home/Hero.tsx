@@ -2,15 +2,19 @@
  * =============================================================================
  * Fichier      : components/home/Hero.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.2 (2026-01-21)
+ * Version      : 1.0.3 (2026-01-21)
  * Objet        : Hero section premium (homepage) - UI moderne et novatrice
+ *               + Sélecteur de langue (détection + persistance via Provider global)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Hero : badge, headline gradient, CTA, cards features
  * - Animations légères (Framer Motion)
+ * - Ajoute un sélecteur de langue (MVP i18n) sans impacter le layout existant
  *
  * Correctifs (sans régression) :
  * - [FIX] Classe canonical Tailwind v4 : bg-linear-to-r
+ * - [ADD] LanguageSelect : sélection langue + persistance (localStorage)
+ * - [SAFE] Aucun changement de structure majeure : on insère un bloc UI discret
  * =============================================================================
  */
 
@@ -19,21 +23,34 @@
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { Globe, Sparkles, PenLine } from 'lucide-react';
+import LanguageSelect from '@/components/home/LanguageSelect';
 
 export default function Hero() {
   return (
     <section className="mx-auto max-w-6xl px-6 py-20 md:py-28">
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
-        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200"
-      >
-        <Sparkles className="h-4 w-4 text-emerald-300" />
-        <span>EchoWorld</span>
-        <span className="text-slate-400">•</span>
-        <span className="text-slate-300">global empathy platform</span>
-      </motion.div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200"
+        >
+          <Sparkles className="h-4 w-4 text-emerald-300" />
+          <span>EchoWorld</span>
+          <span className="text-slate-400">•</span>
+          <span className="text-slate-300">global empathy platform</span>
+        </motion.div>
+
+        {/* Lang selector (MVP i18n) */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.05 }}
+          className="self-start sm:self-auto"
+        >
+          <LanguageSelect />
+        </motion.div>
+      </div>
 
       <motion.h1
         initial={{ opacity: 0, y: 14 }}

@@ -2,21 +2,26 @@
  * =============================================================================
  * Fichier      : app/layout.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.2 (2026-01-21)
+ * Version      : 1.0.3 (2026-01-21)
  * Objet        : Layout racine Next.js (App Router) + fond premium Tailwind v4
+ *               + Provider global de langue (détection + persistance)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Injecte globals.css
  * - Fournit un background moderne (radial + gradients + grid subtil)
  * - Base UI dark, sans dépendance externe
+ * - Enveloppe l’app dans LanguageProvider pour i18n (MVP)
  *
  * Correctifs (sans régression) :
- * - [FIX] Classes Tailwind v4 "canonical" (bg-linear-to-*, bg-[...], bg-[length:*])
+ * - [FIX] Classes Tailwind v4 "canonical" (bg-linear-to-*, bg-[...], bg-size-[...])
+ * - [ADD] LanguageProvider : init lang (localStorage > navigator > 'en')
+ * - [SAFE] <html lang="en"> conservé côté SSR (mise à jour côté client via provider)
  * - [SAFE] Fond en couche -z-10, n'intercepte pas les clics
  * =============================================================================
  */
 
 import './globals.css';
+import { LanguageProvider } from '@/lib/i18n/LanguageProvider';
 
 export const metadata = {
   title: 'EchoWorld',
@@ -37,7 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="absolute inset-0 opacity-[0.08] bg-[linear-gradient(to_right,rgba(255,255,255,.25)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,.25)_1px,transparent_1px)] bg-size-[52px_52px]" />
         </div>
 
-        {children}
+        <LanguageProvider>{children}</LanguageProvider>
       </body>
     </html>
   );
