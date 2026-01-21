@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
+ * Version      : 1.1.1 (2026-01-21)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism
  * -----------------------------------------------------------------------------
  * Changelog    :
@@ -10,6 +10,7 @@
  * - [IMPROVED] Header en pleine largeur : contenu aligné bords écran (plus centré)
  * - [IMPROVED] Thème clair par défaut (bg, borders, textes, mobile menu)
  * - [NEW] Logo EchoWorld (Image) à la place de l’icône
+ * - [FIX] Lisibilité LanguageSelect sur fond transparent (avant scroll)
  * =============================================================================
  */
 
@@ -48,7 +49,7 @@ export default function Header() {
       className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ${
         isScrolled
           ? 'border-b border-slate-200 bg-white/80 shadow-lg shadow-black/5 backdrop-blur-xl'
-          : 'bg-transparent'
+          : 'bg-white/55'
       }`}
     >
       {/* Pleine largeur (bords écran) */}
@@ -61,7 +62,6 @@ export default function Header() {
             aria-label="EchoWorld — Home"
           >
             <div className="relative h-11 w-11 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-transform group-hover:scale-105">
-              {/* Logo (placer le fichier dans /public) */}
               <Image
                 src="/brand/echoworld-logo.png"
                 alt="EchoWorld"
@@ -95,7 +95,7 @@ export default function Header() {
 
           <div className="flex items-center gap-4">
             <div className="hidden lg:block">
-              {/* (LanguageSelect peut rester tel quel; style finira côté composant) */}
+              {/* Le composant est désormais clair-compatible; on assure aussi le contraste du header avant scroll */}
               <LanguageSelect />
             </div>
 
