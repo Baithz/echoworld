@@ -2,24 +2,19 @@
  * =============================================================================
  * Fichier      : components/auth/LoginForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-21)
- * Objet        : Form Connexion (email/password) - Supabase Auth
+ * Version      : 1.3.0 (2026-01-21)
+ * Objet        : Form Connexion via API Route (contourne CORS)
  * -----------------------------------------------------------------------------
  * Description  :
- * - supabase.auth.signInWithPassword
- * - Loading + erreurs
- * - UI cohérente thème clair
+ * - Utilise /api/auth/login au lieu d'appel direct Supabase
+ * - Plus de problème CORS
+ * - Loading + erreurs + UI cohérente thème clair
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.2.0 (2026-01-21)
- * - [IMPROVED] Utilisation de getAuthErrorMessage pour messages clairs
- * - [IMPROVED] Console.error pour debug
- * - [IMPROVED] Gestion d'erreurs plus robuste
- * 1.1.0 (2026-01-21)
- * - [NEW] Redirection automatique après connexion (callback optionnel + fallback)
- * - [IMPROVED] Validation légère email + trim + désactivation input en loading
- * - [IMPROVED] Accessibilité messages (role="alert") + aria-busy
+ * 1.3.0 (2026-01-21)
+ * - [FIX] Contournement CORS : connexion via /api/auth/login (server-side)
+ * - [IMPROVED] Gestion session après connexion réussie
  * - [CHORE] Aucune régression UI/animations
  * =============================================================================
  */
@@ -32,12 +27,11 @@ import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
 
 type Props = {
   onSwitchToRegister?: () => void;
-  onSuccessRedirectTo?: string; // ex: "/explore" ou "/"
-  onSuccess?: () => void; // si tu veux gérer en parent
+  onSuccessRedirectTo?: string;
+  onSuccess?: () => void;
 };
 
 function isValidEmail(v: string) {
-  // validation volontairement simple
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
@@ -48,7 +42,6 @@ export default function LoginForm({
 }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -73,33 +66,40 @@ export default function LoginForm({
 
     setLoading(true);
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
+      // Appel à la route API (pas de CORS côté serveur)
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
       });
 
-      if (signInError) {
-        // Utilisation du helper pour message clair
-        setError(getAuthErrorMessage(signInError));
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        setError(result.error || 'Erreur de connexion');
         return;
+      }
+
+      // Si on a une session, on la stocke dans Supabase client
+      if (result.data?.session) {
+        await supabase.auth.setSession({
+          access_token: result.data.session.access_token,
+          refresh_token: result.data.session.refresh_token,
+        });
       }
 
       setOk('Connexion réussie. Redirection…');
 
-      // Laisse le parent gérer si besoin
       if (onSuccess) {
         onSuccess();
         return;
       }
 
-      // Fallback simple (évite dépendance au router)
       if (typeof window !== 'undefined') {
         window.location.replace(onSuccessRedirectTo);
       }
     } catch (e2) {
-      // Log pour debug
       console.error('[LOGIN ERROR]', e2);
-      // Message clair à l'utilisateur
       setError(
         e2 instanceof Error
           ? getAuthErrorMessage(e2)

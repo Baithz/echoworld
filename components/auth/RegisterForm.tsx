@@ -2,28 +2,20 @@
  * =============================================================================
  * Fichier      : components/auth/RegisterForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-21)
- * Objet        : Form Inscription (email/password) - Supabase Auth
+ * Version      : 1.4.0 (2026-01-21)
+ * Objet        : Form Inscription via API Route (contourne CORS)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Inscription via API route server (/api/auth/signup) pour contourner CORS
- * - Loading + erreurs + message de confirmation
- * - UI cohérente thème clair (AUCUNE régression layout/classes)
+ * - Utilise /api/auth/signup au lieu d'appel direct Supabase
+ * - Plus de problème CORS
+ * - Loading + erreurs + UI cohérente thème clair
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-21)
+ * 1.4.0 (2026-01-21)
  * - [FIX] Contournement CORS : inscription via /api/auth/signup (server-side)
- * - [IMPROVED] Parsing d'erreurs robuste (unknown) + message clair
- * - [CHORE] Aucune régression UI/UX (mêmes classes, mêmes blocs)
- * 1.2.0 (2026-01-21)
- * - [IMPROVED] Utilisation de getAuthErrorMessage pour messages clairs
- * - [IMPROVED] Console.error pour debug
- * - [IMPROVED] Gestion d'erreurs plus robuste
- * 1.1.0 (2026-01-21)
- * - [IMPROVED] Gestion post-signup : redirect si session immédiate, sinon message confirmation email
- * - [IMPROVED] Disable complet + micro-helper password (sans changer le layout)
- * - [CHORE] Aucune régression UI/UX (mêmes classes, mêmes blocs)
+ * - [IMPROVED] Messages d'erreur plus clairs
+ * - [CHORE] Aucune régression UI/animations
  * =============================================================================
  */
 
@@ -33,23 +25,6 @@ import { useState } from 'react';
 import { Mail, Lock, AlertTriangle, ArrowRight } from 'lucide-react';
 import { getAuthErrorMessage } from '@/lib/supabase/client';
 
-type ApiOk = {
-  message?: string;
-  data?: unknown;
-};
-
-type ApiErr = {
-  error?: unknown;
-};
-
-function extractApiErrorMessage(payload: unknown): string {
-  if (payload && typeof payload === 'object' && 'error' in payload) {
-    const v = (payload as ApiErr).error;
-    return typeof v === 'string' ? v : v instanceof Error ? v.message : String(v ?? 'Erreur');
-  }
-  return 'Erreur lors de l’inscription. Veuillez réessayer.';
-}
-
 export default function RegisterForm({
   onSwitchToLogin,
 }: {
@@ -57,7 +32,6 @@ export default function RegisterForm({
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -83,35 +57,40 @@ export default function RegisterForm({
 
     setLoading(true);
     try {
-      // IMPORTANT: on passe par le serveur (Next Route Handler) pour éviter le CORS
-      const res = await fetch('/api/auth/signup', {
+      // Appel à la route API (pas de CORS côté serveur)
+      const response = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: cleanEmail, password }),
       });
 
-      const payload: unknown = await res.json().catch(() => ({}));
+      const result = await response.json();
 
-      if (!res.ok) {
-        const msg = extractApiErrorMessage(payload);
-        setError(getAuthErrorMessage(msg));
+      if (!response.ok || result.error) {
+        const errorMsg = result.error || 'Erreur lors de l\'inscription';
+        setError(getAuthErrorMessage(errorMsg));
         return;
       }
 
-      const okPayload = payload as ApiOk;
-
-      // On reste volontairement sur un message de confirmation email (comportement le plus stable)
+      // Succès
       setOk(
-        okPayload.message ||
-          "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
+        result.message ||
+        "✅ Compte créé ! Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
       );
-    } catch (e2: unknown) {
+
+      // Si une session est créée immédiatement (confirmation email désactivée)
+      if (result.data?.session) {
+        setTimeout(() => {
+          window.location.replace('/');
+        }, 1500);
+      }
+    } catch (e2) {
       console.error('[REGISTER ERROR]', e2);
-
-      const msg =
-        e2 instanceof Error ? e2.message : typeof e2 === 'string' ? e2 : 'Erreur inconnue';
-
-      setError(getAuthErrorMessage(msg));
+      setError(
+        e2 instanceof Error
+          ? getAuthErrorMessage(e2)
+          : 'Erreur lors de l\'inscription. Veuillez réessayer.'
+      );
     } finally {
       setLoading(false);
     }
