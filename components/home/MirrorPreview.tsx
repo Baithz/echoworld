@@ -2,36 +2,31 @@
  * =============================================================================
  * Fichier      : components/home/MirrorPreview.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.1 (2026-01-21)
- * Objet        : Section "Global Mirror" (preview) avec tabs via URL (?tab=...)
+ * Version      : 1.1.0 (2026-01-21)
+ * Objet        : Section "Global Mirror" (home) — WOW layout structuré (sans tabs)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Tabs synchronisées avec l'URL : /?tab=map|stories|connections|pulse
- * - UI glass premium cohérente avec la home existante
- * - MVP panels : Map (SVG placeholder), Stories, Pulse, Connections
+ * - Affiche DIRECTEMENT (sans clic) :
+ *   • Carte monde (SVG silhouette + markers)
+ *   • Pulse global (gros coeur + ECG + %)
+ *   • Extraits stories
+ *   • Connexions suggérées
+ * - Aucun useSearchParams() => build Vercel OK (pas de suspense CSR bailout)
  *
  * Correctifs (sans régression) :
- * - [FIX] ESLint purity : suppression de Math.random() pendant le render (PulsePanel)
- * - [SAFE] Valeurs "breakdown" stables (useMemo) et rafraîchies à intervalle contrôlé
- * - [SAFE] Canonical Tailwind : h-[420px] -> h-105, w/h-[210px] -> w/h-52.5, w/h-[170px] -> w/h-42.5
+ * - [FIX] Supprime useSearchParams / router.replace => plus d'erreur Vercel build
+ * - [IMPROVED] Mise en page home cohérente (WOW) + pas de contenu caché en tabs
+ * - [SAFE] Données mock identiques (stories/pulse/connections)
+ * - [SAFE] Pas de Math.random() en render (PRNG déterministe)
  * =============================================================================
  */
 
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { Globe, MessageCircle, Users, TrendingUp, Heart, Sparkles, Languages } from 'lucide-react';
+import { Heart, Sparkles, Languages, MessageCircle, Users } from 'lucide-react';
 import { useLang } from '@/lib/i18n/LanguageProvider';
-
-type TabId = 'map' | 'stories' | 'connections' | 'pulse';
-
-const TAB_IDS: readonly TabId[] = ['map', 'stories', 'connections', 'pulse'] as const;
-
-function isTabId(v: string | null): v is TabId {
-  return !!v && (TAB_IDS as readonly string[]).includes(v);
-}
 
 type Story = {
   id: number;
@@ -59,106 +54,74 @@ const STORIES_MOCK: Story[] = [
   { id: 5, country: 'Kenya', emotion: 'gratitude', text: 'Family is everything. Today we celebrated together.', lat: -0.0236, lng: 37.9062 },
 ];
 
-type EmotionKey = Story['emotion'];
-type EmotionStat = { k: EmotionKey; color: string; pct: number };
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
+// Deterministic PRNG (stable per seed, no Math.random during render)
 function mulberry32(seed: number) {
-  // Deterministic PRNG: stable per seed, no Math.random during render
-  let s = seed | 0;
-
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-function buildEmotionStats(seed: number): EmotionStat[] {
-  const rand = mulberry32(seed);
-
-  const base: Array<{ k: EmotionKey; color: string; base: number }> = [
-    { k: 'joy', color: EMOTION_COLORS.joy, base: 24 },
-    { k: 'hope', color: EMOTION_COLORS.hope, base: 18 },
-    { k: 'love', color: EMOTION_COLORS.love, base: 16 },
-    { k: 'gratitude', color: EMOTION_COLORS.gratitude, base: 14 },
-    { k: 'resilience', color: EMOTION_COLORS.resilience, base: 14 },
-    { k: 'courage', color: EMOTION_COLORS.courage, base: 14 },
-  ];
-
-  // Add a small deterministic jitter then normalize to ~100
-  const jittered = base.map((e) => {
-    const jitter = (rand() - 0.5) * 10; // -5..+5
-    return { ...e, v: clamp(e.base + jitter, 8, 35) };
-  });
-
-  const sum = jittered.reduce((acc, e) => acc + e.v, 0);
-  const scaled = jittered.map((e) => ({ k: e.k, color: e.color, pct: Math.round((e.v / sum) * 100) }));
-
-  // Fix rounding drift to exactly 100
-  const drift = 100 - scaled.reduce((acc, e) => acc + e.pct, 0);
-  if (drift !== 0) scaled[0] = { ...scaled[0], pct: scaled[0].pct + drift };
-
-  return scaled;
-}
-
 export default function MirrorPreview() {
-  const { t } = useLang();
-
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
-  const urlTab = searchParams.get('tab');
-  const activeTab: TabId = isTabId(urlTab) ? urlTab : 'map';
+  const { t, lang } = useLang();
 
   const [globalPulse, setGlobalPulse] = useState<number>(68);
 
+  // Animate pulse locally (OK: effect with setState in interval callback)
   useEffect(() => {
     const id = window.setInterval(() => {
       setGlobalPulse((prev) => {
-        const change = (Math.random() - 0.5) * 3;
-        return clamp(prev + change, 0, 100);
+        const change = (Math.random() - 0.5) * 3; // allowed here (effect callback), not render
+        const next = prev + change;
+        return Math.max(0, Math.min(100, next));
       });
-    }, 3000);
+    }, 2600);
     return () => window.clearInterval(id);
   }, []);
 
   const countriesCount = useMemo(() => new Set(STORIES_MOCK.map((s) => s.country)).size, []);
   const storiesCount = STORIES_MOCK.length;
 
-  function setTab(tab: TabId) {
-    const next = new URLSearchParams(searchParams.toString());
-    next.set('tab', tab);
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-  }
+  // Deterministic “emotion %” cards
+  const emotionCards = useMemo(() => {
+    const rng = mulberry32(1337 + (lang.charCodeAt(0) || 0));
+    const base = [
+      { k: 'Joy', key: 'joy' as const, color: EMOTION_COLORS.joy },
+      { k: 'Hope', key: 'hope' as const, color: EMOTION_COLORS.hope },
+      { k: 'Love', key: 'love' as const, color: EMOTION_COLORS.love },
+      { k: 'Gratitude', key: 'gratitude' as const, color: EMOTION_COLORS.gratitude },
+      { k: 'Resilience', key: 'resilience' as const, color: EMOTION_COLORS.resilience },
+      { k: 'Courage', key: 'courage' as const, color: EMOTION_COLORS.courage },
+    ];
 
-  const tabs = useMemo(
-    () =>
-      [
-        { id: 'map' as const, label: t('mirror.tab_map'), icon: Globe },
-        { id: 'stories' as const, label: t('mirror.tab_stories'), icon: MessageCircle },
-        { id: 'connections' as const, label: t('mirror.tab_connections'), icon: Users },
-        { id: 'pulse' as const, label: t('mirror.tab_pulse'), icon: TrendingUp },
-      ] as const,
-    [t]
-  );
+    // generate stable pseudo % (10..32)
+    return base.map((e) => ({
+      ...e,
+      pct: Math.floor(rng() * 23 + 10),
+    }));
+  }, [lang]);
 
   return (
     <section className="mx-auto max-w-7xl px-6 pb-24">
       <div className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur md:p-8">
+        {/* Top bar */}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-start gap-3">
             <div className="mt-1 inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
               <Sparkles className="h-5 w-5 text-emerald-300" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-white">{t('mirror.title')}</div>
-              <div className="mt-1 text-sm text-slate-300">{t('mirror.subtitle')}</div>
+              <div className="text-sm font-semibold text-white">
+                {lang === 'fr' ? 'Miroir mondial' : 'Global Mirror'}
+              </div>
+              <div className="mt-1 text-sm text-slate-300">
+                {lang === 'fr'
+                  ? 'Une couche vivante d’histoires humaines — repérez les échos au-delà des frontières.'
+                  : 'A living layer of human stories — spot echoes beyond borders.'}
+              </div>
             </div>
           </div>
 
@@ -166,308 +129,290 @@ export default function MirrorPreview() {
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200">
               <Heart className="h-4 w-4 text-pink-300" />
               <span>
-                {t('mirror.pulse_label')} <strong>{globalPulse.toFixed(0)}%</strong>
+                {lang === 'fr' ? 'Pouls global' : 'Global pulse'} : <strong>{globalPulse.toFixed(0)}%</strong>
               </span>
             </div>
 
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200">
               <Languages className="h-4 w-4 text-sky-300" />
               <span>
-                <strong>{storiesCount}</strong> {t('mirror.active_stories')} • <strong>{countriesCount}</strong> {t('mirror.countries')}
+                <strong>{storiesCount}</strong> {lang === 'fr' ? 'histoires actives' : 'active stories'} •{' '}
+                <strong>{countriesCount}</strong> {lang === 'fr' ? 'pays' : 'countries'}
               </span>
             </div>
           </div>
         </div>
 
-        <div className="mt-6 flex flex-wrap gap-2">
-          {tabs.map((tab) => {
-            const isActive = activeTab === tab.id;
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setTab(tab.id)}
-                className={[
-                  'inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition',
-                  'border',
-                  isActive
-                    ? 'border-sky-400/40 bg-sky-400/10 text-sky-200'
-                    : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10',
-                  'focus:outline-none focus:ring-2 focus:ring-white/25',
-                ].join(' ')}
-              >
-                <Icon className="h-4 w-4" />
-                {tab.label}
-              </button>
-            );
-          })}
+        {/* WOW grid */}
+        <div className="mt-8 grid gap-6 lg:grid-cols-[1.55fr_1fr]">
+          {/* World Map (left) */}
+          <div className="rounded-3xl border border-white/10 bg-white/3 p-5 md:p-6">
+            <div className="rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_50%_50%,rgba(56,189,248,0.08),transparent_55%)] p-4">
+              <div className="relative h-[420px] overflow-hidden rounded-2xl">
+                <WorldMapSilhouette stories={STORIES_MOCK} />
+                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(2,6,23,0.0),rgba(2,6,23,0.60))]" />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
+                <MessageCircle className="h-4 w-4 text-sky-300" />
+                {lang === 'fr' ? 'Stories en temps réel (preview)' : 'Real-time stories (preview)'}
+              </span>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
+                <Users className="h-4 w-4 text-emerald-300" />
+                {lang === 'fr' ? 'Connexions par affinités (bientôt)' : 'Affinity connections (soon)'}
+              </span>
+            </div>
+          </div>
+
+          {/* Pulse (right) */}
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold text-white">
+                  {lang === 'fr' ? 'Pouls émotionnel' : 'Emotional pulse'}
+                </div>
+                <div className="mt-1 text-sm text-slate-300">
+                  {lang === 'fr'
+                    ? 'Une mesure synthétique du “climat humain” — en évolution continue.'
+                    : 'A synthetic measure of the “human climate” — continuously evolving.'}
+                </div>
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
+                LIVE
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-[1fr_1.1fr]">
+              <PulseHeart value={globalPulse} />
+
+              <div className="grid grid-cols-2 gap-3">
+                {emotionCards.slice(0, 4).map((e) => (
+                  <div key={e.key} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-xs font-semibold text-slate-200">{e.k}</div>
+                    <div className="mt-2 text-2xl font-semibold" style={{ color: e.color }}>
+                      {e.pct}%
+                    </div>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                      <div className="h-full rounded-full" style={{ width: `${Math.min(100, e.pct * 3)}%`, background: e.color, opacity: 0.85 }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              {emotionCards.slice(4).map((e) => (
+                <div key={e.key} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs font-semibold text-slate-200">{e.k}</div>
+                  <div className="mt-2 text-2xl font-semibold" style={{ color: e.color }}>
+                    {e.pct}%
+                  </div>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, e.pct * 3)}%`, background: e.color, opacity: 0.85 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <div className="mt-6">
-          {activeTab === 'map' && <MapPanel stories={STORIES_MOCK} />}
-          {activeTab === 'stories' && <StoriesPanel stories={STORIES_MOCK} />}
-          {activeTab === 'pulse' && <PulsePanel globalPulse={globalPulse} />}
-          {activeTab === 'connections' && <ConnectionsPanel />}
+        {/* Bottom row: Stories + Connections (direct, no click) */}
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+            <div className="text-sm font-semibold text-white">{lang === 'fr' ? "Flux d'histoires" : 'Story feed'}</div>
+            <div className="mt-1 text-sm text-slate-300">
+              {lang === 'fr'
+                ? 'Quelques échos récents — anonymes ou signés.'
+                : 'A few recent echoes — anonymous or named.'}
+            </div>
+
+            <div className="mt-4 grid gap-3">
+              {STORIES_MOCK.map((s, idx) => {
+                const color = EMOTION_COLORS[s.emotion];
+                return (
+                  <motion.div
+                    key={s.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true, amount: 0.2 }}
+                    transition={{ duration: 0.35, delay: idx * 0.03 }}
+                    className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                    style={{ borderLeft: `4px solid ${color}` }}
+                  >
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: `${color}22`, color }}>
+                        {s.emotion}
+                      </span>
+                      <span className="text-xs text-slate-400">📍 {s.country}</span>
+                    </div>
+                    <div className="mt-2 text-sm leading-relaxed text-slate-100">{s.text}</div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+            <div className="text-sm font-semibold text-white">{lang === 'fr' ? 'Connexions suggérées' : 'Suggested connections'}</div>
+            <div className="mt-1 text-sm text-slate-300">
+              {lang === 'fr'
+                ? 'Des profils proches, des vécus similaires — IA de matching (MVP).'
+                : 'Similar lives, close experiences — matching AI (MVP).'}
+            </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              {[
+                { name: 'Marie', country: 'France', topic: lang === 'fr' ? 'Parentalité' : 'Parenting', match: '92%' },
+                { name: 'Rajesh', country: 'India', topic: lang === 'fr' ? 'Entrepreneuriat' : 'Entrepreneurship', match: '88%' },
+                { name: 'Sofia', country: 'Brazil', topic: lang === 'fr' ? 'Résilience' : 'Resilience', match: '85%' },
+              ].map((p) => (
+                <div key={p.name} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold text-white">{p.name}</div>
+                      <div className="mt-1 text-xs text-slate-400">📍 {p.country}</div>
+                    </div>
+                    <div className="rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-200">
+                      {p.match}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 text-sm text-slate-300">
+                    {lang === 'fr' ? 'Thème commun' : 'Common theme'} : <strong className="text-slate-100">{p.topic}</strong>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="mt-4 w-full rounded-xl bg-linear-to-r from-sky-500/90 to-violet-500/90 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-white/25"
+                  >
+                    {lang === 'fr' ? 'Démarrer une conversation' : 'Start a conversation'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* Local styles for SVG markers */}
-        <style jsx global>{`
-          @keyframes ewPulse {
-            0%,
-            100% {
-              transform: scale(1);
-              opacity: 0.85;
-            }
-            50% {
-              transform: scale(1.28);
-              opacity: 1;
-            }
-          }
-          @keyframes ewRipple {
-            0% {
-              r: 8;
-              opacity: 0.45;
-            }
-            100% {
-              r: 35;
-              opacity: 0;
-            }
-          }
-          .ew-pulse {
-            transform-origin: center;
-            animation: ewPulse 2.2s ease-in-out infinite;
-          }
-          .ew-ripple {
-            animation: ewRipple 3.2s ease-out infinite;
-          }
-          .ew-pulse-0 {
-            animation-duration: 2.1s;
-          }
-          .ew-pulse-1 {
-            animation-duration: 2.4s;
-          }
-          .ew-pulse-2 {
-            animation-duration: 2.7s;
-          }
-          .ew-pulse-3 {
-            animation-duration: 3.0s;
-          }
-          .ew-pulse-4 {
-            animation-duration: 3.3s;
-          }
-
-          .ew-ripple-0 {
-            animation-duration: 3.0s;
-          }
-          .ew-ripple-1 {
-            animation-duration: 3.4s;
-          }
-          .ew-ripple-2 {
-            animation-duration: 3.8s;
-          }
-          .ew-ripple-3 {
-            animation-duration: 4.2s;
-          }
-          .ew-ripple-4 {
-            animation-duration: 4.6s;
-          }
+        {/* Local keyframes (scoped) */}
+        <style>{`
+          .ew-pulse-dot { transform-origin: center; animation: ewPulse 2.2s ease-in-out infinite; }
+          .ew-ripple { transform-origin: center; animation: ewRipple 3.2s ease-out infinite; }
+          @keyframes ewPulse { 0%,100% { transform: scale(1); opacity: .85 } 50% { transform: scale(1.25); opacity: 1 } }
+          @keyframes ewRipple { 0% { transform: scale(1); opacity: .35 } 100% { transform: scale(1.9); opacity: 0 } }
+          .ew-ecg { stroke-dasharray: 420; stroke-dashoffset: 420; animation: ewEcg 1.7s linear infinite; }
+          @keyframes ewEcg { to { stroke-dashoffset: 0; } }
         `}</style>
       </div>
     </section>
   );
 }
 
-function MapPanel({ stories }: { stories: Story[] }) {
+function WorldMapSilhouette({ stories }: { stories: Story[] }) {
+  // rough world silhouette (stylized) + markers
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/3 p-5 md:p-6">
-      <div className="rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_50%_50%,rgba(56,189,248,0.08),transparent_55%)] p-4">
-        <div className="relative h-105 overflow-hidden rounded-2xl">
-          <svg className="h-full w-full" viewBox="0 0 1000 500" aria-hidden="true">
-            <path
-              d="M 100 150 Q 200 120, 300 150 T 500 140 T 700 160 T 900 150"
-              stroke="rgba(96,165,250,0.35)"
-              fill="none"
-              strokeWidth="2"
-            />
-            <path
-              d="M 150 300 Q 250 280, 350 300 T 550 290 T 750 310 T 850 300"
-              stroke="rgba(96,165,250,0.35)"
-              fill="none"
-              strokeWidth="2"
-            />
+    <svg className="h-full w-full" viewBox="0 0 1100 520" aria-hidden="true">
+      <defs>
+        <linearGradient id="ewSea" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stopColor="rgba(56,189,248,0.08)" />
+          <stop offset="1" stopColor="rgba(167,139,250,0.06)" />
+        </linearGradient>
+        <linearGradient id="ewLand" x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0" stopColor="rgba(255,255,255,0.10)" />
+          <stop offset="1" stopColor="rgba(255,255,255,0.06)" />
+        </linearGradient>
+      </defs>
 
-            {stories.map((story, idx) => {
-              const x = ((story.lng + 180) / 360) * 1000;
-              const y = ((90 - story.lat) / 180) * 500;
-              const color = EMOTION_COLORS[story.emotion];
+      <rect x="0" y="0" width="1100" height="520" fill="url(#ewSea)" />
 
-              return (
-                <g key={story.id}>
-                  <circle cx={x} cy={y} r="8" fill={color} opacity="0.85" className={`ew-pulse ew-pulse-${idx % 5}`} />
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r="20"
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="2"
-                    opacity="0.3"
-                    className={`ew-ripple ew-ripple-${idx % 5}`}
-                  />
-                </g>
-              );
-            })}
-          </svg>
+      {/* Stylized continents (cleaner than random waves) */}
+      <path
+        d="M140 170c70-70 160-80 240-40 40 20 70 60 70 95 0 40-25 65-65 75-60 15-120 45-165 85-45 40-125 35-160-15-35-50-10-150 80-200z"
+        fill="url(#ewLand)"
+        opacity="0.9"
+      />
+      <path
+        d="M520 150c65-55 150-70 220-40 50 22 85 70 75 110-10 40-55 55-95 62-70 12-130 40-160 78-35 45-115 55-150-5-35-60 10-145 110-205z"
+        fill="url(#ewLand)"
+        opacity="0.85"
+      />
+      <path
+        d="M820 210c45-30 100-35 145-10 40 22 55 65 35 95-18 28-55 35-88 40-45 8-85 25-110 55-22 26-70 30-95-5-28-40 10-120 113-175z"
+        fill="url(#ewLand)"
+        opacity="0.8"
+      />
+      <path
+        d="M630 330c35-45 85-65 135-55 45 9 75 45 60 82-12 30-45 40-75 48-45 12-78 32-98 60-20 28-68 35-90-5-25-45 5-95 68-130z"
+        fill="url(#ewLand)"
+        opacity="0.75"
+      />
 
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(2,6,23,0.0),rgba(2,6,23,0.55))]" />
-        </div>
-      </div>
-    </div>
-  );
-}
+      {/* Soft grid */}
+      <g opacity="0.10">
+        {Array.from({ length: 14 }).map((_, i) => (
+          <line key={`h${i}`} x1="0" x2="1100" y1={i * 40} y2={i * 40} stroke="rgba(255,255,255,0.25)" strokeWidth="1" />
+        ))}
+        {Array.from({ length: 18 }).map((_, i) => (
+          <line key={`v${i}`} y1="0" y2="520" x1={i * 60} x2={i * 60} stroke="rgba(255,255,255,0.25)" strokeWidth="1" />
+        ))}
+      </g>
 
-function StoriesPanel({ stories }: { stories: Story[] }) {
-  return (
-    <div className="grid gap-3">
-      {stories.map((s, idx) => {
-        const color = EMOTION_COLORS[s.emotion];
+      {/* Markers */}
+      {stories.map((story, idx) => {
+        const x = ((story.lng + 180) / 360) * 1100;
+        const y = ((90 - story.lat) / 180) * 520;
+        const color = EMOTION_COLORS[story.emotion];
         return (
-          <motion.div
-            key={s.id}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.35, delay: idx * 0.05 }}
-            className="rounded-2xl border border-white/10 bg-white/5 p-5"
-            style={{ borderLeft: `4px solid ${color}` }}
-          >
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: `${color}22`, color }}>
-                {s.emotion}
-              </span>
-              <span className="text-xs text-slate-400">📍 {s.country}</span>
-            </div>
-            <div className="mt-3 text-base leading-relaxed text-slate-100">{s.text}</div>
-
-            <div className="mt-4">
-              <button
-                type="button"
-                className="rounded-xl border border-sky-400/25 bg-sky-400/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-400/15 focus:outline-none focus:ring-2 focus:ring-white/25"
-              >
-                Se connecter
-              </button>
-            </div>
-          </motion.div>
+          <g key={story.id}>
+            <circle cx={x} cy={y} r="8" fill={color} opacity="0.9" className="ew-pulse-dot" />
+            <circle cx={x} cy={y} r="18" fill="none" stroke={color} strokeWidth="2" opacity="0.35" className="ew-ripple" />
+            {/* small glow */}
+            <circle cx={x} cy={y} r="22" fill={color} opacity="0.06" />
+          </g>
         );
       })}
-    </div>
+    </svg>
   );
 }
 
-function PulsePanel({ globalPulse }: { globalPulse: number }) {
-  const { t } = useLang();
-
-  // Stable base list (no random)
-  const base = useMemo(
-    () => [
-      { k: 'joy' as const, color: EMOTION_COLORS.joy },
-      { k: 'hope' as const, color: EMOTION_COLORS.hope },
-      { k: 'love' as const, color: EMOTION_COLORS.love },
-      { k: 'gratitude' as const, color: EMOTION_COLORS.gratitude },
-      { k: 'resilience' as const, color: EMOTION_COLORS.resilience },
-      { k: 'courage' as const, color: EMOTION_COLORS.courage },
-    ],
-    []
-  );
-
-  // Controlled "random-looking" values updated in effect (allowed)
-  const [stats, setStats] = useState<EmotionStat[]>(() => buildEmotionStats(1337));
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      // Seed drifts slowly with pulse -> coherent evolution and deterministic per tick
-      const nextSeed = Math.round(globalPulse * 1000) + Date.now();
-      setStats(buildEmotionStats(nextSeed));
-    }, 6000);
-    return () => window.clearInterval(id);
-  }, [globalPulse]);
-
-  // Keep ordering stable (base order)
-  const ordered = useMemo(() => {
-    const byKey = new Map(stats.map((s) => [s.k, s]));
-    return base.map((b) => byKey.get(b.k) ?? { k: b.k, color: b.color, pct: 0 });
-  }, [base, stats]);
-
+function PulseHeart({ value }: { value: number }) {
   return (
-    <div className="grid gap-6 md:grid-cols-[1fr_1fr]">
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-center">
-        <div className="text-sm font-semibold text-sky-200">{t('pulse.title')}</div>
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <div className="flex items-center justify-between">
+        <div className="inline-flex items-center gap-2 text-sm font-semibold text-white">
+          <Heart className="h-4 w-4 text-pink-300" />
+          Pulse
+        </div>
+        <div className="text-sm font-semibold text-slate-100">{value.toFixed(0)}%</div>
+      </div>
 
-        <div
-          className="mx-auto mt-6 flex h-52.5 w-52.5 items-center justify-center rounded-full"
-          style={{
-            background: `conic-gradient(rgba(56,189,248,0.95) ${globalPulse * 3.6}deg, rgba(255,255,255,0.10) 0deg)`,
-          }}
-        >
-          <div className="flex h-42.5 w-42.5 flex-col items-center justify-center rounded-full bg-slate-950">
-            <div className="text-5xl font-semibold text-white">{globalPulse.toFixed(0)}%</div>
-            <div className="mt-1 text-sm text-slate-400">{t('pulse.positivity')}</div>
+      <div className="mt-4 grid grid-cols-[auto_1fr] items-center gap-4">
+        {/* Big heart */}
+        <div className="relative">
+          <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+            <Heart className="h-10 w-10 text-pink-300" />
           </div>
+          <div className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_50%_30%,rgba(244,114,182,0.22),transparent_60%)]" />
         </div>
 
-        <p className="mx-auto mt-6 max-w-md text-sm leading-relaxed text-slate-300">{t('pulse.description')}</p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {ordered.map((e) => (
-          <div key={e.k} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
-            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full" style={{ background: `${e.color}22` }}>
-              ✨
-            </div>
-            <div className="text-sm font-semibold capitalize text-white">{e.k}</div>
-            <div className="mt-1 text-lg font-semibold" style={{ color: e.color }}>
-              {e.pct}%
-            </div>
+        {/* ECG line */}
+        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
+          <svg viewBox="0 0 520 80" className="h-12 w-full" aria-hidden="true">
+            <path
+              d="M0 45 L70 45 L95 45 L115 18 L135 62 L155 38 L175 45 L230 45 L255 45 L275 26 L292 60 L310 35 L330 45 L390 45 L420 45 L440 22 L455 62 L475 40 L520 45"
+              fill="none"
+              stroke="rgba(56,189,248,0.95)"
+              strokeWidth="3.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="ew-ecg"
+            />
+          </svg>
+          <div className="mt-2 text-xs text-slate-400">
+            {value >= 70 ? 'High resonance' : value >= 50 ? 'Balanced resonance' : 'Low resonance'}
           </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ConnectionsPanel() {
-  return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-      <div className="text-sm font-semibold text-sky-200">Connexions suggérées</div>
-      <div className="mt-2 text-sm text-slate-300">Notre IA relie des vécus similaires, dans des contextes culturels différents.</div>
-
-      <div className="mt-6 grid gap-3 md:grid-cols-3">
-        {[
-          { name: 'Marie', country: 'France', topic: 'Parentalité', match: '92%' },
-          { name: 'Rajesh', country: 'India', topic: 'Entrepreneuriat', match: '88%' },
-          { name: 'Sofia', country: 'Brazil', topic: 'Résilience', match: '85%' },
-        ].map((p) => (
-          <div key={p.name} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-base font-semibold text-white">{p.name}</div>
-                <div className="mt-1 text-xs text-slate-400">📍 {p.country}</div>
-              </div>
-              <div className="rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-200">{p.match}</div>
-            </div>
-
-            <div className="mt-4 text-sm text-slate-300">
-              Thème commun : <strong className="text-slate-100">{p.topic}</strong>
-            </div>
-
-            <button
-              type="button"
-              className="mt-4 w-full rounded-xl bg-linear-to-r from-sky-500/90 to-violet-500/90 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-white/25"
-            >
-              Démarrer une conversation
-            </button>
-          </div>
-        ))}
+        </div>
       </div>
     </div>
   );
