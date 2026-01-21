@@ -2,16 +2,20 @@
  * =============================================================================
  * Fichier      : components/auth/RegisterForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-21)
+ * Version      : 1.3.0 (2026-01-21)
  * Objet        : Form Inscription (email/password) - Supabase Auth
  * -----------------------------------------------------------------------------
  * Description  :
- * - supabase.auth.signUp
+ * - Inscription via API route server (/api/auth/signup) pour contourner CORS
  * - Loading + erreurs + message de confirmation
- * - UI cohérente thème clair
+ * - UI cohérente thème clair (AUCUNE régression layout/classes)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.3.0 (2026-01-21)
+ * - [FIX] Contournement CORS : inscription via /api/auth/signup (server-side)
+ * - [IMPROVED] Parsing d'erreurs robuste (unknown) + message clair
+ * - [CHORE] Aucune régression UI/UX (mêmes classes, mêmes blocs)
  * 1.2.0 (2026-01-21)
  * - [IMPROVED] Utilisation de getAuthErrorMessage pour messages clairs
  * - [IMPROVED] Console.error pour debug
@@ -27,7 +31,24 @@
 
 import { useState } from 'react';
 import { Mail, Lock, AlertTriangle, ArrowRight } from 'lucide-react';
-import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
+import { getAuthErrorMessage } from '@/lib/supabase/client';
+
+type ApiOk = {
+  message?: string;
+  data?: unknown;
+};
+
+type ApiErr = {
+  error?: unknown;
+};
+
+function extractApiErrorMessage(payload: unknown): string {
+  if (payload && typeof payload === 'object' && 'error' in payload) {
+    const v = (payload as ApiErr).error;
+    return typeof v === 'string' ? v : v instanceof Error ? v.message : String(v ?? 'Erreur');
+  }
+  return 'Erreur lors de l’inscription. Veuillez réessayer.';
+}
 
 export default function RegisterForm({
   onSwitchToLogin,
@@ -62,40 +83,35 @@ export default function RegisterForm({
 
     setLoading(true);
     try {
-      const emailRedirectTo =
-        typeof window !== 'undefined' ? `${window.location.origin}/login` : undefined;
-
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: emailRedirectTo ? { emailRedirectTo } : undefined,
+      // IMPORTANT: on passe par le serveur (Next Route Handler) pour éviter le CORS
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
       });
 
-      if (signUpError) {
-        // Utilisation du helper pour message clair
-        setError(getAuthErrorMessage(signUpError));
+      const payload: unknown = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg = extractApiErrorMessage(payload);
+        setError(getAuthErrorMessage(msg));
         return;
       }
 
-      // Si la confirmation email est désactivée, Supabase peut renvoyer une session directe
-      if (data?.session) {
-        setOk('Compte créé. Connexion…');
-        window.location.replace('/');
-        return;
-      }
+      const okPayload = payload as ApiOk;
 
+      // On reste volontairement sur un message de confirmation email (comportement le plus stable)
       setOk(
-        "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
+        okPayload.message ||
+          "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
       );
-    } catch (e2) {
-      // Log pour debug
+    } catch (e2: unknown) {
       console.error('[REGISTER ERROR]', e2);
-      // Message clair à l'utilisateur
-      setError(
-        e2 instanceof Error
-          ? getAuthErrorMessage(e2)
-          : 'Erreur lors de l\'inscription. Veuillez réessayer.'
-      );
+
+      const msg =
+        e2 instanceof Error ? e2.message : typeof e2 === 'string' ? e2 : 'Erreur inconnue';
+
+      setError(getAuthErrorMessage(msg));
     } finally {
       setLoading(false);
     }
