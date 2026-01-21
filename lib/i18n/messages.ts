@@ -2,16 +2,18 @@
  * =============================================================================
  * Fichier      : lib/i18n/messages.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
- * Objet        : Dictionnaires i18n (MVP) - toutes langues supportées
+ * Version      : 2.0.1 (2026-01-21)
+ * Objet        : Dictionnaires i18n - Refonte Home immersive "WOW"
  * -----------------------------------------------------------------------------
  * Description  :
- * - Messages UI de la home (Hero) + "Mirror Preview" (tabs via URL ?tab=...)
- * - Structure plate (keys) pour simplicité et perf
+ * - Messages UI Hero redesign (poétique, émotionnel)
+ * - World Globe (monde vivant intégré)
+ * - Pulse Heart (cœur + ECG)
+ * - Connections (humain, chaleureux)
+ * - Plus de tabs, plus de KPI froids
  *
  * Correctifs (sans régression) :
- * - [ADD] Clés MirrorPreview + Pulse
- * - [SAFE] Clés Hero existantes inchangées
+ * - [FIX] Apostrophes dans les chaînes (évite erreurs TS/ESLint "unterminated")
  * =============================================================================
  */
 
@@ -21,36 +23,53 @@ export type I18nKey =
   // Common
   | 'ui.language'
 
-  // Hero
+  // Hero (redesign)
+  | 'hero.badge_prefix'
   | 'hero.badge_suffix'
   | 'hero.title_line1'
   | 'hero.title_line2'
   | 'hero.subtitle'
   | 'hero.cta_share'
-  | 'hero.cta_map'
+  | 'hero.cta_explore'
   | 'hero.cta_login'
-  | 'hero.card1_title'
-  | 'hero.card1_desc'
-  | 'hero.card2_title'
-  | 'hero.card2_desc'
-  | 'hero.card3_title'
-  | 'hero.card3_desc'
 
-  // MirrorPreview
-  | 'mirror.title'
-  | 'mirror.subtitle'
-  | 'mirror.pulse_label'
-  | 'mirror.active_stories'
-  | 'mirror.countries'
-  | 'mirror.tab_map'
-  | 'mirror.tab_stories'
-  | 'mirror.tab_connections'
-  | 'mirror.tab_pulse'
+  // World Globe (monde vivant)
+  | 'world.section_title'
+  | 'world.live_indicator'
+  | 'world.story_count'
+  | 'world.countries_count'
+  | 'world.hover_tip'
+  | 'world.click_explore'
+  | 'world.zoom_hint'
 
-  // Pulse panel
+  // Story overlay (intégré à la carte)
+  | 'story.just_shared'
+  | 'story.minutes_ago'
+  | 'story.from'
+  | 'story.read_more'
+  | 'story.anonymous'
+
+  // Pulse Heart (cœur vivant)
   | 'pulse.title'
-  | 'pulse.positivity'
-  | 'pulse.description';
+  | 'pulse.live_status'
+  | 'pulse.heartbeat_label'
+  | 'pulse.global_mood'
+  | 'pulse.positivity_label'
+  | 'pulse.emotion_joy'
+  | 'pulse.emotion_hope'
+  | 'pulse.emotion_gratitude'
+  | 'pulse.emotion_reflection'
+  | 'pulse.emotion_solidarity'
+  | 'pulse.breathing_world'
+
+  // Connections (rencontres humaines)
+  | 'connections.title'
+  | 'connections.subtitle'
+  | 'connections.suggested_for_you'
+  | 'connections.shared_experience'
+  | 'connections.match_score'
+  | 'connections.connect_btn'
+  | 'connections.discover_more';
 
 type Dict = Record<I18nKey, string>;
 
@@ -59,303 +78,433 @@ export const MESSAGES: Record<AppLang, Dict> = {
     // Common
     'ui.language': 'Language',
 
-    // Hero
-    'hero.badge_suffix': 'global empathy platform',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'A living layer of humanity',
     'hero.title_line1': 'Your Story, Their Echo,',
     'hero.title_line2': 'Our World.',
     'hero.subtitle':
-      'Share a personal echo. Place it on the map. Discover how human experiences resonate across borders.',
+      'Watch the planet breathe. See stories pulse across borders. Feel the heartbeat of humanity.',
     'hero.cta_share': 'Share your echo',
-    'hero.cta_map': 'Explore world map',
-    'hero.cta_login': 'Login →',
-    'hero.card1_title': 'Anonymous or named',
-    'hero.card1_desc': 'Choose what you reveal. Identity stays yours.',
-    'hero.card2_title': 'Map-first experience',
-    'hero.card2_desc': 'Echoes become a living layer on the planet.',
-    'hero.card3_title': 'Meaningful discovery',
-    'hero.card3_desc': 'Find similar feelings across cultures.',
+    'hero.cta_explore': 'Explore the world',
+    'hero.cta_login': 'Sign in',
 
-    // MirrorPreview
-    'mirror.title': 'Global Mirror',
-    'mirror.subtitle': 'A living layer of human stories — discover patterns across borders.',
-    'mirror.pulse_label': 'Global Pulse:',
-    'mirror.active_stories': 'active stories',
-    'mirror.countries': 'countries',
-    'mirror.tab_map': 'Interactive map',
-    'mirror.tab_stories': 'Story feed',
-    'mirror.tab_connections': 'Connections',
-    'mirror.tab_pulse': 'Emotional pulse',
+    // World Globe
+    'world.section_title': 'A Living World',
+    'world.live_indicator': 'LIVE',
+    'world.story_count': 'stories breathing',
+    'world.countries_count': 'countries connected',
+    'world.hover_tip': 'Hover to feel an echo',
+    'world.click_explore': 'Click to dive deeper',
+    'world.zoom_hint': 'Zoom, drag, discover',
 
-    // Pulse panel
-    'pulse.title': 'Global Emotional Pulse',
-    'pulse.positivity': 'Positivity',
-    'pulse.description':
-      'Right now, the world shares mostly moments of joy, hope and gratitude — shifting in real time.',
+    // Story overlay
+    'story.just_shared': 'Just shared',
+    'story.minutes_ago': 'min ago',
+    'story.from': 'From',
+    'story.read_more': 'Read the full story',
+    'story.anonymous': 'Anonymous',
+
+    // Pulse Heart
+    'pulse.title': "The World's Heartbeat",
+    'pulse.live_status': 'BEATING NOW',
+    'pulse.heartbeat_label': 'Global pulse',
+    'pulse.global_mood': 'Right now, humanity feels',
+    'pulse.positivity_label': 'Collective warmth',
+    'pulse.emotion_joy': 'Joy',
+    'pulse.emotion_hope': 'Hope',
+    'pulse.emotion_gratitude': 'Gratitude',
+    'pulse.emotion_reflection': 'Reflection',
+    'pulse.emotion_solidarity': 'Solidarity',
+    'pulse.breathing_world': 'The world is breathing with you.',
+
+    // Connections
+    'connections.title': 'Souls Who Mirror You',
+    'connections.subtitle': 'Real people. Similar journeys. Waiting to connect.',
+    'connections.suggested_for_you': 'Suggested for you',
+    'connections.shared_experience': 'Shared experience:',
+    'connections.match_score': 'resonance',
+    'connections.connect_btn': 'Start a conversation',
+    'connections.discover_more': 'Discover more connections',
   },
 
   fr: {
     // Common
     'ui.language': 'Langue',
 
-    // Hero
-    'hero.badge_suffix': 'plateforme mondiale d’empathie',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': "Une couche vivante de l'humanité",
     'hero.title_line1': 'Votre histoire, leur écho,',
     'hero.title_line2': 'Notre monde.',
     'hero.subtitle':
-      'Partagez un écho personnel. Placez-le sur la carte. Découvrez comment les expériences humaines résonnent au-delà des frontières.',
+      "Regardez la planète respirer. Voyez les histoires battre au-delà des frontières. Ressentez le cœur de l'humanité.",
     'hero.cta_share': 'Partager votre écho',
-    'hero.cta_map': 'Explorer la carte',
-    'hero.cta_login': 'Connexion →',
-    'hero.card1_title': 'Anonyme ou signé',
-    'hero.card1_desc': 'Vous décidez ce que vous révélez. Votre identité reste à vous.',
-    'hero.card2_title': 'Expérience centrée carte',
-    'hero.card2_desc': 'Les échos deviennent une couche vivante sur la planète.',
-    'hero.card3_title': 'Découverte pertinente',
-    'hero.card3_desc': 'Retrouvez des ressentis similaires à travers les cultures.',
+    'hero.cta_explore': 'Explorer le monde',
+    'hero.cta_login': 'Se connecter',
 
-    // MirrorPreview
-    'mirror.title': 'Miroir mondial',
-    'mirror.subtitle': 'Une couche vivante d’histoires humaines — repérez les échos au-delà des frontières.',
-    'mirror.pulse_label': 'Pouls global :',
-    'mirror.active_stories': 'histoires actives',
-    'mirror.countries': 'pays',
-    'mirror.tab_map': 'Carte interactive',
-    'mirror.tab_stories': 'Flux d’histoires',
-    'mirror.tab_connections': 'Connexions',
-    'mirror.tab_pulse': 'Pouls émotionnel',
+    // World Globe
+    'world.section_title': 'Un monde vivant',
+    'world.live_indicator': 'EN DIRECT',
+    'world.story_count': 'histoires qui respirent',
+    'world.countries_count': 'pays connectés',
+    'world.hover_tip': 'Survolez pour ressentir un écho',
+    'world.click_explore': 'Cliquez pour plonger',
+    'world.zoom_hint': 'Zoomez, déplacez, découvrez',
 
-    // Pulse panel
-    'pulse.title': 'Pouls émotionnel global',
-    'pulse.positivity': 'Positivité',
-    'pulse.description':
-      'En ce moment, le monde partage surtout des instants de joie, d’espoir et de gratitude — en évolution en temps réel.',
+    // Story overlay
+    'story.just_shared': "À l'instant",
+    'story.minutes_ago': 'min',
+    'story.from': 'De',
+    'story.read_more': "Lire l'histoire complète",
+    'story.anonymous': 'Anonyme',
+
+    // Pulse Heart
+    'pulse.title': 'Le battement du monde',
+    'pulse.live_status': 'BAT MAINTENANT',
+    'pulse.heartbeat_label': 'Pouls global',
+    'pulse.global_mood': "En ce moment, l'humanité ressent",
+    'pulse.positivity_label': 'Chaleur collective',
+    'pulse.emotion_joy': 'Joie',
+    'pulse.emotion_hope': 'Espoir',
+    'pulse.emotion_gratitude': 'Gratitude',
+    'pulse.emotion_reflection': 'Réflexion',
+    'pulse.emotion_solidarity': 'Solidarité',
+    'pulse.breathing_world': 'Le monde respire avec vous.',
+
+    // Connections
+    'connections.title': 'Âmes qui vous ressemblent',
+    'connections.subtitle':
+      'Vraies personnes. Parcours similaires. Prêtes à se connecter.',
+    'connections.suggested_for_you': 'Suggéré pour vous',
+    'connections.shared_experience': 'Expérience partagée :',
+    'connections.match_score': 'résonance',
+    'connections.connect_btn': 'Démarrer une conversation',
+    'connections.discover_more': 'Découvrir plus de connexions',
   },
 
   es: {
     // Common
     'ui.language': 'Idioma',
 
-    // Hero
-    'hero.badge_suffix': 'plataforma global de empatía',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'Una capa viva de humanidad',
     'hero.title_line1': 'Tu historia, su eco,',
     'hero.title_line2': 'Nuestro mundo.',
     'hero.subtitle':
-      'Comparte un eco personal. Colócalo en el mapa. Descubre cómo las experiencias humanas resuenan más allá de las fronteras.',
+      'Mira el planeta respirar. Ve las historias latir más allá de las fronteras. Siente el latido de la humanidad.',
     'hero.cta_share': 'Compartir tu eco',
-    'hero.cta_map': 'Explorar el mapa',
-    'hero.cta_login': 'Iniciar sesión →',
-    'hero.card1_title': 'Anónimo o con nombre',
-    'hero.card1_desc': 'Tú decides qué revelar. Tu identidad es tuya.',
-    'hero.card2_title': 'Experiencia centrada en el mapa',
-    'hero.card2_desc': 'Los ecos se convierten en una capa viva del planeta.',
-    'hero.card3_title': 'Descubrimiento significativo',
-    'hero.card3_desc': 'Encuentra emociones similares a través de culturas.',
+    'hero.cta_explore': 'Explorar el mundo',
+    'hero.cta_login': 'Iniciar sesión',
 
-    // MirrorPreview
-    'mirror.title': 'Espejo global',
-    'mirror.subtitle': 'Una capa viva de historias humanas: descubre patrones más allá de las fronteras.',
-    'mirror.pulse_label': 'Pulso global:',
-    'mirror.active_stories': 'historias activas',
-    'mirror.countries': 'países',
-    'mirror.tab_map': 'Mapa interactivo',
-    'mirror.tab_stories': 'Flujo de historias',
-    'mirror.tab_connections': 'Conexiones',
-    'mirror.tab_pulse': 'Pulso emocional',
+    // World Globe
+    'world.section_title': 'Un mundo vivo',
+    'world.live_indicator': 'EN VIVO',
+    'world.story_count': 'historias respirando',
+    'world.countries_count': 'países conectados',
+    'world.hover_tip': 'Pasa el cursor para sentir un eco',
+    'world.click_explore': 'Haz clic para sumergirte',
+    'world.zoom_hint': 'Zoom, arrastra, descubre',
 
-    // Pulse panel
-    'pulse.title': 'Pulso emocional global',
-    'pulse.positivity': 'Positividad',
-    'pulse.description':
-      'Ahora mismo, el mundo comparte sobre todo momentos de alegría, esperanza y gratitud — cambiando en tiempo real.',
+    // Story overlay
+    'story.just_shared': 'Recién compartida',
+    'story.minutes_ago': 'min',
+    'story.from': 'Desde',
+    'story.read_more': 'Leer la historia completa',
+    'story.anonymous': 'Anónimo',
+
+    // Pulse Heart
+    'pulse.title': 'El latido del mundo',
+    'pulse.live_status': 'LATIENDO AHORA',
+    'pulse.heartbeat_label': 'Pulso global',
+    'pulse.global_mood': 'Ahora mismo, la humanidad siente',
+    'pulse.positivity_label': 'Calidez colectiva',
+    'pulse.emotion_joy': 'Alegría',
+    'pulse.emotion_hope': 'Esperanza',
+    'pulse.emotion_gratitude': 'Gratitud',
+    'pulse.emotion_reflection': 'Reflexión',
+    'pulse.emotion_solidarity': 'Solidaridad',
+    'pulse.breathing_world': 'El mundo respira contigo.',
+
+    // Connections
+    'connections.title': 'Almas que te reflejan',
+    'connections.subtitle': 'Personas reales. Viajes similares. Esperando conectar.',
+    'connections.suggested_for_you': 'Sugerido para ti',
+    'connections.shared_experience': 'Experiencia compartida:',
+    'connections.match_score': 'resonancia',
+    'connections.connect_btn': 'Iniciar conversación',
+    'connections.discover_more': 'Descubrir más conexiones',
   },
 
   de: {
     // Common
     'ui.language': 'Sprache',
 
-    // Hero
-    'hero.badge_suffix': 'globale Empathie-Plattform',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'Eine lebendige Schicht der Menschheit',
     'hero.title_line1': 'Deine Geschichte, ihr Echo,',
     'hero.title_line2': 'unsere Welt.',
     'hero.subtitle':
-      'Teile ein persönliches Echo. Setze es auf die Karte. Entdecke, wie menschliche Erfahrungen über Grenzen hinweg nachklingen.',
+      'Sieh den Planeten atmen. Beobachte Geschichten über Grenzen hinweg pulsieren. Fühle den Herzschlag der Menschheit.',
     'hero.cta_share': 'Dein Echo teilen',
-    'hero.cta_map': 'Weltkarte erkunden',
-    'hero.cta_login': 'Anmelden →',
-    'hero.card1_title': 'Anonym oder mit Namen',
-    'hero.card1_desc': 'Du entscheidest, was du zeigst. Deine Identität bleibt bei dir.',
-    'hero.card2_title': 'Karte zuerst',
-    'hero.card2_desc': 'Echos werden zu einer lebendigen Ebene des Planeten.',
-    'hero.card3_title': 'Sinnvolle Entdeckung',
-    'hero.card3_desc': 'Finde ähnliche Gefühle über Kulturen hinweg.',
+    'hero.cta_explore': 'Welt erkunden',
+    'hero.cta_login': 'Anmelden',
 
-    // MirrorPreview
-    'mirror.title': 'Globaler Spiegel',
-    'mirror.subtitle': 'Eine lebendige Schicht menschlicher Geschichten — Muster über Grenzen hinweg entdecken.',
-    'mirror.pulse_label': 'Globaler Puls:',
-    'mirror.active_stories': 'aktive Geschichten',
-    'mirror.countries': 'Länder',
-    'mirror.tab_map': 'Interaktive Karte',
-    'mirror.tab_stories': 'Story-Feed',
-    'mirror.tab_connections': 'Verbindungen',
-    'mirror.tab_pulse': 'Emotionaler Puls',
+    // World Globe
+    'world.section_title': 'Eine lebendige Welt',
+    'world.live_indicator': 'LIVE',
+    'world.story_count': 'atmende Geschichten',
+    'world.countries_count': 'verbundene Länder',
+    'world.hover_tip': 'Überfahren, um ein Echo zu spüren',
+    'world.click_explore': 'Klicken zum Eintauchen',
+    'world.zoom_hint': 'Zoomen, ziehen, entdecken',
 
-    // Pulse panel
-    'pulse.title': 'Globaler emotionaler Puls',
-    'pulse.positivity': 'Positivität',
-    'pulse.description':
-      'Aktuell teilt die Welt vor allem Momente von Freude, Hoffnung und Dankbarkeit — in Echtzeit im Wandel.',
+    // Story overlay
+    'story.just_shared': 'Gerade geteilt',
+    'story.minutes_ago': 'Min',
+    'story.from': 'Aus',
+    'story.read_more': 'Die ganze Geschichte lesen',
+    'story.anonymous': 'Anonym',
+
+    // Pulse Heart
+    'pulse.title': 'Der Herzschlag der Welt',
+    'pulse.live_status': 'SCHLÄGT JETZT',
+    'pulse.heartbeat_label': 'Globaler Puls',
+    'pulse.global_mood': 'Gerade jetzt fühlt die Menschheit',
+    'pulse.positivity_label': 'Kollektive Wärme',
+    'pulse.emotion_joy': 'Freude',
+    'pulse.emotion_hope': 'Hoffnung',
+    'pulse.emotion_gratitude': 'Dankbarkeit',
+    'pulse.emotion_reflection': 'Reflexion',
+    'pulse.emotion_solidarity': 'Solidarität',
+    'pulse.breathing_world': 'Die Welt atmet mit dir.',
+
+    // Connections
+    'connections.title': 'Seelen, die dir ähneln',
+    'connections.subtitle': 'Echte Menschen. Ähnliche Reisen. Bereit zu verbinden.',
+    'connections.suggested_for_you': 'Für dich vorgeschlagen',
+    'connections.shared_experience': 'Geteilte Erfahrung:',
+    'connections.match_score': 'Resonanz',
+    'connections.connect_btn': 'Gespräch beginnen',
+    'connections.discover_more': 'Mehr Verbindungen entdecken',
   },
 
   it: {
     // Common
     'ui.language': 'Lingua',
 
-    // Hero
-    'hero.badge_suffix': 'piattaforma globale di empatia',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'Uno strato vivo di umanità',
     'hero.title_line1': 'La tua storia, il loro eco,',
     'hero.title_line2': 'il nostro mondo.',
     'hero.subtitle':
-      'Condividi un eco personale. Mettilo sulla mappa. Scopri come le esperienze umane risuonano oltre i confini.',
+      "Guarda il pianeta respirare. Vedi le storie pulsare oltre i confini. Senti il battito dell'umanità.",
     'hero.cta_share': 'Condividi il tuo eco',
-    'hero.cta_map': 'Esplora la mappa',
-    'hero.cta_login': 'Accedi →',
-    'hero.card1_title': 'Anonimo o con nome',
-    'hero.card1_desc': 'Scegli cosa rivelare. La tua identità resta tua.',
-    'hero.card2_title': 'Esperienza prima di tutto sulla mappa',
-    'hero.card2_desc': 'Gli echi diventano uno strato vivo del pianeta.',
-    'hero.card3_title': 'Scoperta significativa',
-    'hero.card3_desc': 'Trova emozioni simili tra culture.',
+    'hero.cta_explore': 'Esplora il mondo',
+    'hero.cta_login': 'Accedi',
 
-    // MirrorPreview
-    'mirror.title': 'Specchio globale',
-    'mirror.subtitle': 'Uno strato vivo di storie umane — scopri schemi oltre i confini.',
-    'mirror.pulse_label': 'Polso globale:',
-    'mirror.active_stories': 'storie attive',
-    'mirror.countries': 'paesi',
-    'mirror.tab_map': 'Mappa interattiva',
-    'mirror.tab_stories': 'Feed di storie',
-    'mirror.tab_connections': 'Connessioni',
-    'mirror.tab_pulse': 'Polso emotivo',
+    // World Globe
+    'world.section_title': 'Un mondo vivo',
+    'world.live_indicator': 'IN DIRETTA',
+    'world.story_count': 'storie che respirano',
+    'world.countries_count': 'paesi connessi',
+    'world.hover_tip': 'Passa sopra per sentire un eco',
+    'world.click_explore': 'Clicca per immergerti',
+    'world.zoom_hint': 'Zoom, trascina, scopri',
 
-    // Pulse panel
-    'pulse.title': 'Polso emotivo globale',
-    'pulse.positivity': 'Positività',
-    'pulse.description':
-      'In questo momento, il mondo condivide soprattutto gioia, speranza e gratitudine — in evoluzione in tempo reale.',
+    // Story overlay
+    'story.just_shared': 'Appena condivisa',
+    'story.minutes_ago': 'min fa',
+    'story.from': 'Da',
+    'story.read_more': 'Leggi la storia completa',
+    'story.anonymous': 'Anonimo',
+
+    // Pulse Heart
+    'pulse.title': 'Il battito del mondo',
+    'pulse.live_status': 'BATTE ORA',
+    'pulse.heartbeat_label': 'Polso globale',
+    'pulse.global_mood': "Ora, l'umanità sente",
+    'pulse.positivity_label': 'Calore collettivo',
+    'pulse.emotion_joy': 'Gioia',
+    'pulse.emotion_hope': 'Speranza',
+    'pulse.emotion_gratitude': 'Gratitudine',
+    'pulse.emotion_reflection': 'Riflessione',
+    'pulse.emotion_solidarity': 'Solidarietà',
+    'pulse.breathing_world': 'Il mondo respira con te.',
+
+    // Connections
+    'connections.title': 'Anime che ti rispecchiano',
+    'connections.subtitle':
+      'Persone reali. Percorsi simili. Pronte a connettersi.',
+    'connections.suggested_for_you': 'Suggerito per te',
+    'connections.shared_experience': 'Esperienza condivisa:',
+    'connections.match_score': 'risonanza',
+    'connections.connect_btn': 'Inizia una conversazione',
+    'connections.discover_more': 'Scopri più connessioni',
   },
 
   pt: {
     // Common
     'ui.language': 'Idioma',
 
-    // Hero
-    'hero.badge_suffix': 'plataforma global de empatia',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'Uma camada viva de humanidade',
     'hero.title_line1': 'Sua história, o eco deles,',
     'hero.title_line2': 'nosso mundo.',
     'hero.subtitle':
-      'Compartilhe um eco pessoal. Coloque no mapa. Descubra como experiências humanas ressoam além das fronteiras.',
+      'Veja o planeta respirar. Observe histórias pulsarem além das fronteiras. Sinta o batimento da humanidade.',
     'hero.cta_share': 'Compartilhar seu eco',
-    'hero.cta_map': 'Explorar o mapa',
-    'hero.cta_login': 'Entrar →',
-    'hero.card1_title': 'Anônimo ou com nome',
-    'hero.card1_desc': 'Você escolhe o que revelar. Sua identidade é sua.',
-    'hero.card2_title': 'Experiência centrada no mapa',
-    'hero.card2_desc': 'Ecos viram uma camada viva do planeta.',
-    'hero.card3_title': 'Descoberta significativa',
-    'hero.card3_desc': 'Encontre sentimentos semelhantes entre culturas.',
+    'hero.cta_explore': 'Explorar o mundo',
+    'hero.cta_login': 'Entrar',
 
-    // MirrorPreview
-    'mirror.title': 'Espelho global',
-    'mirror.subtitle': 'Uma camada viva de histórias humanas — descubra padrões além das fronteiras.',
-    'mirror.pulse_label': 'Pulso global:',
-    'mirror.active_stories': 'histórias ativas',
-    'mirror.countries': 'países',
-    'mirror.tab_map': 'Mapa interativo',
-    'mirror.tab_stories': 'Feed de histórias',
-    'mirror.tab_connections': 'Conexões',
-    'mirror.tab_pulse': 'Pulso emocional',
+    // World Globe
+    'world.section_title': 'Um mundo vivo',
+    'world.live_indicator': 'AO VIVO',
+    'world.story_count': 'histórias respirando',
+    'world.countries_count': 'países conectados',
+    'world.hover_tip': 'Passe o mouse para sentir um eco',
+    'world.click_explore': 'Clique para mergulhar',
+    'world.zoom_hint': 'Zoom, arraste, descubra',
 
-    // Pulse panel
-    'pulse.title': 'Pulso emocional global',
-    'pulse.positivity': 'Positividade',
-    'pulse.description':
-      'Agora, o mundo compartilha principalmente alegria, esperança e gratidão — mudando em tempo real.',
+    // Story overlay
+    'story.just_shared': 'Recém compartilhada',
+    'story.minutes_ago': 'min atrás',
+    'story.from': 'De',
+    'story.read_more': 'Ler a história completa',
+    'story.anonymous': 'Anônimo',
+
+    // Pulse Heart
+    'pulse.title': 'O batimento do mundo',
+    'pulse.live_status': 'BATENDO AGORA',
+    'pulse.heartbeat_label': 'Pulso global',
+    'pulse.global_mood': 'Agora, a humanidade sente',
+    'pulse.positivity_label': 'Calor coletivo',
+    'pulse.emotion_joy': 'Alegria',
+    'pulse.emotion_hope': 'Esperança',
+    'pulse.emotion_gratitude': 'Gratidão',
+    'pulse.emotion_reflection': 'Reflexão',
+    'pulse.emotion_solidarity': 'Solidariedade',
+    'pulse.breathing_world': 'O mundo respira com você.',
+
+    // Connections
+    'connections.title': 'Almas que refletem você',
+    'connections.subtitle': 'Pessoas reais. Jornadas similares. Esperando conectar.',
+    'connections.suggested_for_you': 'Sugerido para você',
+    'connections.shared_experience': 'Experiência compartilhada:',
+    'connections.match_score': 'ressonância',
+    'connections.connect_btn': 'Iniciar conversa',
+    'connections.discover_more': 'Descobrir mais conexões',
   },
 
   ar: {
     // Common
     'ui.language': 'اللغة',
 
-    // Hero
-    'hero.badge_suffix': 'منصّة عالمية للتعاطف',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': 'طبقة حيّة من الإنسانية',
     'hero.title_line1': 'قصتك، صداها لديهم،',
     'hero.title_line2': 'عالمُنا.',
     'hero.subtitle':
-      'شارك صدىً شخصيًا. ضعه على الخريطة. اكتشف كيف تتردد التجارب الإنسانية عبر الحدود.',
+      'شاهد الكوكب يتنفس. انظر القصص تنبض عبر الحدود. اشعر بنبض الإنسانية.',
     'hero.cta_share': 'شارك صداك',
-    'hero.cta_map': 'استكشف الخريطة',
-    'hero.cta_login': 'تسجيل الدخول →',
-    'hero.card1_title': 'مجهول أو باسم',
-    'hero.card1_desc': 'أنت تختار ما تكشفه. هويتك ملكك.',
-    'hero.card2_title': 'تجربة تُركّز على الخريطة',
-    'hero.card2_desc': 'تصبح الأصداء طبقة حيّة على الكوكب.',
-    'hero.card3_title': 'اكتشاف ذو معنى',
-    'hero.card3_desc': 'اعثر على مشاعر متشابهة عبر الثقافات.',
+    'hero.cta_explore': 'استكشف العالم',
+    'hero.cta_login': 'تسجيل الدخول',
 
-    // MirrorPreview
-    'mirror.title': 'المرآة العالمية',
-    'mirror.subtitle': 'طبقة حيّة من القصص الإنسانية — اكتشف الأنماط عبر الحدود.',
-    'mirror.pulse_label': 'النبض العالمي:',
-    'mirror.active_stories': 'قصص نشطة',
-    'mirror.countries': 'دول',
-    'mirror.tab_map': 'خريطة تفاعلية',
-    'mirror.tab_stories': 'تدفّق القصص',
-    'mirror.tab_connections': 'روابط',
-    'mirror.tab_pulse': 'النبض العاطفي',
+    // World Globe
+    'world.section_title': 'عالم حيّ',
+    'world.live_indicator': 'مباشر',
+    'world.story_count': 'قصص تتنفس',
+    'world.countries_count': 'دول متّصلة',
+    'world.hover_tip': 'مرّر للشعور بصدى',
+    'world.click_explore': 'انقر للغوص أعمق',
+    'world.zoom_hint': 'زوم، اسحب، اكتشف',
 
-    // Pulse panel
-    'pulse.title': 'النبض العاطفي العالمي',
-    'pulse.positivity': 'الإيجابية',
-    'pulse.description':
-      'حاليًا، يشارك العالم غالبًا لحظات من الفرح والأمل والامتنان — ويتغيّر ذلك في الوقت الحقيقي.',
+    // Story overlay
+    'story.just_shared': 'شُورِكت للتو',
+    'story.minutes_ago': 'دقيقة',
+    'story.from': 'من',
+    'story.read_more': 'اقرأ القصة كاملة',
+    'story.anonymous': 'مجهول',
+
+    // Pulse Heart
+    'pulse.title': 'نبض العالم',
+    'pulse.live_status': 'ينبض الآن',
+    'pulse.heartbeat_label': 'النبض العالمي',
+    'pulse.global_mood': 'الآن، تشعر الإنسانية بـ',
+    'pulse.positivity_label': 'الدفء الجماعي',
+    'pulse.emotion_joy': 'الفرح',
+    'pulse.emotion_hope': 'الأمل',
+    'pulse.emotion_gratitude': 'الامتنان',
+    'pulse.emotion_reflection': 'التأمّل',
+    'pulse.emotion_solidarity': 'التضامن',
+    'pulse.breathing_world': 'العالم يتنفس معك.',
+
+    // Connections
+    'connections.title': 'أرواح تعكسك',
+    'connections.subtitle': 'أشخاص حقيقيون. رحلات متشابهة. ينتظرون الاتصال.',
+    'connections.suggested_for_you': 'مقترح لك',
+    'connections.shared_experience': 'تجربة مشتركة:',
+    'connections.match_score': 'تجاوب',
+    'connections.connect_btn': 'ابدأ محادثة',
+    'connections.discover_more': 'اكتشف مزيدًا من الاتصالات',
   },
 
   ja: {
     // Common
     'ui.language': '言語',
 
-    // Hero
-    'hero.badge_suffix': '世界共感プラットフォーム',
+    // Hero (redesign)
+    'hero.badge_prefix': 'EchoWorld',
+    'hero.badge_suffix': '人間性の生きたレイヤー',
     'hero.title_line1': 'あなたの物語、誰かのこだま、',
     'hero.title_line2': '私たちの世界。',
     'hero.subtitle':
-      '個人的なエコーを共有し、地図に置いてみよう。人間の体験が国境を越えて共鳴する瞬間を発見しよう。',
+      '地球が呼吸するのを見よう。国境を越えて物語が鼓動する様子を。人間性の心拍を感じよう。',
     'hero.cta_share': 'エコーを投稿',
-    'hero.cta_map': '世界地図を見る',
-    'hero.cta_login': 'ログイン →',
-    'hero.card1_title': '匿名でも署名でも',
-    'hero.card1_desc': '公開する内容はあなた次第。アイデンティティはあなたのもの。',
-    'hero.card2_title': 'マップ中心の体験',
-    'hero.card2_desc': 'エコーが地球の“生きたレイヤー”になる。',
-    'hero.card3_title': '意味のある発見',
-    'hero.card3_desc': '文化を越えて似た感情を見つけよう。',
+    'hero.cta_explore': '世界を探索',
+    'hero.cta_login': 'サインイン',
 
-    // MirrorPreview
-    'mirror.title': 'グローバル・ミラー',
-    'mirror.subtitle': '人間の物語が織りなす“生きたレイヤー” — 国境を越えたパターンを発見。',
-    'mirror.pulse_label': 'グローバル・パルス:',
-    'mirror.active_stories': 'アクティブな物語',
-    'mirror.countries': '国',
-    'mirror.tab_map': 'インタラクティブ地図',
-    'mirror.tab_stories': 'ストーリーフィード',
-    'mirror.tab_connections': 'つながり',
-    'mirror.tab_pulse': '感情のパルス',
+    // World Globe
+    'world.section_title': '生きている世界',
+    'world.live_indicator': 'ライブ',
+    'world.story_count': '呼吸する物語',
+    'world.countries_count': 'つながる国々',
+    'world.hover_tip': 'ホバーでエコーを感じる',
+    'world.click_explore': 'クリックで深く',
+    'world.zoom_hint': 'ズーム、ドラッグ、発見',
 
-    // Pulse panel
-    'pulse.title': 'グローバル感情パルス',
-    'pulse.positivity': 'ポジティブ度',
-    'pulse.description':
-      'いま世界では、喜び・希望・感謝の瞬間が多く共有されています。数値はリアルタイムに揺れ動きます。',
+    // Story overlay
+    'story.just_shared': 'たった今',
+    'story.minutes_ago': '分前',
+    'story.from': 'から',
+    'story.read_more': '全文を読む',
+    'story.anonymous': '匿名',
+
+    // Pulse Heart
+    'pulse.title': '世界の鼓動',
+    'pulse.live_status': '今、鼓動中',
+    'pulse.heartbeat_label': 'グローバルパルス',
+    'pulse.global_mood': '今、人類が感じていること',
+    'pulse.positivity_label': '集合的な温もり',
+    'pulse.emotion_joy': '喜び',
+    'pulse.emotion_hope': '希望',
+    'pulse.emotion_gratitude': '感謝',
+    'pulse.emotion_reflection': '内省',
+    'pulse.emotion_solidarity': '連帯',
+    'pulse.breathing_world': '世界があなたと呼吸しています。',
+
+    // Connections
+    'connections.title': 'あなたを映す魂',
+    'connections.subtitle': '本物の人々。似た旅路。つながりを待っています。',
+    'connections.suggested_for_you': 'あなたへのおすすめ',
+    'connections.shared_experience': '共有体験:',
+    'connections.match_score': '共鳴',
+    'connections.connect_btn': '会話を始める',
+    'connections.discover_more': 'もっとつながりを発見',
   },
 };

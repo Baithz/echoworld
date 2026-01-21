@@ -2,15 +2,15 @@
  * =============================================================================
  * Fichier      : app/globals.css
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.3 (2026-01-21)
- * Objet        : Styles globaux + Tailwind v4 (CSS-first) + base dark UI
- *               + Helpers premium (Hero polish / focus)
+ * Version      : 2.0.0 (2026-01-21)
+ * Objet        : Styles globaux + Animations immersives + Fond cinéma
  * -----------------------------------------------------------------------------
- * Correctifs (sans régression) :
- * - [FIX] Tailwind v4 via @import "tailwindcss"
- * - [SAFE] Base globale (html/body) minimale, sans reset agressif
- * - [ADD] Helpers visuels premium (noise overlay) + bg-white/7 util
- * - [SAFE] Animations MVP (Map markers) conservées
+ * Description  :
+ * - Tailwind v4 (CSS-first)
+ * - Base dark UI premium
+ * - Animations ECG, heartbeat, glow, floating, pulse
+ * - Grain léger optionnel (vignette subtile)
+ * - Pas de reset agressif, juste une base harmonieuse
  * =============================================================================
  */
 
@@ -31,94 +31,248 @@ body {
 }
 
 /* =============================================================================
-   EchoWorld - Helpers premium (Hero polish / focus)
+   Animations Immersives (Home redesign)
    ============================================================================= */
 
-.ew-hero-noise {
+/* ECG Line Animation */
+@keyframes ecg {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.ecg-line {
+  animation: ecg 2s linear infinite;
+}
+
+/* Heartbeat pulse (gros cœur) */
+@keyframes heartbeat {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  10% {
+    transform: scale(1.15);
+  }
+  20% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.12);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
+.heartbeat {
+  animation: heartbeat 1.8s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Glow breathing (halo autour d'éléments) */
+@keyframes glow-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+    filter: blur(20px);
+  }
+  50% {
+    opacity: 0.7;
+    filter: blur(24px);
+  }
+}
+
+.glow-breathe {
+  animation: glow-breathe 3s ease-in-out infinite;
+}
+
+/* Floating animation (stories, cards) */
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.float-delay-1 {
+  animation: float 4.5s ease-in-out infinite;
+  animation-delay: 0.5s;
+}
+
+.float-delay-2 {
+  animation: float 5s ease-in-out infinite;
+  animation-delay: 1s;
+}
+
+/* Pulse (points sur la carte) */
+@keyframes map-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+}
+
+.map-pulse {
+  animation: map-pulse 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Ripple effect (ondes autour des points) */
+@keyframes ripple {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+
+.ripple {
+  animation: ripple 2.5s ease-out infinite;
+}
+
+/* Fade in from bottom */
+@keyframes fade-in-up {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fade-in-up 0.8s ease-out forwards;
+}
+
+/* Shimmer effect (survol subtil) */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+/* =============================================================================
+   Helpers Premium (textures, overlays)
+   ============================================================================= */
+
+/* Noise overlay (grain léger) */
+.ew-noise {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E");
   background-size: 220px 220px;
   mix-blend-mode: overlay;
+  opacity: 0.06;
 }
 
-/* Petite utilité si utilisée dans les composants (équivalent ~ 0.07) */
-.bg-white\/7 {
-  background-color: rgba(255, 255, 255, 0.07);
+/* Vignette subtile (bords sombres) */
+.ew-vignette {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+  pointer-events: none;
 }
 
-/* Lisibilité focus (sans override Tailwind, juste une base safe) */
+/* Glass morphism (backdropblur + border) */
+.glass {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Glow box (halo doux) */
+.glow-box {
+  box-shadow: 0 0 40px rgba(139, 92, 246, 0.3),
+    0 0 80px rgba(139, 92, 246, 0.15);
+}
+
+/* Tailwind gradient utilities (compat v4) */
+.bg-gradient-to-r {
+  background-image: linear-gradient(to right, var(--tw-gradient-stops));
+}
+.bg-gradient-to-br {
+  background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));
+}
+.bg-gradient-to-tr {
+  background-image: linear-gradient(to top right, var(--tw-gradient-stops));
+}
+
+/* =============================================================================
+   Focus (sans override Tailwind, base safe)
+   ============================================================================= */
+
 :where(a, button, input, select, textarea):focus-visible {
   outline: none;
 }
 
 /* =============================================================================
-   EchoWorld - Animations MVP (Map markers)
+   Responsive hints (optionnel, pour debug)
    ============================================================================= */
 
-@keyframes ewPulse {
-  0% {
-    transform: scale(1);
-    opacity: 0.8;
-  }
-  50% {
-    transform: scale(1.3);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
-    opacity: 0.8;
-  }
-}
-
-@keyframes ewRipple {
-  0% {
-    r: 8;
-    opacity: 0.55;
-  }
-  100% {
-    r: 35;
-    opacity: 0;
+/* Uncomment to see breakpoints during dev
+@media (min-width: 640px) {
+  body::before {
+    content: 'sm';
+    position: fixed;
+    top: 0;
+    right: 0;
+    background: red;
+    color: white;
+    padding: 4px 8px;
+    z-index: 9999;
   }
 }
-
-.ew-pulse {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: ewPulse 2.2s ease-in-out infinite;
+@media (min-width: 768px) {
+  body::before {
+    content: 'md';
+  }
 }
-
-.ew-ripple {
-  animation: ewRipple 3.2s ease-out infinite;
+@media (min-width: 1024px) {
+  body::before {
+    content: 'lg';
+  }
 }
-
-/* petits décalages pour éviter un "pulse" trop synchro */
-.ew-pulse-0 {
-  animation-duration: 2.2s;
+@media (min-width: 1280px) {
+  body::before {
+    content: 'xl';
+  }
 }
-.ew-pulse-1 {
-  animation-duration: 2.6s;
-}
-.ew-pulse-2 {
-  animation-duration: 2.9s;
-}
-.ew-pulse-3 {
-  animation-duration: 3.3s;
-}
-.ew-pulse-4 {
-  animation-duration: 3.7s;
-}
-
-.ew-ripple-0 {
-  animation-duration: 3.2s;
-}
-.ew-ripple-1 {
-  animation-duration: 3.6s;
-}
-.ew-ripple-2 {
-  animation-duration: 4s;
-}
-.ew-ripple-3 {
-  animation-duration: 4.4s;
-}
-.ew-ripple-4 {
-  animation-duration: 4.8s;
-}
+*/

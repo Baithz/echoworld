@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/home/MirrorPreview.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
+ * Version      : 1.1.1 (2026-01-21)
  * Objet        : Section "Global Mirror" (home) — WOW layout structuré (sans tabs)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,10 +14,7 @@
  * - Aucun useSearchParams() => build Vercel OK (pas de suspense CSR bailout)
  *
  * Correctifs (sans régression) :
- * - [FIX] Supprime useSearchParams / router.replace => plus d'erreur Vercel build
- * - [IMPROVED] Mise en page home cohérente (WOW) + pas de contenu caché en tabs
- * - [SAFE] Données mock identiques (stories/pulse/connections)
- * - [SAFE] Pas de Math.random() en render (PRNG déterministe)
+ * - [FIX] Supprime la variable i18n `t` non utilisée (eslint no-unused-vars)
  * =============================================================================
  */
 
@@ -47,8 +44,22 @@ const EMOTION_COLORS: Record<Story['emotion'], string> = {
 };
 
 const STORIES_MOCK: Story[] = [
-  { id: 1, country: 'France', emotion: 'joy', text: "Aujourd'hui, j'ai réussi mon examen !", lat: 48.8566, lng: 2.3522 },
-  { id: 2, country: 'India', emotion: 'hope', text: 'The monsoon arrived — our crops will be good.', lat: 20.5937, lng: 78.9629 },
+  {
+    id: 1,
+    country: 'France',
+    emotion: 'joy',
+    text: "Aujourd'hui, j'ai réussi mon examen !",
+    lat: 48.8566,
+    lng: 2.3522,
+  },
+  {
+    id: 2,
+    country: 'India',
+    emotion: 'hope',
+    text: 'The monsoon arrived — our crops will be good.',
+    lat: 20.5937,
+    lng: 78.9629,
+  },
   { id: 3, country: 'Brazil', emotion: 'love', text: 'Minha filha nasceu hoje!', lat: -14.235, lng: -51.9253 },
   { id: 4, country: 'Japan', emotion: 'resilience', text: '失敗から学んだ。明日はもっと良くなる。', lat: 36.2048, lng: 138.2529 },
   { id: 5, country: 'Kenya', emotion: 'gratitude', text: 'Family is everything. Today we celebrated together.', lat: -0.0236, lng: 37.9062 },
@@ -66,7 +77,8 @@ function mulberry32(seed: number) {
 }
 
 export default function MirrorPreview() {
-  const { t, lang } = useLang();
+  // eslint warning fix: do not destructure `t` if it isn't used in this component
+  const { lang } = useLang();
 
   const [globalPulse, setGlobalPulse] = useState<number>(68);
 
@@ -82,7 +94,10 @@ export default function MirrorPreview() {
     return () => window.clearInterval(id);
   }, []);
 
-  const countriesCount = useMemo(() => new Set(STORIES_MOCK.map((s) => s.country)).size, []);
+  const countriesCount = useMemo(
+    () => new Set(STORIES_MOCK.map((s) => s.country)).size,
+    []
+  );
   const storiesCount = STORIES_MOCK.length;
 
   // Deterministic “emotion %” cards
@@ -129,15 +144,18 @@ export default function MirrorPreview() {
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200">
               <Heart className="h-4 w-4 text-pink-300" />
               <span>
-                {lang === 'fr' ? 'Pouls global' : 'Global pulse'} : <strong>{globalPulse.toFixed(0)}%</strong>
+                {lang === 'fr' ? 'Pouls global' : 'Global pulse'} :{' '}
+                <strong>{globalPulse.toFixed(0)}%</strong>
               </span>
             </div>
 
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200">
               <Languages className="h-4 w-4 text-sky-300" />
               <span>
-                <strong>{storiesCount}</strong> {lang === 'fr' ? 'histoires actives' : 'active stories'} •{' '}
-                <strong>{countriesCount}</strong> {lang === 'fr' ? 'pays' : 'countries'}
+                <strong>{storiesCount}</strong>{' '}
+                {lang === 'fr' ? 'histoires actives' : 'active stories'} •{' '}
+                <strong>{countriesCount}</strong>{' '}
+                {lang === 'fr' ? 'pays' : 'countries'}
               </span>
             </div>
           </div>
@@ -157,11 +175,15 @@ export default function MirrorPreview() {
             <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-300">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
                 <MessageCircle className="h-4 w-4 text-sky-300" />
-                {lang === 'fr' ? 'Stories en temps réel (preview)' : 'Real-time stories (preview)'}
+                {lang === 'fr'
+                  ? 'Stories en temps réel (preview)'
+                  : 'Real-time stories (preview)'}
               </span>
               <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2">
                 <Users className="h-4 w-4 text-emerald-300" />
-                {lang === 'fr' ? 'Connexions par affinités (bientôt)' : 'Affinity connections (soon)'}
+                {lang === 'fr'
+                  ? 'Connexions par affinités (bientôt)'
+                  : 'Affinity connections (soon)'}
               </span>
             </div>
           </div>
@@ -189,13 +211,28 @@ export default function MirrorPreview() {
 
               <div className="grid grid-cols-2 gap-3">
                 {emotionCards.slice(0, 4).map((e) => (
-                  <div key={e.key} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs font-semibold text-slate-200">{e.k}</div>
-                    <div className="mt-2 text-2xl font-semibold" style={{ color: e.color }}>
+                  <div
+                    key={e.key}
+                    className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                  >
+                    <div className="text-xs font-semibold text-slate-200">
+                      {e.k}
+                    </div>
+                    <div
+                      className="mt-2 text-2xl font-semibold"
+                      style={{ color: e.color }}
+                    >
                       {e.pct}%
                     </div>
                     <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full rounded-full" style={{ width: `${Math.min(100, e.pct * 3)}%`, background: e.color, opacity: 0.85 }} />
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${Math.min(100, e.pct * 3)}%`,
+                          background: e.color,
+                          opacity: 0.85,
+                        }}
+                      />
                     </div>
                   </div>
                 ))}
@@ -204,13 +241,28 @@ export default function MirrorPreview() {
 
             <div className="mt-4 grid grid-cols-2 gap-3">
               {emotionCards.slice(4).map((e) => (
-                <div key={e.key} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="text-xs font-semibold text-slate-200">{e.k}</div>
-                  <div className="mt-2 text-2xl font-semibold" style={{ color: e.color }}>
+                <div
+                  key={e.key}
+                  className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                >
+                  <div className="text-xs font-semibold text-slate-200">
+                    {e.k}
+                  </div>
+                  <div
+                    className="mt-2 text-2xl font-semibold"
+                    style={{ color: e.color }}
+                  >
                     {e.pct}%
                   </div>
                   <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, e.pct * 3)}%`, background: e.color, opacity: 0.85 }} />
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.min(100, e.pct * 3)}%`,
+                        background: e.color,
+                        opacity: 0.85,
+                      }}
+                    />
                   </div>
                 </div>
               ))}
@@ -221,7 +273,9 @@ export default function MirrorPreview() {
         {/* Bottom row: Stories + Connections (direct, no click) */}
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-            <div className="text-sm font-semibold text-white">{lang === 'fr' ? "Flux d'histoires" : 'Story feed'}</div>
+            <div className="text-sm font-semibold text-white">
+              {lang === 'fr' ? "Flux d'histoires" : 'Story feed'}
+            </div>
             <div className="mt-1 text-sm text-slate-300">
               {lang === 'fr'
                 ? 'Quelques échos récents — anonymes ou signés.'
@@ -242,12 +296,19 @@ export default function MirrorPreview() {
                     style={{ borderLeft: `4px solid ${color}` }}
                   >
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: `${color}22`, color }}>
+                      <span
+                        className="rounded-full px-3 py-1 text-xs font-semibold"
+                        style={{ background: `${color}22`, color }}
+                      >
                         {s.emotion}
                       </span>
-                      <span className="text-xs text-slate-400">📍 {s.country}</span>
+                      <span className="text-xs text-slate-400">
+                        📍 {s.country}
+                      </span>
                     </div>
-                    <div className="mt-2 text-sm leading-relaxed text-slate-100">{s.text}</div>
+                    <div className="mt-2 text-sm leading-relaxed text-slate-100">
+                      {s.text}
+                    </div>
                   </motion.div>
                 );
               })}
@@ -255,7 +316,9 @@ export default function MirrorPreview() {
           </div>
 
           <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-            <div className="text-sm font-semibold text-white">{lang === 'fr' ? 'Connexions suggérées' : 'Suggested connections'}</div>
+            <div className="text-sm font-semibold text-white">
+              {lang === 'fr' ? 'Connexions suggérées' : 'Suggested connections'}
+            </div>
             <div className="mt-1 text-sm text-slate-300">
               {lang === 'fr'
                 ? 'Des profils proches, des vécus similaires — IA de matching (MVP).'
@@ -264,15 +327,37 @@ export default function MirrorPreview() {
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               {[
-                { name: 'Marie', country: 'France', topic: lang === 'fr' ? 'Parentalité' : 'Parenting', match: '92%' },
-                { name: 'Rajesh', country: 'India', topic: lang === 'fr' ? 'Entrepreneuriat' : 'Entrepreneurship', match: '88%' },
-                { name: 'Sofia', country: 'Brazil', topic: lang === 'fr' ? 'Résilience' : 'Resilience', match: '85%' },
+                {
+                  name: 'Marie',
+                  country: 'France',
+                  topic: lang === 'fr' ? 'Parentalité' : 'Parenting',
+                  match: '92%',
+                },
+                {
+                  name: 'Rajesh',
+                  country: 'India',
+                  topic: lang === 'fr' ? 'Entrepreneuriat' : 'Entrepreneurship',
+                  match: '88%',
+                },
+                {
+                  name: 'Sofia',
+                  country: 'Brazil',
+                  topic: lang === 'fr' ? 'Résilience' : 'Resilience',
+                  match: '85%',
+                },
               ].map((p) => (
-                <div key={p.name} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <div
+                  key={p.name}
+                  className="rounded-2xl border border-white/10 bg-white/5 p-5"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-base font-semibold text-white">{p.name}</div>
-                      <div className="mt-1 text-xs text-slate-400">📍 {p.country}</div>
+                      <div className="text-base font-semibold text-white">
+                        {p.name}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        📍 {p.country}
+                      </div>
                     </div>
                     <div className="rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-200">
                       {p.match}
@@ -280,14 +365,17 @@ export default function MirrorPreview() {
                   </div>
 
                   <div className="mt-4 text-sm text-slate-300">
-                    {lang === 'fr' ? 'Thème commun' : 'Common theme'} : <strong className="text-slate-100">{p.topic}</strong>
+                    {lang === 'fr' ? 'Thème commun' : 'Common theme'} :{' '}
+                    <strong className="text-slate-100">{p.topic}</strong>
                   </div>
 
                   <button
                     type="button"
                     className="mt-4 w-full rounded-xl bg-linear-to-r from-sky-500/90 to-violet-500/90 px-4 py-2 text-sm font-semibold text-white transition hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-white/25"
                   >
-                    {lang === 'fr' ? 'Démarrer une conversation' : 'Start a conversation'}
+                    {lang === 'fr'
+                      ? 'Démarrer une conversation'
+                      : 'Start a conversation'}
                   </button>
                 </div>
               ))}
@@ -326,7 +414,7 @@ function WorldMapSilhouette({ stories }: { stories: Story[] }) {
 
       <rect x="0" y="0" width="1100" height="520" fill="url(#ewSea)" />
 
-      {/* Stylized continents (cleaner than random waves) */}
+      {/* Stylized continents */}
       <path
         d="M140 170c70-70 160-80 240-40 40 20 70 60 70 95 0 40-25 65-65 75-60 15-120 45-165 85-45 40-125 35-160-15-35-50-10-150 80-200z"
         fill="url(#ewLand)"
@@ -351,10 +439,26 @@ function WorldMapSilhouette({ stories }: { stories: Story[] }) {
       {/* Soft grid */}
       <g opacity="0.10">
         {Array.from({ length: 14 }).map((_, i) => (
-          <line key={`h${i}`} x1="0" x2="1100" y1={i * 40} y2={i * 40} stroke="rgba(255,255,255,0.25)" strokeWidth="1" />
+          <line
+            key={`h${i}`}
+            x1="0"
+            x2="1100"
+            y1={i * 40}
+            y2={i * 40}
+            stroke="rgba(255,255,255,0.25)"
+            strokeWidth="1"
+          />
         ))}
         {Array.from({ length: 18 }).map((_, i) => (
-          <line key={`v${i}`} y1="0" y2="520" x1={i * 60} x2={i * 60} stroke="rgba(255,255,255,0.25)" strokeWidth="1" />
+          <line
+            key={`v${i}`}
+            y1="0"
+            y2="520"
+            x1={i * 60}
+            x2={i * 60}
+            stroke="rgba(255,255,255,0.25)"
+            strokeWidth="1"
+          />
         ))}
       </g>
 
@@ -365,9 +469,24 @@ function WorldMapSilhouette({ stories }: { stories: Story[] }) {
         const color = EMOTION_COLORS[story.emotion];
         return (
           <g key={story.id}>
-            <circle cx={x} cy={y} r="8" fill={color} opacity="0.9" className="ew-pulse-dot" />
-            <circle cx={x} cy={y} r="18" fill="none" stroke={color} strokeWidth="2" opacity="0.35" className="ew-ripple" />
-            {/* small glow */}
+            <circle
+              cx={x}
+              cy={y}
+              r="8"
+              fill={color}
+              opacity="0.9"
+              className="ew-pulse-dot"
+            />
+            <circle
+              cx={x}
+              cy={y}
+              r="18"
+              fill="none"
+              stroke={color}
+              strokeWidth="2"
+              opacity="0.35"
+              className="ew-ripple"
+            />
             <circle cx={x} cy={y} r="22" fill={color} opacity="0.06" />
           </g>
         );
@@ -384,7 +503,9 @@ function PulseHeart({ value }: { value: number }) {
           <Heart className="h-4 w-4 text-pink-300" />
           Pulse
         </div>
-        <div className="text-sm font-semibold text-slate-100">{value.toFixed(0)}%</div>
+        <div className="text-sm font-semibold text-slate-100">
+          {value.toFixed(0)}%
+        </div>
       </div>
 
       <div className="mt-4 grid grid-cols-[auto_1fr] items-center gap-4">
@@ -410,7 +531,11 @@ function PulseHeart({ value }: { value: number }) {
             />
           </svg>
           <div className="mt-2 text-xs text-slate-400">
-            {value >= 70 ? 'High resonance' : value >= 50 ? 'Balanced resonance' : 'Low resonance'}
+            {value >= 70
+              ? 'High resonance'
+              : value >= 50
+                ? 'Balanced resonance'
+                : 'Low resonance'}
           </div>
         </div>
       </div>
