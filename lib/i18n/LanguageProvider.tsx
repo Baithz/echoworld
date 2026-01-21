@@ -2,17 +2,19 @@
  * =============================================================================
  * Fichier      : lib/i18n/LanguageProvider.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.1 (2026-01-21)
- * Objet        : Provider React (langue globale) + persistance localStorage
+ * Version      : 1.1.0 (2026-01-21)
+ * Objet        : Provider i18n (langue globale) + persistance + traduction t()
  * -----------------------------------------------------------------------------
  * Description  :
- * - Initialise la langue: localStorage > navigator > 'en'
- * - Expose lang + setLang via context
- * - Met à jour <html lang="..."> côté client
+ * - Langue globale : localStorage > navigator > 'en'
+ * - Persistance : localStorage
+ * - Accessibilité : met à jour <html lang="...">
+ * - Traduction : expose t(key) basé sur dictionnaires (messages.ts)
  *
  * Correctifs (sans régression) :
- * - [FIX] Supprime setState dans un useEffect (React perf warning / cascading renders)
- * - [SAFE] Init via useState lazy initializer (composant client-only)
+ * - [FIX] Pas de setState dans useEffect (évite cascading renders)
+ * - [ADD] Fonction t(key) + fallback propre (en)
+ * - [SAFE] API stable : lang + setLang conservés
  * =============================================================================
  */
 
@@ -21,16 +23,17 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { AppLang } from './i18n';
 import { detectBrowserLang, getStoredLang, setStoredLang } from './i18n';
+import { MESSAGES, type I18nKey } from './messages';
 
 type LangContextValue = {
   lang: AppLang;
   setLang: (lang: AppLang) => void;
+  t: (key: I18nKey) => string;
 };
 
 const LangContext = createContext<LangContextValue | null>(null);
 
 function resolveInitialLang(): AppLang {
-  // Client-only component, mais on garde une garde SAFE.
   if (typeof window === 'undefined') return 'en';
   return getStoredLang() || detectBrowserLang();
 }
@@ -38,16 +41,27 @@ function resolveInitialLang(): AppLang {
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<AppLang>(() => resolveInitialLang());
 
-  // Side-effect only: persistance + attribut HTML (pas de setState ici)
+  // Side-effects only
   useEffect(() => {
     setStoredLang(lang);
     document.documentElement.lang = lang;
+
+    // Direction RTL pour l'arabe (extensible)
+    document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+  }, [lang]);
+
+  const t = useMemo(() => {
+    return (key: I18nKey) => {
+      const dict = MESSAGES[lang] || MESSAGES.en;
+      return dict[key] ?? MESSAGES.en[key] ?? key;
+    };
   }, [lang]);
 
   const value = useMemo<LangContextValue>(() => ({
     lang,
     setLang: setLangState,
-  }), [lang]);
+    t,
+  }), [lang, t]);
 
   return <LangContext.Provider value={value}>{children}</LangContext.Provider>;
 }

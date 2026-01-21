@@ -2,19 +2,20 @@
  * =============================================================================
  * Fichier      : components/home/Hero.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.3 (2026-01-21)
+ * Version      : 1.1.0 (2026-01-21)
  * Objet        : Hero section premium (homepage) - UI moderne et novatrice
- *               + Sélecteur de langue (détection + persistance via Provider global)
+ *               + Sélecteur de langue + Textes traduits (t()) via Provider global
  * -----------------------------------------------------------------------------
  * Description  :
  * - Hero : badge, headline gradient, CTA, cards features
  * - Animations légères (Framer Motion)
- * - Ajoute un sélecteur de langue (MVP i18n) sans impacter le layout existant
+ * - Sélecteur de langue (LanguageSelect)
+ * - Textes dynamiques via useLang().t() (toutes langues supportées)
  *
  * Correctifs (sans régression) :
  * - [FIX] Classe canonical Tailwind v4 : bg-linear-to-r
- * - [ADD] LanguageSelect : sélection langue + persistance (localStorage)
- * - [SAFE] Aucun changement de structure majeure : on insère un bloc UI discret
+ * - [ADD] Traductions dynamiques (t) sans changer la structure UI
+ * - [SAFE] Aucun changement visuel hors textes
  * =============================================================================
  */
 
@@ -24,8 +25,11 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { Globe, Sparkles, PenLine } from 'lucide-react';
 import LanguageSelect from '@/components/home/LanguageSelect';
+import { useLang } from '@/lib/i18n/LanguageProvider';
 
 export default function Hero() {
+  const { t } = useLang();
+
   return (
     <section className="mx-auto max-w-6xl px-6 py-20 md:py-28">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -38,7 +42,7 @@ export default function Hero() {
           <Sparkles className="h-4 w-4 text-emerald-300" />
           <span>EchoWorld</span>
           <span className="text-slate-400">•</span>
-          <span className="text-slate-300">global empathy platform</span>
+          <span className="text-slate-300">{t('hero.badge_suffix')}</span>
         </motion.div>
 
         {/* Lang selector (MVP i18n) */}
@@ -58,9 +62,9 @@ export default function Hero() {
         transition={{ duration: 0.7, delay: 0.05 }}
         className="mt-6 text-balance text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl"
       >
-        Your Story, Their Echo,
+        {t('hero.title_line1')}
         <span className="block bg-linear-to-r from-sky-300 via-violet-300 to-emerald-300 bg-clip-text text-transparent">
-          Our World.
+          {t('hero.title_line2')}
         </span>
       </motion.h1>
 
@@ -70,7 +74,7 @@ export default function Hero() {
         transition={{ duration: 0.7, delay: 0.10 }}
         className="mt-5 max-w-2xl text-pretty text-lg leading-relaxed text-slate-300 md:text-xl"
       >
-        Share a personal echo. Place it on the map. Discover how human experiences resonate across borders.
+        {t('hero.subtitle')}
       </motion.p>
 
       <motion.div
@@ -84,7 +88,7 @@ export default function Hero() {
           className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-slate-900 shadow-sm shadow-white/10 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-white/40"
         >
           <PenLine className="h-4 w-4" />
-          Share your echo
+          {t('hero.cta_share')}
         </Link>
 
         <Link
@@ -92,23 +96,23 @@ export default function Hero() {
           className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/30"
         >
           <Globe className="h-4 w-4" />
-          Explore world map
+          {t('hero.cta_map')}
         </Link>
 
         <Link href="/login" className="px-5 py-3 text-sm font-semibold text-slate-200 hover:text-white">
-          Login →
+          {t('hero.cta_login')}
         </Link>
       </motion.div>
 
       <div className="mt-10 grid gap-3 sm:grid-cols-3">
         {[
-          ['Anonymous or named', 'Choose what you reveal. Identity stays yours.'],
-          ['Map-first experience', 'Echoes become a living layer on the planet.'],
-          ['Meaningful discovery', 'Find similar feelings across cultures.'],
-        ].map(([t, d]) => (
-          <div key={t} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold">{t}</div>
-            <div className="mt-1 text-sm text-slate-300">{d}</div>
+          ['hero.card1_title', 'hero.card1_desc'],
+          ['hero.card2_title', 'hero.card2_desc'],
+          ['hero.card3_title', 'hero.card3_desc'],
+        ].map(([kt, kd]) => (
+          <div key={kt} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold">{t(kt as any)}</div>
+            <div className="mt-1 text-sm text-slate-300">{t(kd as any)}</div>
           </div>
         ))}
       </div>
