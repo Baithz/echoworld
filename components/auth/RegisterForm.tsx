@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/auth/RegisterForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
+ * Version      : 1.2.0 (2026-01-21)
  * Objet        : Form Inscription (email/password) - Supabase Auth
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,6 +12,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-21)
+ * - [IMPROVED] Utilisation de getAuthErrorMessage pour messages clairs
+ * - [IMPROVED] Console.error pour debug
+ * - [IMPROVED] Gestion d'erreurs plus robuste
  * 1.1.0 (2026-01-21)
  * - [IMPROVED] Gestion post-signup : redirect si session immédiate, sinon message confirmation email
  * - [IMPROVED] Disable complet + micro-helper password (sans changer le layout)
@@ -23,7 +27,7 @@
 
 import { useState } from 'react';
 import { Mail, Lock, AlertTriangle, ArrowRight } from 'lucide-react';
-import { supabase } from '@/lib/supabase/client';
+import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
 
 export default function RegisterForm({
   onSwitchToLogin,
@@ -68,7 +72,8 @@ export default function RegisterForm({
       });
 
       if (signUpError) {
-        setError(signUpError.message);
+        // Utilisation du helper pour message clair
+        setError(getAuthErrorMessage(signUpError));
         return;
       }
 
@@ -83,7 +88,14 @@ export default function RegisterForm({
         "Compte créé. Si la confirmation email est activée, vérifiez votre boîte mail pour valider l'inscription."
       );
     } catch (e2) {
-      setError(e2 instanceof Error ? e2.message : 'Register error');
+      // Log pour debug
+      console.error('[REGISTER ERROR]', e2);
+      // Message clair à l'utilisateur
+      setError(
+        e2 instanceof Error
+          ? getAuthErrorMessage(e2)
+          : 'Erreur lors de l\'inscription. Veuillez réessayer.'
+      );
     } finally {
       setLoading(false);
     }

@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/auth/LoginForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-21)
+ * Version      : 1.2.0 (2026-01-21)
  * Objet        : Form Connexion (email/password) - Supabase Auth
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,6 +12,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-21)
+ * - [IMPROVED] Utilisation de getAuthErrorMessage pour messages clairs
+ * - [IMPROVED] Console.error pour debug
+ * - [IMPROVED] Gestion d'erreurs plus robuste
  * 1.1.0 (2026-01-21)
  * - [NEW] Redirection automatique après connexion (callback optionnel + fallback)
  * - [IMPROVED] Validation légère email + trim + désactivation input en loading
@@ -24,7 +28,7 @@
 
 import { useState } from 'react';
 import { Mail, Lock, AlertTriangle, ArrowRight } from 'lucide-react';
-import { supabase } from '@/lib/supabase/client';
+import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
 
 type Props = {
   onSwitchToRegister?: () => void;
@@ -75,7 +79,8 @@ export default function LoginForm({
       });
 
       if (signInError) {
-        setError(signInError.message);
+        // Utilisation du helper pour message clair
+        setError(getAuthErrorMessage(signInError));
         return;
       }
 
@@ -92,7 +97,14 @@ export default function LoginForm({
         window.location.replace(onSuccessRedirectTo);
       }
     } catch (e2) {
-      setError(e2 instanceof Error ? e2.message : 'Login error');
+      // Log pour debug
+      console.error('[LOGIN ERROR]', e2);
+      // Message clair à l'utilisateur
+      setError(
+        e2 instanceof Error
+          ? getAuthErrorMessage(e2)
+          : 'Erreur de connexion. Veuillez réessayer.'
+      );
     } finally {
       setLoading(false);
     }
