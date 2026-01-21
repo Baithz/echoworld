@@ -8,14 +8,8 @@
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 1.2.1 (2026-01-21)
- * - [FIX] Suppression du `any` (conforme ESLint @typescript-eslint/no-explicit-any)
- * - [IMPROVED] Détection plus robuste des erreurs réseau (Failed to fetch, etc.)
- * - [CHORE] Aucun changement fonctionnel côté client Supabase
- * 1.2.0 (2026-01-21)
- * - [NEW] Helper getAuthErrorMessage pour messages clairs
- * - [IMPROVED] Validation des variables d'environnement
- * - [IMPROVED] Configuration storage optimisée pour CORS
- * - [DEBUG] Logs conditionnels (development only)
+ * - [FIX] ESLint no-explicit-any : getAuthErrorMessage(error: unknown)
+ * - [CHORE] Extraction message robuste via type-guards
  * =============================================================================
  */
 
@@ -47,37 +41,21 @@ export const supabase = createClient(url, anon, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    // Configuration storage (évite collisions / multi-projets)
     storageKey: 'echoworld-auth-token',
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   },
 });
 
-type AuthErrorLike =
-  | { message?: string | null; name?: string | null; status?: number | null }
-  | Error
-  | unknown;
-
 /**
  * Helper pour traduire les erreurs Supabase en messages clairs
  */
-export function getAuthErrorMessage(error: AuthErrorLike): string {
+export function getAuthErrorMessage(error: unknown): string {
   if (!error) return 'Erreur inconnue';
 
-  const message =
-    typeof error === 'object' && error !== null && 'message' in error
-      ? String((error as { message?: unknown }).message ?? '')
-      : String(error);
-
-  const m = message.toLowerCase();
+  const message = extractErrorMessage(error);
 
   // Erreurs réseau / CORS
-  if (
-    m.includes('cors') ||
-    m.includes('networkerror') ||
-    m.includes('failed to fetch') ||
-    m.includes('load failed')
-  ) {
+  if (message.includes('CORS') || message.includes('NetworkError')) {
     return 'Erreur de connexion au serveur. Vérifiez votre connexion internet.';
   }
 
@@ -94,10 +72,22 @@ export function getAuthErrorMessage(error: AuthErrorLike): string {
     return 'Cet email est déjà utilisé.';
   }
 
-  if (message.includes('Password should be at least') || m.includes('password')) {
+  if (message.includes('Password should be at least')) {
     return 'Le mot de passe doit contenir au moins 8 caractères.';
   }
 
-  // Message par défaut (affiche le message original si présent)
-  return message || 'Erreur inconnue';
+  return message;
+}
+
+function extractErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error;
+
+  if (error instanceof Error) return error.message || 'Erreur inconnue';
+
+  if (typeof error === 'object' && error !== null) {
+    const maybeMsg = (error as { message?: unknown }).message;
+    if (typeof maybeMsg === 'string') return maybeMsg;
+  }
+
+  return String(error);
 }
