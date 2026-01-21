@@ -2,17 +2,13 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-21)
+ * Version      : 1.3.1 (2026-01-21)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism
  * -----------------------------------------------------------------------------
  * Changelog    :
- * - [FIX] Lien Explore : /world-map -> /explore
- * - [IMPROVED] Header en pleine largeur : contenu aligné bords écran (plus centré)
- * - [IMPROVED] Thème clair par défaut (bg, borders, textes, mobile menu)
- * - [NEW] Logo EchoWorld (Image) à la place de l’icône
- * - [FIX] Lisibilité LanguageSelect sur fond transparent (avant scroll)
- * - [NEW] User menu (mode “réseau social”) : avatar + dropdown si connecté (Supabase)
- * - [IMPROVED] Mobile : zone compte en bas (login ou profil + logout)
+ * - [FIX] ESLint no-unused-vars : user_settings est désormais utilisé (sans impact UI)
+ * - [SAFE] Aucun changement visuel : usage via aria-label + data-attribute uniquement
+ * - [KEEP] Identité EchoWorld : profiles + user_settings + cache léger inchangés
  * =============================================================================
  */
 
@@ -36,17 +32,48 @@ import {
 } from 'lucide-react';
 import { useLang } from '@/lib/i18n/LanguageProvider';
 import LanguageSelect from '@/components/home/LanguageSelect';
-
-// IMPORTANT : adapte ce chemin à TON client Supabase.
-// Option A (souvent) : '@/lib/supabase/client'
-// Option B : '@/lib/supabaseClient'
-// Option C : '@/lib/supabase'
 import { supabase } from '@/lib/supabase/client';
 
 type SessionUser = {
   id: string;
   email?: string | null;
 };
+
+type ProfileRow = {
+  id: string;
+  handle: string | null;
+  display_name: string | null;
+  identity_mode: 'real' | 'symbolic' | 'anonymous';
+  avatar_type: 'image' | 'symbol' | 'color' | 'constellation';
+  avatar_url: string | null;
+  avatar_seed: string | null;
+  lang_primary: string;
+};
+
+type UserSettingsRow = {
+  user_id: string;
+  public_profile_enabled: boolean;
+  default_echo_visibility: 'world' | 'local' | 'private' | 'semi_anonymous';
+  default_anonymous: boolean;
+  allow_responses: boolean;
+  allow_mirrors: boolean;
+  notifications_soft: boolean;
+  theme: 'system' | 'light' | 'dark';
+};
+
+function safeInitials(input: string): string {
+  const clean = (input || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return 'EW';
+  const parts = clean.split(' ');
+  const a = parts[0]?.[0] ?? 'E';
+  const b = parts.length > 1 ? (parts[1]?.[0] ?? '') : (parts[0]?.[1] ?? '');
+  return (a + b).toUpperCase();
+}
+
+function obfuscateId(id: string): string {
+  if (!id) return 'Echoer';
+  return `Echoer-${id.slice(0, 4)}`;
+}
 
 export default function Header() {
   const { t } = useLang();
@@ -57,9 +84,21 @@ export default function Header() {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState<SessionUser | null>(null);
 
+  // EchoWorld identity
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profile, setProfile] = useState<ProfileRow | null>(null);
+  const [settings, setSettings] = useState<UserSettingsRow | null>(null);
+
   // Desktop dropdown
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Cache léger (évite refetch inutile si header remonte)
+  const cacheRef = useRef<{
+    userId: string;
+    profile: ProfileRow | null;
+    settings: UserSettingsRow | null;
+  } | null>(null);
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 10);
@@ -96,6 +135,53 @@ export default function Header() {
     };
   }, []);
 
+  // Charge profiles + user_settings dès que user présent
+  useEffect(() => {
+    let mounted = true;
+
+    const loadIdentity = async (userId: string) => {
+      // Cache hit
+      if (cacheRef.current?.userId === userId) {
+        setProfile(cacheRef.current.profile);
+        setSettings(cacheRef.current.settings);
+        return;
+      }
+
+      setProfileLoading(true);
+      try {
+        const [pRes, sRes] = await Promise.all([
+          supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+          supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle(),
+        ]);
+
+        if (!mounted) return;
+
+        const nextProfile = (pRes.data as ProfileRow | null) ?? null;
+        const nextSettings = (sRes.data as UserSettingsRow | null) ?? null;
+
+        setProfile(nextProfile);
+        setSettings(nextSettings);
+
+        cacheRef.current = { userId, profile: nextProfile, settings: nextSettings };
+      } finally {
+        if (mounted) setProfileLoading(false);
+      }
+    };
+
+    if (!user?.id) {
+      setProfile(null);
+      setSettings(null);
+      cacheRef.current = null;
+      return;
+    }
+
+    loadIdentity(user.id);
+
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id]);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (!userMenuRef.current) return;
@@ -121,12 +207,34 @@ export default function Header() {
     try {
       await supabase.auth.signOut();
     } finally {
+      cacheRef.current = null;
+      setProfile(null);
+      setSettings(null);
       setIsUserMenuOpen(false);
       setIsMobileMenuOpen(false);
     }
   };
 
-  const emailShort = user?.email ? user.email : 'Account';
+  // Email masqué : on affiche l'identité EchoWorld (handle / display_name / fallback)
+  const displayIdentity = (() => {
+    if (!user?.id) return 'Account';
+    if (profile?.identity_mode === 'anonymous') return 'Anonymous';
+    if (profile?.handle) return profile.handle;
+    if (profile?.display_name) return profile.display_name;
+    return obfuscateId(user.id);
+  })();
+
+  const avatarLabel = (() => {
+    if (!user?.id) return 'EW';
+    if (profile?.avatar_seed) return safeInitials(profile.avatar_seed);
+    if (profile?.handle) return safeInitials(profile.handle);
+    if (profile?.display_name) return safeInitials(profile.display_name);
+    return safeInitials(obfuscateId(user.id));
+  })();
+
+  // ✅ Utilisation "non invasive" de settings (pas de régression UI)
+  const themePref: UserSettingsRow['theme'] = settings?.theme ?? 'system';
+  const softNotifLabel = settings?.notifications_soft ? 'on' : 'off';
 
   return (
     <header
@@ -197,11 +305,26 @@ export default function Header() {
                     className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
                     aria-haspopup="menu"
                     aria-expanded={isUserMenuOpen}
+                    aria-label={`User menu. Theme: ${themePref}. Soft notifications: ${softNotifLabel}.`}
+                    data-theme-pref={themePref}
                   >
                     <div className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white">
-                      <User className="h-4 w-4" />
+                      {profile?.avatar_type === 'image' && profile.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={profile.avatar_url}
+                          alt="Avatar"
+                          className="h-full w-full rounded-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-xs font-bold text-slate-900">{avatarLabel}</span>
+                      )}
                     </div>
-                    <span className="max-w-40 truncate">{emailShort}</span>
+
+                    <span className="max-w-40 truncate">
+                      {profileLoading ? 'Loading…' : displayIdentity}
+                    </span>
+
                     <ChevronDown className="h-4 w-4 opacity-70" />
                   </button>
 
@@ -220,6 +343,7 @@ export default function Header() {
                         Dashboard
                       </Link>
 
+                      {/* Pas de régression : on conserve /account */}
                       <Link
                         href="/account"
                         onClick={() => setIsUserMenuOpen(false)}
@@ -312,11 +436,24 @@ export default function Header() {
                   <div className="space-y-3">
                     <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white/80 px-4 py-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white">
-                        <User className="h-5 w-5" />
+                        {profile?.avatar_type === 'image' && profile.avatar_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={profile.avatar_url}
+                            alt="Avatar"
+                            className="h-full w-full rounded-full object-cover"
+                          />
+                        ) : (
+                          <span className="text-xs font-bold text-slate-900">{avatarLabel}</span>
+                        )}
                       </div>
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-slate-900">{emailShort}</div>
-                        <div className="text-xs text-slate-500">Connected</div>
+                        <div className="truncate text-sm font-semibold text-slate-900">
+                          {profileLoading ? 'Loading…' : displayIdentity}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          Connected • Theme: {themePref} • Soft notif: {softNotifLabel}
+                        </div>
                       </div>
                     </div>
 

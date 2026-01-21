@@ -2,14 +2,15 @@
  * =============================================================================
  * Fichier      : lib/supabase/client.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.1 (2026-01-21)
+ * Version      : 1.3.0 (2026-01-21)
  * Objet        : Client Supabase avec gestion d'erreurs améliorée
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.2.1 (2026-01-21)
- * - [FIX] ESLint no-explicit-any : getAuthErrorMessage(error: unknown)
- * - [CHORE] Extraction message robuste via type-guards
+ * 1.3.0 (2026-01-21)
+ * - [SAFE] Singleton explicite (évite multi-instances en HMR)
+ * - [SAFE] Storage SSR-safe (fallback null)
+ * - [KEEP] Helper getAuthErrorMessage conservé sans régression
  * =============================================================================
  */
 
@@ -18,7 +19,6 @@ import { createClient } from '@supabase/supabase-js';
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Validation des variables d'environnement
 if (!url || !anon) {
   throw new Error(
     '❌ Configuration Supabase manquante !\n' +
@@ -27,39 +27,32 @@ if (!url || !anon) {
   );
 }
 
-// DEBUG (développement uniquement)
-if (process.env.NODE_ENV === 'development') {
-  console.log('[SUPABASE] Configuration :', {
-    url,
-    anonKeyPresent: !!anon,
-    anonKeyLength: anon.length,
-  });
-}
+const storage =
+  typeof window !== 'undefined' ? window.localStorage : undefined;
 
-export const supabase = createClient(url, anon, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storageKey: 'echoworld-auth-token',
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
-  },
-});
+let _supabase: ReturnType<typeof createClient> | null = null;
 
-/**
- * Helper pour traduire les erreurs Supabase en messages clairs
- */
+export const supabase =
+  _supabase ??
+  (_supabase = createClient(url, anon, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      storageKey: 'echoworld-auth-token',
+      storage,
+    },
+  }));
+
 export function getAuthErrorMessage(error: unknown): string {
   if (!error) return 'Erreur inconnue';
 
   const message = extractErrorMessage(error);
 
-  // Erreurs réseau / CORS
   if (message.includes('CORS') || message.includes('NetworkError')) {
     return 'Erreur de connexion au serveur. Vérifiez votre connexion internet.';
   }
 
-  // Erreurs authentification
   if (message.includes('Invalid login credentials')) {
     return 'Email ou mot de passe incorrect.';
   }

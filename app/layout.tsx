@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/layout.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-21)
+ * Version      : 2.2.0 (2026-01-21)
  * Objet        : Layout racine - Fond cinéma immersif + Provider i18n
  * -----------------------------------------------------------------------------
  * Description  :
@@ -11,10 +11,11 @@
  * - Thème clair par défaut (le switch clair/sombre viendra via settings user)
  * - Pas d'interception clics (pointer-events-none)
  *
- * Correctifs (sans régression) :
- * - [FIX] Import provider en chemin relatif (évite alias "@/..." si non résolu)
- * - [CHORE] Conserve les tailles h/w arbitraires (warnings eslint non bloquants)
- * - [IMPROVED] Base UI en clair par défaut (bg/text + grid adapté)
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.2.0 (2026-01-21)
+ * - [KEEP] Structure et styles inchangés (sans régression)
+ * - [CHORE] Changelog standardisé (prépare intégration settings thème)
  * =============================================================================
  */
 
