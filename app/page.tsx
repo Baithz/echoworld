@@ -12,19 +12,19 @@
  * =============================================================================
  */
 
+import { Suspense } from 'react';
 import Hero from '@/components/home/Hero';
 import MirrorPreview from '@/components/home/MirrorPreview';
 
 export default function HomePage() {
   return (
-    <main className="flex flex-col">
-      {/* Hero section (plein impact, inchangée) */}
+    <main>
       <Hero />
 
-      {/* Global Mirror preview */}
-      <section className="mx-auto w-full max-w-7xl px-6">
+      {/* Required by Next.js: useSearchParams() */}
+      <Suspense fallback={null}>
         <MirrorPreview />
-      </section>
+      </Suspense>
     </main>
   );
 }
