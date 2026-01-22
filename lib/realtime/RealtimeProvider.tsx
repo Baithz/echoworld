@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : lib/realtime/RealtimeProvider.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-22)
+ * Version      : 1.2.0 (2026-01-22)
  * Objet        : Provider global Realtime + état badges + ChatDock (open/close)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -11,8 +11,17 @@
  * - Realtime : incrémente badges sur INSERT messages/notifications
  * - API context : unread counts + open/close dock + open/close conversation
  *
+ * Règle auto-open (recommandée) :
+ * - Si ChatDock OUVERT : auto-switch vers la conversation du message entrant (sans ouvrir/fermer le dock)
+ * - Si ChatDock FERMÉ : n’ouvre rien, badge uniquement (comportement non intrusif)
+ * - Si l’utilisateur est déjà sur la conversation active + dock ouvert : pas de bump badge
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-22)
+ * - [NEW] Auto-open conditionnel "dock-open only" sur message entrant (non intrusif)
+ * - [NEW] Anti-bump si conversation active déjà ouverte (dock ouvert)
+ * - [KEEP] API context inchangée (openConversation continue d’ouvrir le dock)
  * 1.1.0 (2026-01-22)
  * - [NEW] Ajout état ChatDock (isChatDockOpen + open/close/toggle)
  * - [KEEP] Badges + activeConversationId inchangés
@@ -21,7 +30,15 @@
 
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { supabase } from '@/lib/supabase/client';
 import { initRealtime, destroyRealtime, onMessage, onNotification } from '@/lib/realtime/realtime';
 import { fetchUnreadMessagesCount } from '@/lib/messages';
@@ -105,6 +122,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const closeChatDock = useCallback(() => setIsChatDockOpen(false), []);
   const toggleChatDock = useCallback(() => setIsChatDockOpen((v) => !v), []);
 
+  // API "forte" : ouvre la conversation ET le dock (utilisé par le Header / UI)
   const openConversation = useCallback((conversationId: string) => {
     if (!conversationId) return;
     setActiveConversationId(conversationId);
@@ -127,7 +145,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       setUserId(data.user?.id ?? null);
     };
 
-    boot();
+    void boot();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUserId(session?.user?.id ?? null);
@@ -156,14 +174,21 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     void refreshCounts();
 
     const offMsg = onMessage((p) => {
+      const convId = p.record.conversation_id;
+
       // Ignore messages sent by self
       if (p.record.sender_id === userId) return;
 
-      // Badge
+      // Si dock ouvert + conversation déjà active => pas de bump (l’utilisateur lit déjà)
+      if (isChatDockOpen && activeConversationId === convId) return;
+
+      // Badge unread
       bumpUnreadMessages(1);
 
-      // Future: si message direct -> ouvrir bulle (à décider)
-      // Ici: on n'auto-open pas (comportement safe)
+      // Auto-open NON intrusif : uniquement si le dock est déjà ouvert
+      if (isChatDockOpen) {
+        setActiveConversationId(convId);
+      }
     });
 
     const offNotif = onNotification((p) => {
@@ -174,7 +199,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       offMsg();
       offNotif();
     };
-  }, [userId, refreshCounts, bumpUnreadMessages, bumpUnreadNotifications]);
+  }, [
+    userId,
+    refreshCounts,
+    bumpUnreadMessages,
+    bumpUnreadNotifications,
+    isChatDockOpen,
+    activeConversationId,
+  ]);
 
   const value = useMemo<RealtimeContextValue>(
     () => ({

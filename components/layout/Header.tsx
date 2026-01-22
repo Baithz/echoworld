@@ -2,15 +2,19 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.1 (2026-01-22)
+ * Version      : 1.4.2 (2026-01-22)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism (sans dropdown)
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Desktop: Messages ouvre ChatDock (toggleChatDock) + auto-open (openChatDock) si user
+ * - Mobile: conserve navigation vers /messages et /notifications
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.4.1 (2026-01-22)
- * - [NEW] Bouton Messages desktop -> ouvre ChatDock (toggleChatDock) au lieu de naviguer
- * - [KEEP] Lien /messages reste dispo dans ChatDock (bouton "Ouvrir")
- * - [SAFE] Aucune régression mobile (mobile conserve liens)
+ * 1.4.2 (2026-01-22)
+ * - [FIX] Si user non connecté: bouton Messages desktop redirige /login (pas de dock vide)
+ * - [IMPROVED] A11y: aria-controls + aria-expanded pour le bouton Messages (dock)
+ * - [KEEP] Badges, identité, notifications page, mobile inchangé
  * =============================================================================
  */
 
@@ -97,7 +101,12 @@ export default function Header() {
   const { t } = useLang();
 
   // Realtime (badges + chatdock)
-  const { unreadMessagesCount, unreadNotificationsCount, toggleChatDock } = useRealtime();
+  const {
+    unreadMessagesCount,
+    unreadNotificationsCount,
+    toggleChatDock,
+    isChatDockOpen,
+  } = useRealtime();
 
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -139,7 +148,7 @@ export default function Header() {
       }
     };
 
-    load();
+    void load();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       const u = session?.user ?? null;
@@ -192,7 +201,7 @@ export default function Header() {
       return;
     }
 
-    loadIdentity(user.id);
+    void loadIdentity(user.id);
 
     return () => {
       mounted = false;
@@ -295,16 +304,30 @@ export default function Header() {
             </div>
 
             <div className="hidden lg:flex items-center gap-2">
-              {/* Messages -> ouvre le ChatDock */}
-              <button
-                type="button"
-                onClick={() => toggleChatDock()}
-                className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
-                aria-label={`Messages. Unread: ${unreadMessagesCount}.`}
-              >
-                <Mail className="h-5 w-5" />
-                <Badge count={unreadMessagesCount} />
-              </button>
+              {/* Messages -> ouvre le ChatDock (si connecté) */}
+              {authLoading ? (
+                <div className="h-10 w-10 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
+              ) : user ? (
+                <button
+                  type="button"
+                  onClick={() => toggleChatDock()}
+                  className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                  aria-label={`Messages. Unread: ${unreadMessagesCount}.`}
+                  aria-controls="ew-chatdock"
+                  aria-expanded={isChatDockOpen}
+                >
+                  <Mail className="h-5 w-5" />
+                  <Badge count={unreadMessagesCount} />
+                </button>
+              ) : (
+                <Link
+                  href="/login"
+                  className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                  aria-label="Login to view messages"
+                >
+                  <Mail className="h-5 w-5" />
+                </Link>
+              )}
 
               {/* Notifications (reste page) */}
               <Link
@@ -397,7 +420,10 @@ export default function Header() {
 
       {/* Mobile nav (inchangé: liens vers pages) */}
       {isMobileMenuOpen && (
-        <div id="mobile-nav" className="border-t border-slate-200 bg-white/95 backdrop-blur-xl lg:hidden">
+        <div
+          id="mobile-nav"
+          className="border-t border-slate-200 bg-white/95 backdrop-blur-xl lg:hidden"
+        >
           <nav className="w-full px-6 py-6">
             <div className="space-y-4">
               {navItems.map((item) => {

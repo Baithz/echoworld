@@ -2,15 +2,23 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-22)
+ * Version      : 1.1.0 (2026-01-22)
  * Objet        : ChatDock (bulle) - Conversations + messages (Client + RLS)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Panel flottant bas-droite, ouverture/fermeture via RealtimeProvider
  * - Liste conversations + recherche
  * - Affichage messages + envoi
- * - Mark read (RPC) quand on charge une conversation
+ * - Mark read (RPC) quand on charge une conversation + refreshCounts()
  * - Safe : pas de dépendance types générés, pas de any
+ * - UX SAFE : auto-scroll en bas à chaque chargement / envoi
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.1.0 (2026-01-22)
+ * - [FIX] Dépendances hooks clean (plus besoin de disable exhaustive-deps)
+ * - [NEW] Auto-scroll bas (liste messages) sur load/append
+ * - [SAFE] Reset local state quand userId/dock change (pas de states incohérents)
  * =============================================================================
  */
 
@@ -69,6 +77,14 @@ export default function ChatDock() {
     };
   }, []);
 
+  // Scroll bas messages
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollToBottom = () => {
+    const el = messagesEndRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  };
+
   const filteredConvs = useMemo(() => {
     const term = q.trim().toLowerCase();
     if (!term) return convs;
@@ -82,6 +98,24 @@ export default function ChatDock() {
     () => convs.find((c) => c.id === activeConversationId) ?? null,
     [convs, activeConversationId]
   );
+
+  // Reset local state when dock closes or user changes
+  useEffect(() => {
+    if (!isChatDockOpen) {
+      setQ('');
+      setLoadingConvs(false);
+      setLoadingMsgs(false);
+      setConvs([]);
+      setMessages([]);
+      setComposer('');
+      setSending(false);
+      return;
+    }
+
+    // Dock opened: keep inputs but clear message list until a conv loads
+    setMessages([]);
+    setComposer('');
+  }, [isChatDockOpen, userId]);
 
   // Load conversations when dock opens
   useEffect(() => {
@@ -98,7 +132,9 @@ export default function ChatDock() {
         setConvs(rows);
 
         // Auto select first if none
-        if (!activeConversationId && rows.length > 0) openConversation(rows[0].id);
+        if (!activeConversationId && rows.length > 0) {
+          openConversation(rows[0].id);
+        }
       } catch {
         if (!cancelled && mountedRef.current) setConvs([]);
       } finally {
@@ -106,12 +142,11 @@ export default function ChatDock() {
       }
     };
 
-    run();
+    void run();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isChatDockOpen, userId]);
+  }, [isChatDockOpen, userId, activeConversationId, openConversation]);
 
   // Load messages for selected conversation
   useEffect(() => {
@@ -130,6 +165,11 @@ export default function ChatDock() {
         // Mark read + resync badges
         await markConversationRead(activeConversationId);
         await refreshCounts();
+
+        // Scroll after paint
+        setTimeout(() => {
+          if (!cancelled && mountedRef.current) scrollToBottom();
+        }, 0);
       } catch {
         if (!cancelled && mountedRef.current) setMessages([]);
       } finally {
@@ -137,11 +177,18 @@ export default function ChatDock() {
       }
     };
 
-    run();
+    void run();
     return () => {
       cancelled = true;
     };
   }, [isChatDockOpen, activeConversationId, refreshCounts]);
+
+  // Scroll on new messages append (send)
+  useEffect(() => {
+    if (!isChatDockOpen) return;
+    if (messages.length === 0) return;
+    scrollToBottom();
+  }, [messages.length, isChatDockOpen]);
 
   const onSend = async () => {
     const clean = composer.trim();
@@ -177,7 +224,9 @@ export default function ChatDock() {
             <div className="leading-tight">
               <div className="text-sm font-extrabold text-slate-900">Chat</div>
               <div className="text-xs text-slate-500">
-                {selected ? (selected.title ?? (selected.type === 'group' ? 'Groupe' : 'Direct')) : 'Conversations'}
+                {selected
+                  ? selected.title ?? (selected.type === 'group' ? 'Groupe' : 'Direct')
+                  : 'Conversations'}
               </div>
             </div>
           </div>
@@ -252,7 +301,9 @@ export default function ChatDock() {
                         type="button"
                         onClick={() => openConversation(c.id)}
                         className={`mb-2 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition ${
-                          isActive ? 'border-slate-200 bg-white' : 'border-transparent hover:border-slate-200 hover:bg-white'
+                          isActive
+                            ? 'border-slate-200 bg-white'
+                            : 'border-transparent hover:border-slate-200 hover:bg-white'
                         }`}
                         aria-label="Open conversation"
                       >
@@ -297,7 +348,10 @@ export default function ChatDock() {
                     {messages.map((m) => {
                       const mine = m.sender_id === userId;
                       return (
-                        <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                        <div
+                          key={m.id}
+                          className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
+                        >
                           <div
                             className={`max-w-[85%] rounded-2xl border px-3 py-2 text-xs shadow-sm ${
                               mine
@@ -306,13 +360,18 @@ export default function ChatDock() {
                             }`}
                           >
                             <div className="whitespace-pre-wrap">{safeText(m.content)}</div>
-                            <div className={`mt-1 text-[10px] ${mine ? 'text-white/70' : 'text-slate-500'}`}>
+                            <div
+                              className={`mt-1 text-[10px] ${
+                                mine ? 'text-white/70' : 'text-slate-500'
+                              }`}
+                            >
                               {formatTime(m.created_at)}
                             </div>
                           </div>
                         </div>
                       );
                     })}
+                    <div ref={messagesEndRef} />
                   </div>
                 )}
               </div>
@@ -346,7 +405,9 @@ export default function ChatDock() {
                     Envoyer
                   </button>
                 </div>
-                <div className="mt-1 text-[11px] text-slate-500">Entrée = envoyer • Shift+Entrée = ligne</div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Entrée = envoyer • Shift+Entrée = ligne
+                </div>
               </div>
             </div>
           </div>

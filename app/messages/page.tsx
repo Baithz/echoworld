@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-22)
+ * Version      : 1.1.1 (2026-01-22)
  * Objet        : Page Messages - Liste conversations + messages (Client + RLS)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,7 +10,7 @@
  * - UI premium + loading + empty states
  * - Sélection conversation -> affiche messages + envoi (sendMessage)
  * - Mark read (markConversationRead)
- * - Prépare ChatDock (bulle) : l’état (selectedConversationId) sera réutilisable
+ * - FIX ESLint no-unused-vars : suppression variable évènement non utilisée
  * =============================================================================
  */
 
@@ -18,16 +18,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import {
-  Mail,
-  Search,
-  ArrowRight,
-  Users,
-  User as UserIcon,
-  Loader2,
-  Check,
-  Send,
-} from 'lucide-react';
+import { Mail, Search, ArrowRight, Users, User as UserIcon, Loader2, Check, Send } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import {
   fetchConversationsForUser,
@@ -89,7 +80,7 @@ export default function MessagesPage() {
       }
     };
 
-    load();
+    void load();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       const uid = session?.user?.id ?? null;
@@ -122,14 +113,13 @@ export default function MessagesPage() {
         // Auto-select first if none selected
         if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
       } catch {
-        // Silent fail: keep UI stable
         if (mounted) setConvs([]);
       } finally {
         if (mounted) setLoadingConvs(false);
       }
     };
 
-    run();
+    void run();
 
     return () => {
       mounted = false;
@@ -148,6 +138,7 @@ export default function MessagesPage() {
         const rows = await fetchMessages(selectedId, 80);
         if (!mounted) return;
         setMessages(rows);
+
         // Mark read after load
         await markConversationRead(selectedId);
       } catch {
@@ -157,7 +148,7 @@ export default function MessagesPage() {
       }
     };
 
-    run();
+    void run();
 
     return () => {
       mounted = false;
@@ -169,7 +160,7 @@ export default function MessagesPage() {
     [convs, selectedId]
   );
 
-  const onSelectConv = async (id: string) => {
+  const onSelectConv = (id: string) => {
     setSelectedId(id);
   };
 
@@ -252,7 +243,7 @@ export default function MessagesPage() {
                 <Search className="h-4 w-4 text-slate-500" />
                 <input
                   value={q}
-                  onChange={(e) => setQ(e.target.value)}
+                  onChange={(ev) => setQ(ev.target.value)}
                   className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
                   placeholder="Rechercher…"
                   aria-label="Search conversations"
@@ -355,10 +346,7 @@ export default function MessagesPage() {
                   {messages.map((m) => {
                     const mine = m.sender_id === userId;
                     return (
-                      <div
-                        key={m.id}
-                        className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
-                      >
+                      <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                         <div
                           className={`max-w-[80%] rounded-2xl border px-4 py-3 text-sm shadow-sm ${
                             mine
@@ -367,11 +355,7 @@ export default function MessagesPage() {
                           }`}
                         >
                           <div className="whitespace-pre-wrap">{safePreview(m.content)}</div>
-                          <div
-                            className={`mt-2 text-[11px] ${
-                              mine ? 'text-white/70' : 'text-slate-500'
-                            }`}
-                          >
+                          <div className={`mt-2 text-[11px] ${mine ? 'text-white/70' : 'text-slate-500'}`}>
                             {formatTime(m.created_at)}
                           </div>
                         </div>
@@ -387,10 +371,10 @@ export default function MessagesPage() {
               <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
                 <input
                   value={composer}
-                  onChange={(e) => setComposer(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
+                  onChange={(ev) => setComposer(ev.target.value)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === 'Enter' && !ev.shiftKey) {
+                      ev.preventDefault();
                       void onSend();
                     }
                   }}
@@ -409,9 +393,7 @@ export default function MessagesPage() {
                   Envoyer
                 </button>
               </div>
-              <div className="mt-2 text-xs text-slate-500">
-                Entrée = envoyer • Shift+Entrée = nouvelle ligne
-              </div>
+              <div className="mt-2 text-xs text-slate-500">Entrée = envoyer • Shift+Entrée = nouvelle ligne</div>
             </div>
           </section>
         </div>

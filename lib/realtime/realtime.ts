@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : lib/realtime/realtime.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-22)
+ * Version      : 1.1.0 (2026-01-22)
  * Objet        : Gestion centralisée Supabase Realtime (messages + notifications)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,10 +10,10 @@
  * - Callbacks abonnables via onMessage/onNotification
  * - initRealtime(userId) / destroyRealtime()
  *
- * Notes
- * - Les events reçus doivent respecter RLS (Supabase Realtime configuré).
- * - Filtrage notifications : user_id=eq.<userId> (badge fiable).
- * - Messages : pas de filtre multi-conversations => on reçoit les INSERT visibles RLS.
+ * Improvements (v1.1.0)
+ * - Cleanup plus strict : unsubscribe + removeChannel (évite channels fantômes en dev/HMR)
+ * - Guards runtime : vérifie champs minimaux avant de notifier les listeners
+ * - SAFE : API publique inchangée
  * =============================================================================
  */
 
@@ -60,6 +60,32 @@ let notificationsChannel: RealtimeChannel | null = null;
 const messageListeners = new Set<MessageListener>();
 const notificationListeners = new Set<NotificationListener>();
 
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+function cleanupChannel(ch: RealtimeChannel | null) {
+  if (!ch) return;
+
+  try {
+    // Unsubscribe (async côté SDK) — on fire-and-forget
+    void ch.unsubscribe();
+  } catch {
+    // noop
+  }
+
+  try {
+    // supabase-js v2 : removeChannel recommandé pour éviter les channels fantômes en HMR
+    // On garde un guard pour compat.
+    const anySb = supabase as unknown as { removeChannel?: (c: RealtimeChannel) => Promise<unknown> };
+    if (typeof anySb.removeChannel === 'function') {
+      void anySb.removeChannel(ch);
+    }
+  } catch {
+    // noop
+  }
+}
+
 function ensureStartedForUser(userId: string) {
   if (currentUserId === userId && messagesChannel && notificationsChannel) return;
 
@@ -69,7 +95,7 @@ function ensureStartedForUser(userId: string) {
   currentUserId = userId;
 
   // --------------------------------------------------------------------------
-  // Messages
+  // Messages (RLS -> on reçoit uniquement ce qui est visible)
   // --------------------------------------------------------------------------
   messagesChannel = supabase
     .channel('ew-messages')
@@ -82,14 +108,27 @@ function ensureStartedForUser(userId: string) {
       },
       (payload) => {
         // payload.new est typé any côté SDK
-        const record = payload.new as RealtimeMessagePayload['record'];
+        const rec = payload.new as Partial<RealtimeMessagePayload['record']> | null;
 
-        // Sécurité : ignore self messages pour le badge (si tu veux)
-        if (!record?.id || !record?.conversation_id) return;
+        // Guards minimaux
+        if (!rec) return;
+        if (!isNonEmptyString(rec.id)) return;
+        if (!isNonEmptyString(rec.conversation_id)) return;
+        if (!isNonEmptyString(rec.sender_id)) return;
+        if (!isNonEmptyString(rec.created_at)) return;
 
-        messageListeners.forEach((cb) => {
-          cb({ type: 'message_insert', record });
-        });
+        const record: RealtimeMessagePayload['record'] = {
+          id: rec.id,
+          conversation_id: rec.conversation_id,
+          sender_id: rec.sender_id,
+          content: typeof rec.content === 'string' ? rec.content : '',
+          created_at: rec.created_at,
+          edited_at: rec.edited_at ?? null,
+          deleted_at: rec.deleted_at ?? null,
+          payload: rec.payload ?? null,
+        };
+
+        messageListeners.forEach((cb) => cb({ type: 'message_insert', record }));
       }
     )
     .subscribe();
@@ -108,12 +147,27 @@ function ensureStartedForUser(userId: string) {
         filter: `user_id=eq.${userId}`,
       },
       (payload) => {
-        const record = payload.new as RealtimeNotificationPayload['record'];
-        if (!record?.id || record.user_id !== userId) return;
+        const rec = payload.new as Partial<RealtimeNotificationPayload['record']> | null;
 
-        notificationListeners.forEach((cb) => {
-          cb({ type: 'notification_insert', record });
-        });
+        if (!rec) return;
+        if (!isNonEmptyString(rec.id)) return;
+        if (!isNonEmptyString(rec.user_id)) return;
+        if (rec.user_id !== userId) return;
+        if (!isNonEmptyString(rec.created_at)) return;
+
+        const record: RealtimeNotificationPayload['record'] = {
+          id: rec.id,
+          user_id: rec.user_id,
+          actor_id: rec.actor_id ?? null,
+          type: typeof rec.type === 'string' ? rec.type : 'unknown',
+          title: rec.title ?? null,
+          body: rec.body ?? null,
+          payload: rec.payload ?? null,
+          read_at: rec.read_at ?? null,
+          created_at: rec.created_at,
+        };
+
+        notificationListeners.forEach((cb) => cb({ type: 'notification_insert', record }));
       }
     )
     .subscribe();
@@ -126,8 +180,8 @@ export function initRealtime(userId: string) {
 
 export function destroyRealtime() {
   try {
-    if (messagesChannel) void messagesChannel.unsubscribe();
-    if (notificationsChannel) void notificationsChannel.unsubscribe();
+    cleanupChannel(messagesChannel);
+    cleanupChannel(notificationsChannel);
   } finally {
     messagesChannel = null;
     notificationsChannel = null;
