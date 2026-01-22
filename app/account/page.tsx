@@ -28,6 +28,7 @@ import { useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { Camera, Edit2, Save, Upload, X, Settings } from 'lucide-react';
 import Header from '@/components/layout/Header';
+import EchoFeed from '@/components/echo/EchoFeed';
 import { supabase } from '@/lib/supabase/client';
 
 type IdentityMode = 'real' | 'symbolic' | 'anonymous';
@@ -72,15 +73,6 @@ function safeInitials(input: string): string {
 function obfuscateId(id: string): string {
   if (!id) return 'Echoer';
   return `Echoer-${id.slice(0, 4)}`;
-}
-
-function formatDateFR(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString('fr-FR', { year: 'numeric', month: 'short', day: '2-digit' });
-  } catch {
-    return iso;
-  }
 }
 
 function normalizeHandle(input: string): string {
@@ -989,97 +981,14 @@ export default function AccountPage() {
           </PortalModal>
         </section>
 
+        {/* Flux des échos via EchoFeed */}
         <section className="mt-10">
-          <div className="flex items-end justify-between gap-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Derniers échos</h2>
-              <p className="mt-1 text-sm text-slate-600">Pas de compteurs. Juste une trace douce.</p>
-            </div>
-
-            <Link
-              href="/share"
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
-            >
-              Partager un écho
-            </Link>
-          </div>
-
-          {loading ? (
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
-              <div className="h-40 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
-              <div className="h-40 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
-            </div>
-          ) : echoes.length === 0 ? (
-            <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-8 text-center backdrop-blur-md">
-              <div className="text-lg font-semibold text-slate-700">Aucun écho pour l&apos;instant.</div>
-              <p className="mt-2 text-sm text-slate-600">Commence à partager tes histoires pour voir apparaître tes échos ici.</p>
-              <Link
-                href="/share"
-                className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
-              >
-                Créer mon premier écho
-              </Link>
-            </div>
-          ) : (
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
-              {echoes.map((e) => (
-                <article
-                  key={e.id}
-                  className="group rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md transition-all hover:border-slate-300 hover:shadow-lg"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-base font-bold text-slate-900 group-hover:text-violet-600">
-                        {e.title?.trim() ? e.title : 'Sans titre'}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
-                        <span>{formatDateFR(e.created_at)}</span>
-                        {e.emotion ? (
-                          <>
-                            <span>•</span>
-                            <span className="font-medium">{e.emotion}</span>
-                          </>
-                        ) : null}
-                        {e.visibility ? (
-                          <>
-                            <span>•</span>
-                            <span className="capitalize">{e.visibility}</span>
-                          </>
-                        ) : null}
-                        {e.is_anonymous ? (
-                          <>
-                            <span>•</span>
-                            <span className="text-slate-400">anonyme</span>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <Link
-                      href={`/echo/${e.id}`}
-                      className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 transition-all hover:border-slate-300 hover:shadow-md"
-                    >
-                      Ouvrir
-                    </Link>
-                  </div>
-
-                  <p className="mt-4 line-clamp-4 text-sm leading-relaxed text-slate-700">{e.content}</p>
-
-                  <div className="mt-4 text-xs text-slate-500">
-                    {e.city || e.country ? (
-                      <span>
-                        {e.city ? e.city : ''}
-                        {e.city && e.country ? ' — ' : ''}
-                        {e.country ? e.country : ''}
-                      </span>
-                    ) : (
-                      <span className="text-slate-400">Localisation masquée</span>
-                    )}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
+          <EchoFeed
+            loading={loading}
+            echoes={echoes}
+            userId={userId}
+            onOpenEcho={(id) => router.push(`/echo/${id}`)}
+          />
         </section>
       </main>
     </>
