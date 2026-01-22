@@ -2,19 +2,21 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.2 (2026-01-22)
+ * Version      : 1.5.0 (2026-01-22)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism (sans dropdown)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Desktop: Messages ouvre ChatDock (toggleChatDock) + auto-open (openChatDock) si user
- * - Mobile: conserve navigation vers /messages et /notifications
+ * - Desktop: Messages ouvre ChatDock (toggleChatDock) si user, sinon /login
+ * - Desktop: Ajout recherche globale (membres / échos / sujets) inline dans le header
+ * - Mobile: conserve navigation vers /messages et /notifications + bouton recherche (overlay)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.4.2 (2026-01-22)
- * - [FIX] Si user non connecté: bouton Messages desktop redirige /login (pas de dock vide)
- * - [IMPROVED] A11y: aria-controls + aria-expanded pour le bouton Messages (dock)
+ * 1.5.0 (2026-01-22)
+ * - [NEW] GlobalSearch desktop (inline) + mobile (overlay) dans le header
+ * - [KEEP] Comportement Messages desktop (dock si connecté, /login sinon)
  * - [KEEP] Badges, identité, notifications page, mobile inchangé
+ * - [SAFE] Aucun changement de styles du header existant (insertion only)
  * =============================================================================
  */
 
@@ -39,6 +41,7 @@ import {
 } from 'lucide-react';
 import { useLang } from '@/lib/i18n/LanguageProvider';
 import LanguageSelect from '@/components/home/LanguageSelect';
+import GlobalSearch from '@/components/search/GlobalSearch';
 import { supabase } from '@/lib/supabase/client';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 
@@ -259,7 +262,7 @@ export default function Header() {
       }`}
     >
       <div className="w-full px-6">
-        <div className="flex h-20 items-center justify-between">
+        <div className="flex h-20 items-center justify-between gap-4">
           <Link
             href="/"
             className="group flex items-center gap-3"
@@ -282,7 +285,8 @@ export default function Header() {
             </div>
           </Link>
 
-          <nav className="hidden items-center gap-8 lg:flex">
+          {/* Desktop nav + search */}
+          <nav className="hidden items-center gap-6 lg:flex">
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -296,11 +300,19 @@ export default function Header() {
                 </Link>
               );
             })}
+
+            {/* NEW: Global search (desktop inline) */}
+            <GlobalSearch variant="desktop" />
           </nav>
 
           <div className="flex items-center gap-4">
             <div className="hidden lg:block">
               <LanguageSelect />
+            </div>
+
+            {/* NEW: Mobile search button (overlay) */}
+            <div className="lg:hidden">
+              <GlobalSearch variant="mobile" />
             </div>
 
             <div className="hidden lg:flex items-center gap-2">

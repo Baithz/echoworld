@@ -213,7 +213,7 @@ export default function ChatDock() {
   if (!isChatDockOpen) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-[60] w-[380px] max-w-[92vw]">
+    <div className="fixed bottom-6 right-6 z-60 w-95 max-w-[92vw]">
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-2xl shadow-black/15 backdrop-blur-xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -282,7 +282,7 @@ export default function ChatDock() {
                 </div>
               </div>
 
-              <div className="max-h-[360px] overflow-auto px-2 pb-2">
+              <div className="max-h-90 overflow-auto px-2 pb-2">
                 {loadingConvs ? (
                   <div className="flex items-center gap-2 p-2 text-xs text-slate-600">
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -331,7 +331,7 @@ export default function ChatDock() {
 
             {/* Messages */}
             <div className="flex flex-col">
-              <div className="h-[320px] overflow-auto p-3">
+              <div className="h-80 overflow-auto p-3">
                 {!activeConversationId ? (
                   <div className="text-xs text-slate-600">Sélectionne une conversation.</div>
                 ) : loadingMsgs ? (
