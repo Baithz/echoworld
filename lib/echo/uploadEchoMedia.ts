@@ -2,12 +2,12 @@
  * =============================================================================
  * Fichier      : lib/echo/uploadEchoMedia.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.3 (2026-01-22)
+ * Version      : 1.0.4 (2026-01-22)
  * Objet        : Upload des médias liés à un écho (photos)
  * -----------------------------------------------------------------------------
- * Fix v1.0.3 :
- * - [SAFE] Nom du bucket centralisé (évite les divergences)
- * - [IMPROVED] Message d'erreur explicite si bucket manquant / mal nommé
+ * Fix v1.0.4 :
+ * - [FIX] RLS echo_media : ajout de user_id (auth.uid) dans les rows insérées
+ * - [SAFE] Récupération user via supabase.auth.getUser() (pas de dépendance externe)
  * - [SAFE] Zéro régression : même logique upload + getPublicUrl + insert echo_media
  * =============================================================================
  */
@@ -17,6 +17,7 @@ import { supabase } from '@/lib/supabase/client';
 /** Row minimale attendue par echo_media */
 type EchoMediaInsertRow = {
   echo_id: string;
+  user_id: string; // NEW (RLS)
   url: string;
   position: number;
 };
@@ -55,6 +56,12 @@ function asMessage(err: unknown): string {
 export async function uploadEchoMedia(echoId: string, files: File[]): Promise<void> {
   if (!files.length) return;
 
+  // Récup user_id (nécessaire pour policy RLS echo_media)
+  const { data: authData, error: authErr } = await supabase.auth.getUser();
+  if (authErr) throw new Error(asMessage(authErr));
+  const userId = authData.user?.id ?? null;
+  if (!userId) throw new Error('Utilisateur non authentifié (user_id manquant).');
+
   const sliced = files.slice(0, MAX_FILES);
 
   for (const f of sliced) {
@@ -90,6 +97,7 @@ export async function uploadEchoMedia(echoId: string, files: File[]): Promise<vo
 
     rows.push({
       echo_id: echoId,
+      user_id: userId,
       url: pub.data.publicUrl,
       position: i,
     });
