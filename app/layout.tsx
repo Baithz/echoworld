@@ -2,26 +2,29 @@
  * =============================================================================
  * Fichier      : app/layout.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-21)
- * Objet        : Layout racine - Fond cinéma immersif + Provider i18n
+ * Version      : 2.3.0 (2026-01-22)
+ * Objet        : Layout racine - Fond cinéma immersif + i18n + Realtime + ChatDock
  * -----------------------------------------------------------------------------
  * Description  :
  * - Fond premium : radial gradients + grid subtil + grain + vignette
- * - LanguageProvider global
- * - Thème clair par défaut (le switch clair/sombre viendra via settings user)
- * - Pas d'interception clics (pointer-events-none)
+ * - Providers globaux : LanguageProvider + RealtimeProvider
+ * - ChatDock global (bulle) : rendu une fois, piloté par RealtimeProvider
+ * - SAFE : styles inchangés, aucune régression visuelle du background
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-21)
- * - [KEEP] Structure et styles inchangés (sans régression)
- * - [CHORE] Changelog standardisé (prépare intégration settings thème)
+ * 2.3.0 (2026-01-22)
+ * - [NEW] RealtimeProvider global
+ * - [NEW] ChatDock global (components/messages/ChatDock)
+ * - [KEEP] Background + LanguageProvider inchangés
  * =============================================================================
  */
 
 import './globals.css';
 import type { ReactNode } from 'react';
 import { LanguageProvider } from '../lib/i18n/LanguageProvider';
+import { RealtimeProvider } from '@/lib/realtime/RealtimeProvider';
+import ChatDock from '@/components/messages/ChatDock';
 
 export const metadata = {
   title: 'EchoWorld — Your Story, Their Echo, Our World',
@@ -53,7 +56,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <div className="absolute inset-0 ew-vignette" />
         </div>
 
-        <LanguageProvider>{children}</LanguageProvider>
+        <LanguageProvider>
+          <RealtimeProvider>
+            {children}
+            {/* Dock global (bulle) */}
+            <ChatDock />
+          </RealtimeProvider>
+        </LanguageProvider>
       </body>
     </html>
   );

@@ -2,13 +2,15 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-21)
- * Objet        : Header navigation moderne - Sticky + Glassmorphism
+ * Version      : 1.4.1 (2026-01-22)
+ * Objet        : Header navigation moderne - Sticky + Glassmorphism (sans dropdown)
  * -----------------------------------------------------------------------------
- * Changelog    :
- * - [FIX] ESLint no-unused-vars : user_settings est désormais utilisé (sans impact UI)
- * - [SAFE] Aucun changement visuel : usage via aria-label + data-attribute uniquement
- * - [KEEP] Identité EchoWorld : profiles + user_settings + cache léger inchangés
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.4.1 (2026-01-22)
+ * - [NEW] Bouton Messages desktop -> ouvre ChatDock (toggleChatDock) au lieu de naviguer
+ * - [KEEP] Lien /messages reste dispo dans ChatDock (bouton "Ouvrir")
+ * - [SAFE] Aucune régression mobile (mobile conserve liens)
  * =============================================================================
  */
 
@@ -25,14 +27,16 @@ import {
   Share2,
   Info,
   User,
-  ChevronDown,
   Settings,
   LogOut,
   LayoutDashboard,
+  Mail,
+  Bell,
 } from 'lucide-react';
 import { useLang } from '@/lib/i18n/LanguageProvider';
 import LanguageSelect from '@/components/home/LanguageSelect';
 import { supabase } from '@/lib/supabase/client';
+import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 
 type SessionUser = {
   id: string;
@@ -75,8 +79,26 @@ function obfuscateId(id: string): string {
   return `Echoer-${id.slice(0, 4)}`;
 }
 
+function Badge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = count > 99 ? '99+' : String(count);
+
+  return (
+    <span
+      className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-600 px-1 text-[11px] font-bold leading-none text-white shadow"
+      aria-label={`${label} unread`}
+    >
+      {label}
+    </span>
+  );
+}
+
 export default function Header() {
   const { t } = useLang();
+
+  // Realtime (badges + chatdock)
+  const { unreadMessagesCount, unreadNotificationsCount, toggleChatDock } = useRealtime();
+
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -88,10 +110,6 @@ export default function Header() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profile, setProfile] = useState<ProfileRow | null>(null);
   const [settings, setSettings] = useState<UserSettingsRow | null>(null);
-
-  // Desktop dropdown
-  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
-  const userMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Cache léger (évite refetch inutile si header remonte)
   const cacheRef = useRef<{
@@ -140,7 +158,6 @@ export default function Header() {
     let mounted = true;
 
     const loadIdentity = async (userId: string) => {
-      // Cache hit
       if (cacheRef.current?.userId === userId) {
         setProfile(cacheRef.current.profile);
         setSettings(cacheRef.current.settings);
@@ -182,15 +199,6 @@ export default function Header() {
     };
   }, [user?.id]);
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (!userMenuRef.current) return;
-      if (!userMenuRef.current.contains(e.target as Node)) setIsUserMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, []);
-
   const navItems = useMemo(
     () => [
       { href: '/', label: t('nav.home'), icon: Globe2 },
@@ -210,12 +218,10 @@ export default function Header() {
       cacheRef.current = null;
       setProfile(null);
       setSettings(null);
-      setIsUserMenuOpen(false);
       setIsMobileMenuOpen(false);
     }
   };
 
-  // Email masqué : on affiche l'identité EchoWorld (handle / display_name / fallback)
   const displayIdentity = (() => {
     if (!user?.id) return 'Account';
     if (profile?.identity_mode === 'anonymous') return 'Anonymous';
@@ -232,7 +238,6 @@ export default function Header() {
     return safeInitials(obfuscateId(user.id));
   })();
 
-  // ✅ Utilisation "non invasive" de settings (pas de régression UI)
   const themePref: UserSettingsRow['theme'] = settings?.theme ?? 'system';
   const softNotifLabel = settings?.notifications_soft ? 'on' : 'off';
 
@@ -244,10 +249,8 @@ export default function Header() {
           : 'bg-white/55'
       }`}
     >
-      {/* Pleine largeur (bords écran) */}
       <div className="w-full px-6">
         <div className="flex h-20 items-center justify-between">
-          {/* Brand */}
           <Link
             href="/"
             className="group flex items-center gap-3"
@@ -270,7 +273,6 @@ export default function Header() {
             </div>
           </Link>
 
-          {/* Nav desktop */}
           <nav className="hidden items-center gap-8 lg:flex">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -287,28 +289,53 @@ export default function Header() {
             })}
           </nav>
 
-          {/* Right actions */}
           <div className="flex items-center gap-4">
             <div className="hidden lg:block">
               <LanguageSelect />
             </div>
 
-            {/* Desktop account area */}
-            <div className="hidden lg:flex items-center gap-3">
+            <div className="hidden lg:flex items-center gap-2">
+              {/* Messages -> ouvre le ChatDock */}
+              <button
+                type="button"
+                onClick={() => toggleChatDock()}
+                className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                aria-label={`Messages. Unread: ${unreadMessagesCount}.`}
+              >
+                <Mail className="h-5 w-5" />
+                <Badge count={unreadMessagesCount} />
+              </button>
+
+              {/* Notifications (reste page) */}
+              <Link
+                href="/notifications"
+                className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                aria-label={`Notifications. Unread: ${unreadNotificationsCount}.`}
+              >
+                <Bell className="h-5 w-5" />
+                <Badge count={unreadNotificationsCount} />
+              </Link>
+
               {authLoading ? (
-                <div className="h-10 w-40 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
+                <div className="h-10 w-24 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
               ) : user ? (
-                <div ref={userMenuRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setIsUserMenuOpen((v) => !v)}
-                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
-                    aria-haspopup="menu"
-                    aria-expanded={isUserMenuOpen}
-                    aria-label={`User menu. Theme: ${themePref}. Soft notifications: ${softNotifLabel}.`}
+                <>
+                  <Link
+                    href="/dashboard"
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                    aria-label="Dashboard"
+                  >
+                    <LayoutDashboard className="h-4 w-4" />
+                    Dashboard
+                  </Link>
+
+                  <Link
+                    href="/account"
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                    aria-label={`Profile. ${displayIdentity}. Theme: ${themePref}. Soft notifications: ${softNotifLabel}.`}
                     data-theme-pref={themePref}
                   >
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white">
                       {profile?.avatar_type === 'image' && profile.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -319,69 +346,34 @@ export default function Header() {
                       ) : (
                         <span className="text-xs font-bold text-slate-900">{avatarLabel}</span>
                       )}
-                    </div>
+                    </span>
 
                     <span className="max-w-40 truncate">
                       {profileLoading ? 'Loading…' : displayIdentity}
                     </span>
+                  </Link>
 
-                    <ChevronDown className="h-4 w-4 opacity-70" />
+                  <Link
+                    href="/settings"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/70 text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
+                    aria-label="Settings"
+                  >
+                    <Settings className="h-5 w-5" />
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={logout}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-rose-700 transition-colors hover:bg-rose-100"
+                    aria-label="Logout"
+                  >
+                    <LogOut className="h-5 w-5" />
                   </button>
-
-                  {isUserMenuOpen && (
-                    <div
-                      role="menu"
-                      className="absolute right-0 mt-2 w-60 overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl shadow-black/10 backdrop-blur-xl"
-                    >
-                      <Link
-                        href="/dashboard"
-                        onClick={() => setIsUserMenuOpen(false)}
-                        className="flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
-                        role="menuitem"
-                      >
-                        <LayoutDashboard className="h-4 w-4" />
-                        Dashboard
-                      </Link>
-
-                      {/* Pas de régression : on conserve /account */}
-                      <Link
-                        href="/account"
-                        onClick={() => setIsUserMenuOpen(false)}
-                        className="flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
-                        role="menuitem"
-                      >
-                        <User className="h-4 w-4" />
-                        Mon profil
-                      </Link>
-
-                      <Link
-                        href="/settings"
-                        onClick={() => setIsUserMenuOpen(false)}
-                        className="flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-900 hover:bg-slate-50"
-                        role="menuitem"
-                      >
-                        <Settings className="h-4 w-4" />
-                        Paramètres
-                      </Link>
-
-                      <div className="h-px bg-slate-200" />
-
-                      <button
-                        type="button"
-                        onClick={logout}
-                        className="flex w-full items-center gap-2 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"
-                        role="menuitem"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Déconnexion
-                      </button>
-                    </div>
-                  )}
-                </div>
+                </>
               ) : (
                 <Link
                   href="/login"
-                  className="items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white lg:flex"
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
                 >
                   <User className="h-4 w-4" />
                   {t('nav.login')}
@@ -389,7 +381,6 @@ export default function Header() {
               )}
             </div>
 
-            {/* Mobile burger */}
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen((v) => !v)}
@@ -404,7 +395,7 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile nav */}
+      {/* Mobile nav (inchangé: liens vers pages) */}
       {isMobileMenuOpen && (
         <div id="mobile-nav" className="border-t border-slate-200 bg-white/95 backdrop-blur-xl lg:hidden">
           <nav className="w-full px-6 py-6">
@@ -424,11 +415,46 @@ export default function Header() {
                 );
               })}
 
+              <div className="border-t border-slate-200 pt-4 space-y-3">
+                <Link
+                  href="/messages"
+                  onClick={closeMobile}
+                  className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-medium text-slate-900 hover:bg-white"
+                  aria-label={`Messages. Unread: ${unreadMessagesCount}.`}
+                >
+                  <span className="flex items-center gap-3">
+                    <Mail className="h-5 w-5" />
+                    Messages
+                  </span>
+                  {unreadMessagesCount > 0 ? (
+                    <span className="rounded-full bg-rose-600 px-2 py-1 text-xs font-bold text-white">
+                      {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
+                    </span>
+                  ) : null}
+                </Link>
+
+                <Link
+                  href="/notifications"
+                  onClick={closeMobile}
+                  className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-medium text-slate-900 hover:bg-white"
+                  aria-label={`Notifications. Unread: ${unreadNotificationsCount}.`}
+                >
+                  <span className="flex items-center gap-3">
+                    <Bell className="h-5 w-5" />
+                    Notifications
+                  </span>
+                  {unreadNotificationsCount > 0 ? (
+                    <span className="rounded-full bg-rose-600 px-2 py-1 text-xs font-bold text-white">
+                      {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
+                    </span>
+                  ) : null}
+                </Link>
+              </div>
+
               <div className="border-t border-slate-200 pt-4">
                 <LanguageSelect />
               </div>
 
-              {/* Account area */}
               <div className="border-t border-slate-200 pt-4">
                 {authLoading ? (
                   <div className="h-12 w-full animate-pulse rounded-xl border border-slate-200 bg-white/80" />
