@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : app/account/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.1 (2026-01-22)
- * Objet        : Mon espace — Profil utilisateur COMPLET + avatar/bannière + édition inline
+ * Version      : 2.2.0 (2026-01-22)
+ * Objet        : Mon profil — Profil utilisateur COMPLET + avatar/bannière + édition inline
  * -----------------------------------------------------------------------------
  * Description  :
  * - Client Component avec interactions complètes
@@ -18,24 +18,22 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.1 (2026-01-22)
- * - [FIX] ESLint @typescript-eslint/no-unused-vars : suppression de refreshProfile (non utilisée)
- * - [NO-REGRESSION] Aucun changement UI/UX ou logique métier
- * -----------------------------------------------------------------------------
- * 2.1.0 (2026-01-22)
- * - [NEW] Édition inline : handle + bio + langue (save/cancel + feedback)
- * - [FIX] Update Supabase : .update(...).eq(...).select('*').maybeSingle() (au lieu de maybeSingle() direct)
- * - [IMPROVED] Upload avatar/bannière : chemins stables + cache-busting
- * - [NO-REGRESSION] UI/UX globale, routes et liste d’échos conservées
+ * 2.2.0 (2026-01-22)
+ * - [UX] Titre page : "Mon espace" -> "Mon profil"
+ * - [UX] Suppression bouton "Paramètres" (top-right) : garder uniquement "Paramètres avancés"
+ * - [UX] Icône "Paramètres avancés" : crayon -> roue dentée
+ * - [UX] Feedback ok/error auto-dismiss (disparaît après quelques secondes)
+ * - [FIX] Bannière : bouton jamais grisé silencieusement + message clair si upload impossible
+ * - [NO-REGRESSION] Routes, layout, logique métier et liste d’échos conservées
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Camera, Edit2, Save, Upload, X } from 'lucide-react';
+import { Camera, Edit2, Save, Settings, Upload, X } from 'lucide-react';
 import Header from '@/components/layout/Header';
 import { supabase } from '@/lib/supabase/client';
 
@@ -160,6 +158,10 @@ const LANG_CHOICES: Array<{ code: string; label: string }> = [
   { code: 'ko', label: '한국어' },
 ];
 
+// Feedback auto-dismiss (UX)
+const OK_TIMEOUT_MS = 3500;
+const ERROR_TIMEOUT_MS = 6000;
+
 export default function AccountPage() {
   const router = useRouter();
 
@@ -173,6 +175,20 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
+  // timers (avoid stacking)
+  const okTimerRef = useRef<number | null>(null);
+  const errTimerRef = useRef<number | null>(null);
+
+  const scheduleOkClear = () => {
+    if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
+    okTimerRef.current = window.setTimeout(() => setOk(null), OK_TIMEOUT_MS);
+  };
+
+  const scheduleErrorClear = () => {
+    if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
+    errTimerRef.current = window.setTimeout(() => setError(null), ERROR_TIMEOUT_MS);
+  };
+
   // Upload states
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
@@ -185,6 +201,29 @@ export default function AccountPage() {
   const [editHandle, setEditHandle] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editLang, setEditLang] = useState('en');
+
+  // Auto-dismiss ok/error (UX rule)
+  useEffect(() => {
+    if (ok) scheduleOkClear();
+    return () => {
+      if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
+    };
+  }, [ok]);
+
+  useEffect(() => {
+    if (error) scheduleErrorClear();
+    return () => {
+      if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
+    };
+  }, [error]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
+      if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
+    };
+  }, []);
 
   // Auth guard
   useEffect(() => {
@@ -440,7 +479,8 @@ export default function AccountPage() {
       setOk('Bannière mise à jour.');
       setShowBannerUpload(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Erreur lors de l'upload.");
+      // message clair + pas de bouton grisé silencieux
+      setError(e instanceof Error ? e.message : "Impossible d'ajouter la bannière pour le moment.");
     } finally {
       setUploadingBanner(false);
     }
@@ -465,16 +505,11 @@ export default function AccountPage() {
       <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
         <div className="flex items-start justify-between gap-6">
           <div>
-            <h1 className="text-3xl font-bold text-slate-900">Mon espace</h1>
+            <h1 className="text-3xl font-bold text-slate-900">Mon profil</h1>
             <p className="mt-2 text-slate-600">Ta présence, tes récits, et une navigation calme.</p>
           </div>
 
-          <Link
-            href="/settings"
-            className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white"
-          >
-            Paramètres
-          </Link>
+          {/* Bouton "Paramètres" supprimé (redondant) */}
         </div>
 
         {error && (
@@ -501,11 +536,18 @@ export default function AccountPage() {
 
             <button
               type="button"
-              onClick={() => setShowBannerUpload((v) => !v)}
+              onClick={() => {
+                if (uploadingBanner) {
+                  setError('Upload en cours…');
+                  return;
+                }
+                setShowBannerUpload((v) => !v);
+              }}
               className="absolute bottom-4 right-4 flex items-center gap-2 rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-black/60"
+              aria-disabled={uploadingBanner}
             >
               <Camera className="h-4 w-4" />
-              Modifier bannière
+              {uploadingBanner ? 'Upload en cours…' : 'Modifier bannière'}
             </button>
 
             {showBannerUpload && (
@@ -581,7 +623,9 @@ export default function AccountPage() {
                     </button>
 
                     <h3 className="text-lg font-bold text-slate-900">Changer l&apos;avatar</h3>
-                    <p className="mt-1 text-sm text-slate-600">JPG/PNG/WEBP/GIF • Max 5 MB • Recommandé : 512×512</p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      JPG/PNG/WEBP/GIF • Max 5 MB • Recommandé : 512×512
+                    </p>
 
                     <label className="mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 transition-colors hover:border-slate-400 hover:bg-slate-100">
                       <Upload className="h-8 w-8 text-slate-400" />
@@ -627,7 +671,9 @@ export default function AccountPage() {
                       onClick={saveInlineEdit}
                       disabled={!canSaveInline}
                       className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
-                        canSaveInline ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                        canSaveInline
+                          ? 'bg-slate-900 text-white hover:bg-slate-800'
+                          : 'bg-slate-200 text-slate-500 cursor-not-allowed'
                       }`}
                       title="Enregistrer"
                     >
@@ -652,8 +698,8 @@ export default function AccountPage() {
                   className="ml-1 rounded-lg p-2 text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-900"
                   title="Paramètres avancés"
                 >
-                  <span className="sr-only">Paramètres</span>
-                  <Edit2 className="h-4 w-4" />
+                  <span className="sr-only">Paramètres avancés</span>
+                  <Settings className="h-4 w-4" />
                 </Link>
               </div>
 
@@ -689,7 +735,9 @@ export default function AccountPage() {
                       inputMode="text"
                     />
                     <div className="mt-2 text-xs text-slate-500">
-                      {editHandle.trim() ? `Format appliqué : ${normalizeHandle(editHandle)}` : 'Optionnel (tu peux rester sans pseudo).'}
+                      {editHandle.trim()
+                        ? `Format appliqué : ${normalizeHandle(editHandle)}`
+                        : 'Optionnel (tu peux rester sans pseudo).'}
                     </div>
                   </div>
 
@@ -714,7 +762,7 @@ export default function AccountPage() {
                     <textarea
                       value={editBio}
                       onChange={(e) => setEditBio(e.target.value)}
-                      placeholder="Une phrase douce. Rien d'obligatoire."
+                      placeholder="Une phrase douce. Rien d&apos;obligatoire."
                       className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
                       rows={3}
                       maxLength={240}
@@ -750,7 +798,9 @@ export default function AccountPage() {
           ) : echoes.length === 0 ? (
             <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-8 text-center backdrop-blur-md">
               <div className="text-lg font-semibold text-slate-700">Aucun écho pour l&apos;instant.</div>
-              <p className="mt-2 text-sm text-slate-600">Commence à partager tes histoires pour voir apparaître tes échos ici.</p>
+              <p className="mt-2 text-sm text-slate-600">
+                Commence à partager tes histoires pour voir apparaître tes échos ici.
+              </p>
               <Link
                 href="/share"
                 className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
