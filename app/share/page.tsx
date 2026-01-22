@@ -1,8 +1,13 @@
 // =============================================================================
 // Fichier      : app/share/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 3.2.0 (2026-01-22)
+// Version      : 3.3.0 (2026-01-22)
 // Objet        : Publier un écho — Version complète avec émojis + géoloc + photos
+// -----------------------------------------------------------------------------
+// FIX v3.3.0
+// - [NEW] Géocodage ville/pays → remplissage echoes.location en GeoJSON Point
+// - [SAFE] Fallback géocodage sur pays seul si la ville est vide ou non trouvée
+// - [SAFE] Emotion obligatoirement renseignée + contrôlée (type Emotion + isEmotion)
 // -----------------------------------------------------------------------------
 // FIX v3.2.0
 // - [FIX] Émotions alignées sur la contrainte BDD echoes.emotion_check (8 valeurs autorisées)
@@ -24,6 +29,12 @@ import { uploadEchoMedia } from '@/lib/echo/uploadEchoMedia';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
+
+// GeoJSON Point pour echoes.location
+type GeoPoint = {
+  type: 'Point';
+  coordinates: [number, number]; // [lng, lat]
+};
 
 // IMPORTANT : aligné avec la contrainte echoes_emotion_check (BDD)
 type Emotion =
@@ -63,13 +74,14 @@ type EchoInsert = {
   user_id: string;
   title: string | null;
   content: string;
-  emotion: Emotion; // obligatoire
+  emotion: Emotion; // obligatoire et contrôlé
   language: string | null;
   country: string | null;
   city: string | null;
   is_anonymous: boolean;
   visibility: Visibility;
   status: Status;
+  location: GeoPoint | null; // ✅ NEW : GeoJSON Point [lng, lat]
 };
 
 type PgErr = { message?: string } | null;
@@ -105,6 +117,34 @@ function getErrorMessage(err: unknown, fallback: string): string {
 
 function isEmotion(value: string): value is Emotion {
   return EMOTIONS.some((e) => e.value === value);
+}
+
+// Géocodage ville/pays via Nominatim → GeoJSON Point [lng, lat]
+async function geocodeCityCountry(city: string, country: string): Promise<GeoPoint | null> {
+  const q = [city?.trim(), country?.trim()].filter(Boolean).join(', ');
+  if (!q) return null;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as Array<{ lat: string; lon: string }>;
+    const first = data?.[0];
+    if (!first) return null;
+
+    const lat = Number(first.lat);
+    const lng = Number(first.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return {
+      type: 'Point',
+      coordinates: [lng, lat],
+    };
+  } catch {
+    return null;
+  }
 }
 
 export default function SharePage() {
@@ -401,22 +441,34 @@ export default function SharePage() {
       return;
     }
 
+    // Emotion réellement obligatoire (message clair)
+    if (!emotion) {
+      setError('Choisis une émotion pour publier.');
+      return;
+    }
+
     if (!isEmotion(emotion)) {
       setError("Choisis une émotion pour publier l'écho.");
       return;
     }
 
+    // Géocodage ville + pays, puis fallback sur pays seul si besoin
+    const geoPoint =
+      (await geocodeCityCountry(city, country)) ||
+      (country ? await geocodeCityCountry('', country) : null);
+
     const payload: EchoInsert = {
       user_id: userId,
       title: title.trim() ? title.trim() : null,
       content: c,
-      emotion,
+      emotion, // Emotion typée et validée
       language: language.trim() ? language.trim() : null,
       country: country.trim() ? country.trim() : null,
       city: city.trim() ? city.trim() : null,
       is_anonymous: !!isAnonymous,
       visibility,
       status,
+      location: geoPoint,
     };
 
     setSaving(true);
@@ -759,7 +811,7 @@ export default function SharePage() {
                 onChange={(e) => setCity(e.target.value)}
                 disabled={saving}
                 maxLength={80}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
+                className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
                 placeholder="Nancy, Paris, Berlin…"
               />
             </div>

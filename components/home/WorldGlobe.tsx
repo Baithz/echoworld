@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/home/WorldGlobe.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 5.1.0 (2026-01-21)
+ * Version      : 5.3.0 (2026-01-22)
  * Objet        : Globe HYBRIDE - Hauteur fixe + Pins premium + Carte détaillée
  * -----------------------------------------------------------------------------
  * Refonte v5 :
@@ -13,6 +13,22 @@
  * ✅ Clusters intelligents pour stories proches
  * ✅ Détails géographiques (labels pays/villes)
  *
+ * Update v5.3.0 :
+ * - [NEW] i18n complet : suppression des strings hardcodées (LIVE, LOADING, etc.)
+ * - [NEW] Libellés émotions i18n (labels des émotions)
+ * - [SAFE] Fallbacks i18n (erreurs/empty/anonymous) sans casser l’existant
+ * - [SAFE] Compat visuelle conservée (classes, layout, animations inchangés)
+ *
+ * Update v5.2.1 :
+ * - [FIX] Typage TS strict sur le mapping Supabase → Story[] (filter type guard)
+ *
+ * Update v5.2 :
+ * - [NEW] Chargement des échos depuis Supabase (plus de MOCK_STORIES)
+ * - [NEW] Utilisation de echoes.location (GeoJSON Point) pour les pins
+ * - [NEW] Alignement émotions sur echoes.emotion_check (8 valeurs)
+ * - [SAFE] Filtre status=published + visibility in ('world','local')
+ * - [SAFE] Ignorer les échos sans émotion valide ou sans coordonnées
+ *
  * Update v5.1 :
  * - [NEW] Prop `mode` : 'home' | 'full' (plein écran pour /explore)
  * - [IMPROVED] Styles container adaptés au thème clair par défaut
@@ -22,19 +38,98 @@
 
 'use client';
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import dynamic from 'next/dynamic';
 import { Heart, MapPin, Sparkles, X, Share2, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useLang } from '@/lib/i18n/LanguageProvider';
 import type { GlobeMethods } from 'react-globe.gl';
+import { supabase } from '@/lib/supabase/client';
 
 const Globe = dynamic(() => import('react-globe.gl'), { ssr: false });
 
-type Emotion = 'joy' | 'hope' | 'gratitude' | 'reflection' | 'solidarity';
+// IMPORTANT : aligné sur echoes.emotion_check (BDD)
+type Emotion =
+  | 'joy'
+  | 'hope'
+  | 'love'
+  | 'resilience'
+  | 'gratitude'
+  | 'courage'
+  | 'peace'
+  | 'wonder';
+
+// Types i18n SAFE (on n'élargit pas ton I18nKey existant ici)
+// -> On cast localement, sans toucher le provider ni casser le typing global.
+type GlobeI18nKey =
+  | 'world.live_indicator'
+  | 'world.loading'
+  | 'world.story_count'
+  | 'world.countries_count'
+  | 'world.zoom_hint'
+  | 'world.click_explore'   
+  | 'world.error'
+  | 'world.empty'
+  | 'world.recenter'
+  | 'story.anonymous'
+  | 'story.from'
+  | 'story.read_more'
+  | 'actions.resonate'
+  | 'actions.connect'
+  | 'actions.share'
+  | 'emotion.joy'
+  | 'emotion.hope'
+  | 'emotion.love'
+  | 'emotion.resilience'
+  | 'emotion.gratitude'
+  | 'emotion.courage'
+  | 'emotion.peace'
+  | 'emotion.wonder';
+
+const EMOTION_ICON: Record<Emotion, string> = {
+  joy: '😊',
+  hope: '🌟',
+  love: '❤️',
+  resilience: '💪',
+  gratitude: '🙏',
+  courage: '✨',
+  peace: '🕊️',
+  wonder: '🌍',
+};
+
+const EMOTION_COLOR: Record<Emotion, string> = {
+  joy: '#10B981',
+  hope: '#06B6D4',
+  love: '#EF4444',
+  resilience: '#F59E0B',
+  gratitude: '#8B5CF6',
+  courage: '#A855F7',
+  peace: '#94A3B8',
+  wonder: '#22C55E',
+};
+
+type EchoRow = {
+  id: string;
+  content: string;
+  emotion: Emotion | null;
+  city: string | null;
+  country: string | null;
+  created_at: string | null;
+  is_anonymous: boolean | null;
+  location: { type: 'Point'; coordinates: [number, number] } | null;
+  echo_media?: Array<{ url: string; position: number | null }>;
+  profiles?: { handle: string | null; display_name: string | null } | null;
+};
 
 type Story = {
-  id: number;
+  id: string;
   lat: number;
   lng: number;
   city: string;
@@ -44,6 +139,7 @@ type Story = {
   author?: string;
   date?: string;
   fullContent?: string;
+  imageUrl?: string | null;
 };
 
 type StoryPoint = Story & {
@@ -52,162 +148,142 @@ type StoryPoint = Story & {
   altitude: number;
 };
 
-const MOCK_STORIES: Story[] = [
-  {
-    id: 1,
-    lat: 48.8566,
-    lng: 2.3522,
-    city: 'Paris',
-    country: 'France',
-    preview: "Found hope in a stranger's smile today...",
-    emotion: 'joy',
-    author: 'Marie',
-    date: '2 hours ago',
-    fullContent:
-      "Today I was feeling down after a difficult morning. As I walked through the Marais, a complete stranger smiled at me warmly. That simple gesture reminded me that kindness still exists everywhere, even in a busy city. It completely changed my day.",
-  },
-  {
-    id: 2,
-    lat: 35.6762,
-    lng: 139.6503,
-    city: 'Tokyo',
-    country: 'Japan',
-    preview: "My grandmother's recipe brought back memories...",
-    emotion: 'gratitude',
-    author: 'Kenji',
-    date: '5 hours ago',
-    fullContent:
-      "While cleaning my grandmother's old recipe book, I found her secret miso soup recipe. Making it today filled my apartment with the same warm smell from my childhood. I'm grateful for these precious connections to our past.",
-  },
-  {
-    id: 3,
-    lat: -23.5505,
-    lng: -46.6333,
-    city: 'São Paulo',
-    country: 'Brazil',
-    preview: 'Dancing in the rain with my daughter...',
-    emotion: 'joy',
-    author: 'Isabella',
-    date: '1 day ago',
-    fullContent:
-      "Instead of rushing inside when it started raining, my 5-year-old daughter grabbed my hand and we danced together. Her laughter was contagious. Sometimes the best moments are the unplanned ones.",
-  },
-  {
-    id: 4,
-    lat: 30.0444,
-    lng: 31.2357,
-    city: 'Cairo',
-    country: 'Egypt',
-    preview: 'Realized we are more similar than different...',
-    emotion: 'reflection',
-    author: 'Anonymous',
-    date: '2 days ago',
-    fullContent:
-      "Had a deep conversation with someone from a completely different background. We shared our fears, hopes, and dreams. I realized that beneath our surface differences, we're all seeking the same things: love, purpose, and connection.",
-  },
-  {
-    id: 5,
-    lat: -33.8688,
-    lng: 151.2093,
-    city: 'Sydney',
-    country: 'Australia',
-    preview: 'Watching the sunrise, feeling grateful...',
-    emotion: 'hope',
-    author: 'James',
-    date: '3 days ago',
-    fullContent:
-      "Woke up early to catch the sunrise at Bondi Beach. As the sky turned orange and pink, I felt grateful to be alive and witness another day. Every sunrise is a new beginning.",
-  },
-  {
-    id: 6,
-    lat: 40.7128,
-    lng: -74.006,
-    city: 'New York',
-    country: 'USA',
-    preview: 'Found strength in community today...',
-    emotion: 'solidarity',
-    author: 'Sarah',
-    date: '4 days ago',
-    fullContent:
-      'My neighborhood came together to help an elderly resident who fell ill. We organized meals, visits, and support. It reminded me that we\'re stronger together. Community matters.',
-  },
-  {
-    id: 7,
-    lat: 51.5074,
-    lng: -0.1278,
-    city: 'London',
-    country: 'UK',
-    preview: 'A random act of kindness changed my day...',
-    emotion: 'gratitude',
-    author: 'Oliver',
-    date: '5 days ago',
-    fullContent:
-      "Someone paid for my coffee this morning with a note saying 'Pass it forward.' Such a small gesture but it made me smile all day. I did the same for someone else at lunch.",
-  },
-  {
-    id: 8,
-    lat: 19.4326,
-    lng: -99.1332,
-    city: 'Mexico City',
-    country: 'Mexico',
-    preview: 'Celebrating life with family...',
-    emotion: 'joy',
-    author: 'Carlos',
-    date: '1 week ago',
-    fullContent:
-      "My abuela turned 90 today. Three generations gathered to celebrate her. Her stories, her laughter, her wisdom - these moments are priceless. Family is everything.",
-  },
-];
-
-const EMOTION_CONFIG = {
-  joy: { color: '#10B981', label: 'Joy', icon: '😊' },
-  hope: { color: '#06B6D4', label: 'Hope', icon: '🌅' },
-  gratitude: { color: '#8B5CF6', label: 'Gratitude', icon: '🙏' },
-  reflection: { color: '#F59E0B', label: 'Reflection', icon: '💭' },
-  solidarity: { color: '#EC4899', label: 'Solidarity', icon: '🤝' },
-};
-
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+function isEmotion(v: unknown): v is Emotion {
+  return (
+    v === 'joy' ||
+    v === 'hope' ||
+    v === 'love' ||
+    v === 'resilience' ||
+    v === 'gratitude' ||
+    v === 'courage' ||
+    v === 'peace' ||
+    v === 'wonder'
+  );
+}
+
+function safeStoryDate(iso: string | null | undefined): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toLocaleDateString();
 }
 
 type WorldGlobeMode = 'home' | 'full';
 
 export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode }) {
-  // i18n hook kept for future strings
-  useLang();
+  const { t } = useLang();
+  const tt = useCallback(
+    (key: GlobeI18nKey, fallback: string) => {
+      // t(key) est typé I18nKey : on cast en SAFE local
+      const value = t(key as unknown as never);
+      return value && value !== key ? value : fallback;
+    },
+    [t]
+  );
 
   const globeEl = useRef<GlobeMethods | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
   const [mouse, setMouse] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [hovered, setHovered] = useState<StoryPoint | null>(null);
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
   const [altitude, setAltitude] = useState(2.5);
 
+  const [stories, setStories] = useState<Story[]>([]);
+  const [loadingStories, setLoadingStories] = useState(false);
+  const [storiesError, setStoriesError] = useState<string | null>(null);
+
+  const emotionLabel = useCallback(
+    (e: Emotion) => {
+      const fallback: Record<Emotion, string> = {
+        joy: 'Joy',
+        hope: 'Hope',
+        love: 'Love',
+        resilience: 'Resilience',
+        gratitude: 'Gratitude',
+        courage: 'Courage',
+        peace: 'Peace',
+        wonder: 'Wonder',
+      };
+
+      const key: Record<Emotion, GlobeI18nKey> = {
+        joy: 'emotion.joy',
+        hope: 'emotion.hope',
+        love: 'emotion.love',
+        resilience: 'emotion.resilience',
+        gratitude: 'emotion.gratitude',
+        courage: 'emotion.courage',
+        peace: 'emotion.peace',
+        wonder: 'emotion.wonder',
+      };
+
+      return tt(key[e], fallback[e]);
+    },
+    [tt]
+  );
+
+  const EMOTION_CONFIG = useMemo(() => {
+    const cfg: Record<Emotion, { color: string; label: string; icon: string }> = {
+      joy: { color: EMOTION_COLOR.joy, label: emotionLabel('joy'), icon: EMOTION_ICON.joy },
+      hope: { color: EMOTION_COLOR.hope, label: emotionLabel('hope'), icon: EMOTION_ICON.hope },
+      love: { color: EMOTION_COLOR.love, label: emotionLabel('love'), icon: EMOTION_ICON.love },
+      resilience: {
+        color: EMOTION_COLOR.resilience,
+        label: emotionLabel('resilience'),
+        icon: EMOTION_ICON.resilience,
+      },
+      gratitude: {
+        color: EMOTION_COLOR.gratitude,
+        label: emotionLabel('gratitude'),
+        icon: EMOTION_ICON.gratitude,
+      },
+      courage: {
+        color: EMOTION_COLOR.courage,
+        label: emotionLabel('courage'),
+        icon: EMOTION_ICON.courage,
+      },
+      peace: { color: EMOTION_COLOR.peace, label: emotionLabel('peace'), icon: EMOTION_ICON.peace },
+      wonder: {
+        color: EMOTION_COLOR.wonder,
+        label: emotionLabel('wonder'),
+        icon: EMOTION_ICON.wonder,
+      },
+    };
+    return cfg;
+  }, [emotionLabel]);
+
   // Points avec pins premium (HTMLElement custom)
   const pointsData: StoryPoint[] = useMemo(
     () =>
-      MOCK_STORIES.map((story) => ({
+      stories.map((story) => ({
         ...story,
         size: 1,
         color: EMOTION_CONFIG[story.emotion].color,
         altitude: 0.01,
       })),
-    []
+    [stories, EMOTION_CONFIG]
   );
 
   // Labels (villes/pays au zoom)
-  const labelsData = useMemo(() => {
-    return MOCK_STORIES.map((story) => ({
-      lat: story.lat,
-      lng: story.lng,
-      text: story.city,
-      color: 'rgba(15, 23, 42, 0.85)',
-      size: 1,
-    }));
-  }, []);
+  const labelsData = useMemo(
+    () =>
+      stories.map((story) => ({
+        lat: story.lat,
+        lng: story.lng,
+        text: story.city,
+        color: 'rgba(15, 23, 42, 0.85)',
+        size: 1,
+      })),
+    [stories]
+  );
 
   // Mesure container
   useLayoutEffect(() => {
@@ -238,6 +314,7 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
     g.pointOfView({ lat: 20, lng: 15, altitude: 2.5 }, ms);
   }, []);
 
+  // Setup contrôles globe
   useEffect(() => {
     const g = globeEl.current;
     if (!g) return;
@@ -272,6 +349,88 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
     };
   }, [recenter]);
 
+  // Chargement des échos depuis Supabase
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      setLoadingStories(true);
+      setStoriesError(null);
+
+      try {
+        const { data, error } = await supabase
+          .from('echoes')
+          .select(
+            'id,content,emotion,city,country,created_at,is_anonymous,location,echo_media(url,position),profiles:profiles(handle,display_name)'
+          )
+          .eq('status', 'published')
+          .in('visibility', ['world', 'local'])
+          .order('created_at', { ascending: false })
+          .limit(400);
+
+        if (error) throw error;
+
+        const rows = (data as EchoRow[] | null) ?? [];
+
+        const mapped: Story[] = rows
+          .map((e): Story | null => {
+            const loc = e.location;
+            const emoRaw = e.emotion;
+
+            if (!loc || loc.type !== 'Point') return null;
+            if (!isEmotion(emoRaw)) return null;
+
+            const [lng, lat] = loc.coordinates;
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+            const media0 =
+              (e.echo_media ?? [])
+                .slice()
+                .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[0]?.url ?? null;
+
+            const anonymousLabel = tt('story.anonymous', 'Anonymous');
+
+            const authorName = e.is_anonymous
+              ? anonymousLabel
+              : e.profiles?.display_name || e.profiles?.handle || undefined;
+
+            const full = (e.content || '').trim();
+            if (!full) return null;
+
+            const preview = full.slice(0, 90) + (full.length > 90 ? '…' : '');
+
+            return {
+              id: e.id,
+              lat,
+              lng,
+              city: e.city || '—',
+              country: e.country || '—',
+              preview,
+              emotion: emoRaw,
+              author: authorName,
+              date: safeStoryDate(e.created_at),
+              fullContent: full,
+              imageUrl: media0,
+            };
+          })
+          .filter((x): x is Story => x !== null);
+
+        if (!mounted) return;
+        setStories(mapped);
+      } catch (err) {
+        if (!mounted) return;
+        setStoriesError(err instanceof Error ? err.message : tt('world.error', 'Failed to load stories.'));
+      } finally {
+        if (mounted) setLoadingStories(false);
+      }
+    };
+
+    void load();
+    return () => {
+      mounted = false;
+    };
+  }, [tt]);
+
   const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -295,18 +454,19 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
     const p = point as Partial<StoryPoint>;
     if (!p?.id) return;
 
-    const story = MOCK_STORIES.find((s) => s.id === p.id);
+    const story = stories.find((s) => s.id === String(p.id));
     if (story) {
       setSelectedStory(story);
     }
   };
 
   // Custom HTML marker (pin premium)
-  const pointLabel = useCallback((point: unknown) => {
-    const p = point as StoryPoint;
-    const config = EMOTION_CONFIG[p.emotion];
+  const pointLabel = useCallback(
+    (point: unknown) => {
+      const p = point as StoryPoint;
+      const config = EMOTION_CONFIG[p.emotion];
 
-    return `
+      return `
       <div style="
         width: 32px;
         height: 32px;
@@ -327,7 +487,9 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
         ">${config.icon}</div>
       </div>
     `;
-  }, []);
+    },
+    [EMOTION_CONFIG]
+  );
 
   const tooltipLeft = clamp(mouse.x + 16, 12, Math.max(12, containerSize.w - 280));
   const tooltipTop = clamp(mouse.y + 16, 12, Math.max(12, containerSize.h - 140));
@@ -338,6 +500,22 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
     mode === 'full'
       ? 'relative h-[calc(100vh-5rem)] w-full overflow-hidden rounded-3xl border border-slate-900/10 bg-white/70 backdrop-blur-sm'
       : 'relative h-[800px] w-full overflow-hidden rounded-3xl border border-slate-900/10 bg-white/70 backdrop-blur-sm';
+
+  const liveLabel = loadingStories
+    ? tt('world.loading', 'LOADING')
+    : tt('world.live_indicator', 'LIVE');
+
+  const storiesSharedLabel = tt('world.story_count', 'Stories shared');
+  const countriesLabel = tt('world.countries_count', 'Countries');
+
+  const instructionsLabel = tt(
+    'world.zoom_hint',
+    'Click stories to read • Drag to explore'
+  );
+
+  const recenterLabel = tt('world.recenter', 'Recenter');
+
+  const emptyLabel = tt('world.empty', 'No stories yet.');
 
   return (
     <>
@@ -386,24 +564,37 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
         <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-3">
           <div className="flex items-center gap-2 rounded-full border border-emerald-400/30 bg-white/70 px-4 py-2 backdrop-blur-md">
             <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-            <span className="text-xs font-semibold text-emerald-900">LIVE</span>
+            <span className="text-xs font-semibold text-emerald-900">{liveLabel}</span>
           </div>
 
           <div className="rounded-2xl border border-slate-900/10 bg-white/70 px-4 py-3 backdrop-blur-md">
             <div className="flex items-center gap-2">
               <Heart className="h-4 w-4 text-rose-500" />
-              <div className="text-2xl font-bold text-slate-950">{MOCK_STORIES.length * 234}</div>
+              <div className="text-2xl font-bold text-slate-950">{stories.length}</div>
             </div>
-            <div className="mt-1 text-xs text-slate-600">Stories shared</div>
+            <div className="mt-1 text-xs text-slate-600">{storiesSharedLabel}</div>
           </div>
 
           <div className="rounded-2xl border border-slate-900/10 bg-white/70 px-4 py-3 backdrop-blur-md">
             <div className="flex items-center gap-2">
               <MapPin className="h-4 w-4 text-sky-600" />
+              {/* TODO futur: calcul réel (distinct country) */}
               <div className="text-2xl font-bold text-slate-950">127</div>
             </div>
-            <div className="mt-1 text-xs text-slate-600">Countries</div>
+            <div className="mt-1 text-xs text-slate-600">{countriesLabel}</div>
           </div>
+
+          {storiesError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
+              {storiesError}
+            </div>
+          )}
+
+          {!loadingStories && !storiesError && stories.length === 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-700">
+              {emptyLabel}
+            </div>
+          )}
         </div>
 
         {/* Instructions (bottom-center) */}
@@ -412,7 +603,7 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
             <div className="flex items-center gap-3">
               <Sparkles className="h-4 w-4 text-violet-600" />
               <div className="text-center">
-                <p className="text-sm font-medium text-slate-800">Click stories to read • Drag to explore</p>
+                <p className="text-sm font-medium text-slate-800">{instructionsLabel}</p>
               </div>
             </div>
           </div>
@@ -433,7 +624,7 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-            Recenter
+            {recenterLabel}
           </button>
         </div>
 
@@ -452,7 +643,9 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
                 <div className="text-2xl">{EMOTION_CONFIG[hovered.emotion].icon}</div>
               </div>
               <p className="text-sm text-slate-800">{hovered.preview}</p>
-              <div className="mt-2 text-xs font-semibold text-violet-600">Click to read full story →</div>
+              <div className="mt-2 text-xs font-semibold text-violet-600">
+                {tt('world.click_explore', 'Click to read full story →')}
+              </div>
             </div>
           </div>
         )}
@@ -504,7 +697,11 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
                   </div>
 
                   <div className="flex items-center gap-4 text-xs text-slate-500">
-                    {selectedStory.author && <span>By {selectedStory.author}</span>}
+                    {selectedStory.author && (
+                      <span>
+                        {tt('story.from', 'From')} {selectedStory.author}
+                      </span>
+                    )}
                     {selectedStory.date && (
                       <>
                         <span>•</span>
@@ -524,21 +721,33 @@ export default function WorldGlobe({ mode = 'home' }: { mode?: WorldGlobeMode })
                 <p className="text-lg leading-relaxed text-slate-800">
                   {selectedStory.fullContent || selectedStory.preview}
                 </p>
+
+                {selectedStory.imageUrl && (
+                  <div className="mt-5 overflow-hidden rounded-2xl border border-slate-900/10 bg-slate-50">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={selectedStory.imageUrl}
+                      alt=""
+                      className="h-auto w-full object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Actions */}
               <div className="flex gap-3 border-t border-slate-900/10 p-6">
                 <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-900/10 bg-slate-900/5 px-4 py-3 text-sm font-semibold text-slate-950 transition-all hover:bg-slate-900/10">
                   <Heart className="h-4 w-4" />
-                  Resonate
+                  {tt('actions.resonate', 'Resonate')}
                 </button>
                 <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-900/10 bg-slate-900/5 px-4 py-3 text-sm font-semibold text-slate-950 transition-all hover:bg-slate-900/10">
                   <MessageCircle className="h-4 w-4" />
-                  Connect
+                  {tt('actions.connect', 'Connect')}
                 </button>
                 <button className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-900/10 bg-slate-900/5 px-4 py-3 text-sm font-semibold text-slate-950 transition-all hover:bg-slate-900/10">
                   <Share2 className="h-4 w-4" />
-                  Share
+                  {tt('actions.share', 'Share')}
                 </button>
               </div>
             </motion.div>

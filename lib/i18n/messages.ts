@@ -2,22 +2,29 @@
  * =============================================================================
  * Fichier      : lib/i18n/messages.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.0.0 (2026-01-21)
+ * Version      : 3.1.0 (2026-01-22)
  * Objet        : Dictionnaires i18n - Ajout navigation + refonte complète
  * -----------------------------------------------------------------------------
- * Nouveautés v3 :
- * - Ajout clés navigation (nav.home, nav.explore, nav.share, nav.about, nav.login)
- * - Conservation de tous les messages existants
+ * Objectifs update v3.1 :
+ * - [NEW] Export de sous-ensembles typés (GlobeI18nKey, PulseI18nKey, etc.)
+ *         pour éviter les divergences de types dans les composants.
+ * - [SAFE] Aucun changement sur les clés existantes I18nKey (zéro régression).
+ * - [SAFE] Contenu des dictionnaires inchangé (zéro régression).
  * =============================================================================
  */
 
 import type { AppLang } from './i18n';
 
+/**
+ * =============================================================================
+ * KEYS — GLOBAL (source de vérité)
+ * =============================================================================
+ */
 export type I18nKey =
   // Common
   | 'ui.language'
 
-  // Navigation (NEW)
+  // Navigation
   | 'nav.home'
   | 'nav.explore'
   | 'nav.share'
@@ -72,8 +79,81 @@ export type I18nKey =
   | 'connections.connect_btn'
   | 'connections.discover_more';
 
+/**
+ * =============================================================================
+ * KEYS — SCOPES (optionnels, zéro régression)
+ * -----------------------------------------------------------------------------
+ * But : permettre aux composants d'utiliser des types restreints
+ * SANS redéfinir les unions ailleurs (cause principale des erreurs TS).
+ * =============================================================================
+ */
+export type NavI18nKey =
+  | 'nav.home'
+  | 'nav.explore'
+  | 'nav.share'
+  | 'nav.about'
+  | 'nav.login';
+
+export type HeroI18nKey =
+  | 'hero.badge_prefix'
+  | 'hero.badge_suffix'
+  | 'hero.title_line1'
+  | 'hero.title_line2'
+  | 'hero.subtitle'
+  | 'hero.cta_share'
+  | 'hero.cta_explore'
+  | 'hero.cta_login';
+
+export type GlobeI18nKey =
+  | 'world.section_title'
+  | 'world.live_indicator'
+  | 'world.story_count'
+  | 'world.countries_count'
+  | 'world.hover_tip'
+  | 'world.click_explore'
+  | 'world.zoom_hint';
+
+export type StoryOverlayI18nKey =
+  | 'story.just_shared'
+  | 'story.minutes_ago'
+  | 'story.from'
+  | 'story.read_more'
+  | 'story.anonymous';
+
+export type PulseI18nKey =
+  | 'pulse.title'
+  | 'pulse.live_status'
+  | 'pulse.heartbeat_label'
+  | 'pulse.global_mood'
+  | 'pulse.positivity_label'
+  | 'pulse.emotion_joy'
+  | 'pulse.emotion_hope'
+  | 'pulse.emotion_gratitude'
+  | 'pulse.emotion_reflection'
+  | 'pulse.emotion_solidarity'
+  | 'pulse.breathing_world';
+
+export type ConnectionsI18nKey =
+  | 'connections.title'
+  | 'connections.subtitle'
+  | 'connections.suggested_for_you'
+  | 'connections.shared_experience'
+  | 'connections.match_score'
+  | 'connections.connect_btn'
+  | 'connections.discover_more';
+
+/**
+ * =============================================================================
+ * DICT
+ * =============================================================================
+ */
 type Dict = Record<I18nKey, string>;
 
+/**
+ * =============================================================================
+ * MESSAGES
+ * =============================================================================
+ */
 export const MESSAGES: Record<AppLang, Dict> = {
   en: {
     // Common
