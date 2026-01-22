@@ -223,7 +223,7 @@ export default function ForMeView() {
               </span>
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">Nouveaux échos</h2>
-                <p className="text-sm text-slate-600">Fallback quand la résonance est faible.</p>
+                <p className="text-sm text-slate-600"></p>
               </div>
             </div>
 
