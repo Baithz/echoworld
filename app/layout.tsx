@@ -2,20 +2,20 @@
  * =============================================================================
  * Fichier      : app/layout.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-22)
+ * Version      : 2.4.0 (2026-01-22)
  * Objet        : Layout racine - Fond cinéma immersif + i18n + Realtime + ChatDock
  * -----------------------------------------------------------------------------
  * Description  :
  * - Fond premium : radial gradients + grid subtil + grain + vignette
  * - Providers globaux : LanguageProvider + RealtimeProvider
- * - ChatDock global (bulle) : rendu une fois, piloté par RealtimeProvider
- * - SAFE : styles inchangés, aucune régression visuelle du background
+ * - Header global (1 seule fois) + ChatDock global (bulle)
+ * - SAFE : pas de régression du background
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.3.0 (2026-01-22)
- * - [NEW] RealtimeProvider global
- * - [NEW] ChatDock global (components/messages/ChatDock)
+ * 2.4.0 (2026-01-22)
+ * - [NEW] Header global (components/layout/Header) rendu une fois (évite doublons)
+ * - [KEEP] RealtimeProvider + ChatDock global
  * - [KEEP] Background + LanguageProvider inchangés
  * =============================================================================
  */
@@ -25,6 +25,7 @@ import type { ReactNode } from 'react';
 import { LanguageProvider } from '../lib/i18n/LanguageProvider';
 import { RealtimeProvider } from '@/lib/realtime/RealtimeProvider';
 import ChatDock from '@/components/messages/ChatDock';
+import Header from '@/components/layout/Header';
 
 export const metadata = {
   title: 'EchoWorld — Your Story, Their Echo, Our World',
@@ -58,7 +59,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
         <LanguageProvider>
           <RealtimeProvider>
+            {/* Header global (une seule fois) */}
+            <Header />
+
+            {/* App */}
             {children}
+
             {/* Dock global (bulle) */}
             <ChatDock />
           </RealtimeProvider>

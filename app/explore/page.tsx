@@ -2,30 +2,29 @@
  * =============================================================================
  * Fichier      : app/explore/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.1 (2026-01-21)
+ * Version      : 1.0.2 (2026-01-22)
  * Objet        : Page Explore - Globe plein écran + navigation
  * -----------------------------------------------------------------------------
  * Description  :
  * - Route dédiée au globe (hors Home)
  * - Header commun (navigation)
- * - Affichage full via `WorldGlobe mode="full"` (hauteur calc(100vh - header))
- * - Pas de scroll parasite (min-h + padding aligné header)
+ * - Affichage full via `WorldGlobe mode="full"`
+ * - SAFE: évite double Header si app/layout.tsx rend déjà <Header />
+ * - Pas de scroll parasite (hauteur viewport - header)
  * =============================================================================
  */
 
-import Header from '../../components/layout/Header';
 import WorldGlobe from '../../components/home/WorldGlobe';
 
+// IMPORTANT:
+// - Si ton app/layout.tsx rend déjà <Header />, laisse ce fichier SANS header.
+// - Si ton app/layout.tsx NE rend PAS <Header />, alors ajoute-le ici.
 export default function ExplorePage() {
   return (
-    <>
-      <Header />
-
-      <main className="min-h-screen pt-20 px-6">
-        <section className="mx-auto w-full">
-          <WorldGlobe mode="full" />
-        </section>
-      </main>
-    </>
+    <main className="h-[calc(100vh-80px)] px-6 pt-20">
+      <section className="mx-auto h-full w-full">
+        <WorldGlobe mode="full" />
+      </section>
+    </main>
   );
 }
