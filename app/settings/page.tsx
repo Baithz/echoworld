@@ -2,36 +2,31 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.2 (2026-01-22)
+ * Version      : 2.0.3 (2026-01-22)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
  * - Lecture/édition de user_settings (theme, privacy, defaults, notifications soft)
- * - Lecture/édition minimale de profiles (handle, bio, identity_mode)
+ * - Lecture/édition minimale de profiles (handle, bio, identity_mode, lang_primary)
  * - UX non toxique : pas de métriques, contrôle clair, feedback discret
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.2 (2026-01-22)
- * - [FIX] Toggles décalés : thumb ancré (left-1) + translate correct (translate-x-6)
- * - [FIX] Sauvegarde fiable : upsert profiles/user_settings (évite update=0 rows si ligne absente)
+ * 2.0.3 (2026-01-22)
+ * - [FIX] Lien retour : libellé "Mon profil" (aligné avec /account renommé)
+ * - [FIX] Toast OK : auto-disparition (comme demandé UX global)
  * - [NO-REGRESSION] UI/UX, logique et routes inchangées
- * 2.0.1 (2026-01-22)
- * - [FIX] ESLint react/no-unescaped-entities : apostrophes échappées dans le JSX
- * - [NO-REGRESSION] Logique, UX et routes inchangées
- * 2.0.0 (2026-01-22)
- * - [NEW] Header navigation intégré (consistance UI)
- * - [FIX] Max-width harmonisé (max-w-6xl) + padding-top pour sticky header
- * - [IMPROVED] Design moderne : transitions, hover states
- * 1.0.2 (2026-01-21)
- * - [FIX] TS "never" persistant : typage forcé sur maybeSingle<T>() + payloads Update
- * - [FIX] Database local conforme supabase-js
+ * 2.0.2 (2026-01-22)
+ * - [FIX] Toggles : alignement cross-browser (reset button styles + centering knob)
+ * - [FIX] Save : re-sync des states de formulaire après refresh (handle normalisé, etc.)
+ * - [NEW] Langue principale (lang_primary) configurable
+ * - [NO-REGRESSION] UI/UX et routes inchangées
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/layout/Header';
@@ -93,6 +88,14 @@ type Database = {
 
 const sb = supabase as unknown as SupabaseClient<Database>;
 
+const LANGS = [
+  { value: 'en', label: 'English (en)' },
+  { value: 'fr', label: 'Français (fr)' },
+  { value: 'es', label: 'Español (es)' },
+  { value: 'de', label: 'Deutsch (de)' },
+  { value: 'it', label: 'Italiano (it)' },
+];
+
 function normalizeHandle(input: string): string {
   const cleaned = input
     .trim()
@@ -100,6 +103,12 @@ function normalizeHandle(input: string): string {
     .replace(/\s+/g, '_')
     .replace(/[^a-z0-9_-]/g, '');
   return cleaned.slice(0, 24);
+}
+
+function safeLang(v: string | null | undefined): string {
+  const x = (v || '').trim().toLowerCase();
+  if (!x) return 'en';
+  return LANGS.some((l) => l.value === x) ? x : 'en';
 }
 
 export default function SettingsPage() {
@@ -117,10 +126,23 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
+  // Auto-hide OK toast (UX)
+  const okTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!ok) return;
+    if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
+    okTimerRef.current = window.setTimeout(() => setOk(null), 3500);
+    return () => {
+      if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
+      okTimerRef.current = null;
+    };
+  }, [ok]);
+
   // Form state
   const [handle, setHandle] = useState('');
   const [bio, setBio] = useState('');
   const [identityMode, setIdentityMode] = useState<IdentityMode>('symbolic');
+  const [langPrimary, setLangPrimary] = useState<string>('en');
 
   const [theme, setTheme] = useState<Theme>('system');
   const [publicProfile, setPublicProfile] = useState(false);
@@ -133,12 +155,15 @@ export default function SettingsPage() {
   const [notificationsSoft, setNotificationsSoft] = useState(true);
 
   const canSave = useMemo(() => {
+    if (authLoading || loading) return false;
     if (!userId) return false;
     if (saving) return false;
+
     const h = handle.trim();
     if (h && normalizeHandle(h).length < 3) return false;
+
     return true;
-  }, [userId, saving, handle]);
+  }, [userId, saving, handle, loading, authLoading]);
 
   // Auth guard
   useEffect(() => {
@@ -183,6 +208,7 @@ export default function SettingsPage() {
 
     const load = async () => {
       if (!userId) return;
+
       setLoading(true);
       setError(null);
       setOk(null);
@@ -204,6 +230,7 @@ export default function SettingsPage() {
         setHandle(p?.handle ?? '');
         setBio(p?.bio ?? '');
         setIdentityMode(p?.identity_mode ?? 'symbolic');
+        setLangPrimary(safeLang(p?.lang_primary ?? 'en'));
 
         setTheme(s?.theme ?? 'system');
         setPublicProfile(!!s?.public_profile_enabled);
@@ -229,8 +256,7 @@ export default function SettingsPage() {
   }, [userId]);
 
   const save = async () => {
-    if (!userId) return;
-    if (!canSave) return;
+    if (!userId || !canSave) return;
 
     setSaving(true);
     setError(null);
@@ -238,19 +264,20 @@ export default function SettingsPage() {
 
     try {
       const nextHandle = handle.trim() ? normalizeHandle(handle) : null;
+      const nextBio = bio.trim() ? bio.trim() : null;
+      const nextLang = safeLang(langPrimary);
 
-      // Upsert profile (évite update=0 rows si la ligne n'existe pas encore)
       const profilePatch: Database['public']['Tables']['profiles']['Insert'] = {
         id: userId,
         handle: nextHandle,
-        bio: bio.trim() ? bio.trim() : null,
+        bio: nextBio,
         identity_mode: identityMode,
+        lang_primary: nextLang,
       };
 
       const pUpsert = await sb.from('profiles').upsert(profilePatch, { onConflict: 'id' });
       if (pUpsert.error) throw pUpsert.error;
 
-      // Upsert settings (évite update=0 rows si la ligne n'existe pas encore)
       const settingsPatch: Database['public']['Tables']['user_settings']['Insert'] = {
         user_id: userId,
         theme,
@@ -265,14 +292,31 @@ export default function SettingsPage() {
       const sUpsert = await sb.from('user_settings').upsert(settingsPatch, { onConflict: 'user_id' });
       if (sUpsert.error) throw sUpsert.error;
 
-      // Refresh after save (affichage cohérent)
       const [pRefresh, sRefresh] = await Promise.all([
         sb.from('profiles').select('*').eq('id', userId).maybeSingle<ProfileRow>(),
         sb.from('user_settings').select('*').eq('user_id', userId).maybeSingle<UserSettingsRow>(),
       ]);
 
-      setProfile(pRefresh.data ?? null);
-      setSettings(sRefresh.data ?? null);
+      const p = pRefresh.data ?? null;
+      const s = sRefresh.data ?? null;
+
+      setProfile(p);
+      setSettings(s);
+
+      setHandle(p?.handle ?? '');
+      setBio(p?.bio ?? '');
+      setIdentityMode(p?.identity_mode ?? 'symbolic');
+      setLangPrimary(safeLang(p?.lang_primary ?? 'en'));
+
+      setTheme(s?.theme ?? theme);
+      setPublicProfile(!!s?.public_profile_enabled);
+
+      setDefaultVisibility(s?.default_echo_visibility ?? defaultVisibility);
+      setDefaultAnonymous(!!s?.default_anonymous);
+
+      setAllowResponses(s?.allow_responses ?? allowResponses);
+      setAllowMirrors(s?.allow_mirrors ?? allowMirrors);
+      setNotificationsSoft(s?.notifications_soft ?? notificationsSoft);
 
       setOk('Paramètres enregistrés avec succès.');
     } catch (e) {
@@ -307,9 +351,7 @@ export default function SettingsPage() {
         <div className="flex items-start justify-between gap-6">
           <div>
             <h1 className="text-3xl font-bold text-slate-900">Paramètres</h1>
-            <p className="mt-2 text-slate-600">
-              Contrôle calme de ton identité, ta confidentialité, et ton expérience.
-            </p>
+            <p className="mt-2 text-slate-600">Contrôle calme de ton identité, ta confidentialité, et ton expérience.</p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -317,7 +359,7 @@ export default function SettingsPage() {
               href="/account"
               className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white"
             >
-              Mon espace
+              Mon profil
             </Link>
 
             <button
@@ -325,9 +367,7 @@ export default function SettingsPage() {
               onClick={save}
               disabled={!canSave}
               className={`rounded-xl px-4 py-2 text-sm font-semibold shadow-lg transition-transform ${
-                canSave
-                  ? 'bg-slate-900 text-white hover:scale-[1.01]'
-                  : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                canSave ? 'bg-slate-900 text-white hover:scale-[1.01]' : 'bg-slate-200 text-slate-500 cursor-not-allowed'
               }`}
             >
               {saving ? 'Enregistrement…' : 'Enregistrer'}
@@ -359,6 +399,12 @@ export default function SettingsPage() {
               <input
                 value={handle}
                 onChange={(e) => setHandle(e.target.value)}
+                onBlur={() => {
+                  const h = handle.trim();
+                  if (!h) return;
+                  const n = normalizeHandle(h);
+                  if (n !== handle) setHandle(n);
+                }}
                 placeholder="ex: night_river"
                 className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
                 maxLength={24}
@@ -366,9 +412,7 @@ export default function SettingsPage() {
                 autoComplete="off"
               />
               <div className="mt-2 text-xs text-slate-500">
-                {handle.trim()
-                  ? `Format appliqué : ${normalizeHandle(handle)}`
-                  : 'Tu peux rester sans pseudo si tu veux.'}
+                {handle.trim() ? `Format appliqué : ${normalizeHandle(handle)}` : 'Tu peux rester sans pseudo si tu veux.'}
               </div>
             </div>
 
@@ -384,10 +428,24 @@ export default function SettingsPage() {
                 <option value="real">Réel (non recommandé)</option>
               </select>
               <div className="mt-2 text-xs text-slate-500">
-                {identityMode === 'anonymous'
-                  ? 'Ton écho apparaîtra sans identité publique.'
-                  : 'Tu gardes une présence narrative sans métriques.'}
+                {identityMode === 'anonymous' ? 'Ton écho apparaîtra sans identité publique.' : 'Tu gardes une présence narrative sans métriques.'}
               </div>
+            </div>
+
+            <div>
+              <label className="text-sm font-semibold text-slate-900">Langue principale</label>
+              <select
+                value={langPrimary}
+                onChange={(e) => setLangPrimary(e.target.value)}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
+              >
+                {LANGS.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-2 text-xs text-slate-500">Utilisée par défaut pour ton expérience et tes écrans.</div>
             </div>
 
             <div className="md:col-span-2">
@@ -408,9 +466,7 @@ export default function SettingsPage() {
         {/* Privacy */}
         <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
           <h2 className="text-lg font-bold text-slate-900">Confidentialité</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Pas de followers, pas de scores. Juste des choix de visibilité.
-          </p>
+          <p className="mt-1 text-sm text-slate-600">Pas de followers, pas de scores. Juste des choix de visibilité.</p>
 
           <div className="mt-6 grid gap-5 md:grid-cols-2">
             <ToggleRow
@@ -455,9 +511,7 @@ export default function SettingsPage() {
         {/* Experience */}
         <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
           <h2 className="text-lg font-bold text-slate-900">Expérience</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Sobriété et douceur : peu de notifications, pas de pression.
-          </p>
+          <p className="mt-1 text-sm text-slate-600">Sobriété et douceur : peu de notifications, pas de pression.</p>
 
           <div className="mt-6 grid gap-5 md:grid-cols-2">
             <div>
@@ -465,15 +519,13 @@ export default function SettingsPage() {
               <select
                 value={theme}
                 onChange={(e) => setTheme(e.target.value as Theme)}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-slate-300"
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
               >
                 <option value="system">Système</option>
                 <option value="light">Clair</option>
                 <option value="dark">Sombre</option>
               </select>
-              <div className="mt-2 text-xs text-slate-500">
-                (Le switch global sera appliqué via layout à l&apos;étape suivante.)
-              </div>
+              <div className="mt-2 text-xs text-slate-500">(Le switch global sera appliqué via layout à l&apos;étape suivante.)</div>
             </div>
 
             <ToggleRow
@@ -488,9 +540,7 @@ export default function SettingsPage() {
         {/* RGPD */}
         <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
           <h2 className="text-lg font-bold text-slate-900">Données & RGPD</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Export et suppression complète seront ajoutés ensuite (prévu dans la roadmap).
-          </p>
+          <p className="mt-1 text-sm text-slate-600">Export et suppression complète seront ajoutés ensuite (prévu dans la roadmap).</p>
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row">
             <button
@@ -518,12 +568,7 @@ export default function SettingsPage() {
   );
 }
 
-function ToggleRow(props: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
+function ToggleRow(props: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void }) {
   const { label, hint, checked, onChange } = props;
 
   return (
@@ -538,13 +583,13 @@ function ToggleRow(props: {
           type="button"
           onClick={() => onChange(!checked)}
           aria-pressed={checked}
-          className={`relative shrink-0 h-7 w-12 rounded-full border transition-colors ${
+          className={`shrink-0 inline-flex h-7 w-12 items-center rounded-full border p-0 leading-none transition-colors appearance-none ${
             checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
           }`}
         >
           <span
-            className={`absolute left-1 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
-              checked ? 'translate-x-6' : 'translate-x-0'
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+              checked ? 'translate-x-6.5' : 'translate-x-1'
             }`}
           />
         </button>
@@ -564,13 +609,13 @@ function ToggleInline(props: { label: string; checked: boolean; onChange: (v: bo
         type="button"
         onClick={() => onChange(!checked)}
         aria-pressed={checked}
-        className={`relative shrink-0 h-7 w-12 rounded-full border transition-colors ${
+        className={`shrink-0 inline-flex h-7 w-12 items-center rounded-full border p-0 leading-none transition-colors appearance-none ${
           checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
         }`}
       >
         <span
-          className={`absolute left-1 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
-            checked ? 'translate-x-6' : 'translate-x-0'
+          className={`pointer-events-none block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+            checked ? 'translate-x-6.5' : 'translate-x-1'
           }`}
         />
       </button>
