@@ -3,7 +3,7 @@
  * Fichier      : app/account/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
  * Version      : 2.2.0 (2026-01-22)
- * Objet        : Mon profil — Profil utilisateur COMPLET + avatar/bannière + édition inline
+ * Objet        : Mon profil — Profil utilisateur + avatar/bannière + édition inline
  * -----------------------------------------------------------------------------
  * Description  :
  * - Client Component avec interactions complètes
@@ -19,21 +19,20 @@
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 2.2.0 (2026-01-22)
- * - [UX] Titre page : "Mon espace" -> "Mon profil"
- * - [UX] Suppression bouton "Paramètres" (top-right) : garder uniquement "Paramètres avancés"
- * - [UX] Icône "Paramètres avancés" : crayon -> roue dentée
- * - [UX] Feedback ok/error auto-dismiss (disparaît après quelques secondes)
- * - [FIX] Bannière : bouton jamais grisé silencieusement + message clair si upload impossible
- * - [NO-REGRESSION] Routes, layout, logique métier et liste d’échos conservées
+ * - [UX] Titre page: "Mon profil" (au lieu de "Mon espace")
+ * - [UX] Suppression du bouton "Paramètres" en haut à droite (redondant)
+ * - [UX] "Paramètres avancés": icône ⚙️ (au lieu du crayon)
+ * - [UX] Messages succès auto-dismiss (feedback temporaire)
+ * - [FIX] Bouton "Modifier bannière" forcé cliquable (z-index/pointer-events/stopPropagation)
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Camera, Edit2, Save, Settings, Upload, X } from 'lucide-react';
+import { Camera, Edit2, Save, Upload, X, Settings } from 'lucide-react';
 import Header from '@/components/layout/Header';
 import { supabase } from '@/lib/supabase/client';
 
@@ -117,11 +116,7 @@ type SupabaseQueryBuilder = {
 };
 
 type SupabaseStorageBucket = {
-  upload: (
-    path: string,
-    file: File,
-    opts: { upsert: boolean }
-  ) => Promise<{ data: unknown | null; error: unknown | null }>;
+  upload: (path: string, file: File, opts: { upsert: boolean }) => Promise<{ data: unknown | null; error: unknown | null }>;
   getPublicUrl: (path: string) => { data: { publicUrl: string } };
 };
 
@@ -158,9 +153,7 @@ const LANG_CHOICES: Array<{ code: string; label: string }> = [
   { code: 'ko', label: '한국어' },
 ];
 
-// Feedback auto-dismiss (UX)
-const OK_TIMEOUT_MS = 3500;
-const ERROR_TIMEOUT_MS = 6000;
+const OK_TOAST_MS = 3500;
 
 export default function AccountPage() {
   const router = useRouter();
@@ -175,20 +168,6 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  // timers (avoid stacking)
-  const okTimerRef = useRef<number | null>(null);
-  const errTimerRef = useRef<number | null>(null);
-
-  const scheduleOkClear = () => {
-    if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
-    okTimerRef.current = window.setTimeout(() => setOk(null), OK_TIMEOUT_MS);
-  };
-
-  const scheduleErrorClear = () => {
-    if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
-    errTimerRef.current = window.setTimeout(() => setError(null), ERROR_TIMEOUT_MS);
-  };
-
   // Upload states
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
@@ -202,28 +181,12 @@ export default function AccountPage() {
   const [editBio, setEditBio] = useState('');
   const [editLang, setEditLang] = useState('en');
 
-  // Auto-dismiss ok/error (UX rule)
+  // ✅ Success messages must disappear automatically
   useEffect(() => {
-    if (ok) scheduleOkClear();
-    return () => {
-      if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
-    };
+    if (!ok) return;
+    const t = window.setTimeout(() => setOk(null), OK_TOAST_MS);
+    return () => window.clearTimeout(t);
   }, [ok]);
-
-  useEffect(() => {
-    if (error) scheduleErrorClear();
-    return () => {
-      if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
-    };
-  }, [error]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (okTimerRef.current) window.clearTimeout(okTimerRef.current);
-      if (errTimerRef.current) window.clearTimeout(errTimerRef.current);
-    };
-  }, []);
 
   // Auth guard
   useEffect(() => {
@@ -479,8 +442,7 @@ export default function AccountPage() {
       setOk('Bannière mise à jour.');
       setShowBannerUpload(false);
     } catch (e) {
-      // message clair + pas de bouton grisé silencieux
-      setError(e instanceof Error ? e.message : "Impossible d'ajouter la bannière pour le moment.");
+      setError(e instanceof Error ? e.message : "Erreur lors de l'upload.");
     } finally {
       setUploadingBanner(false);
     }
@@ -509,7 +471,8 @@ export default function AccountPage() {
             <p className="mt-2 text-slate-600">Ta présence, tes récits, et une navigation calme.</p>
           </div>
 
-          {/* Bouton "Paramètres" supprimé (redondant) */}
+          {/* ✅ Suppression du bouton "Paramètres" ici (redondant) */}
+          <div />
         </div>
 
         {error && (
@@ -534,24 +497,24 @@ export default function AccountPage() {
               </div>
             )}
 
+            {/* ✅ FIX: bouton bannière forcé cliquable */}
             <button
               type="button"
-              onClick={() => {
-                if (uploadingBanner) {
-                  setError('Upload en cours…');
-                  return;
-                }
-                setShowBannerUpload((v) => !v);
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setOk(null);
+                setError(null);
+                setShowBannerUpload(true);
               }}
-              className="absolute bottom-4 right-4 flex items-center gap-2 rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-black/60"
-              aria-disabled={uploadingBanner}
+              className="absolute bottom-4 right-4 z-20 pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-black/60"
             >
               <Camera className="h-4 w-4" />
-              {uploadingBanner ? 'Upload en cours…' : 'Modifier bannière'}
+              Modifier bannière
             </button>
 
             {showBannerUpload && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+              <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm">
                 <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
                   <button
                     type="button"
@@ -693,6 +656,7 @@ export default function AccountPage() {
                   </div>
                 )}
 
+                {/* ✅ Paramètres avancés = roue dentée */}
                 <Link
                   href="/settings"
                   className="ml-1 rounded-lg p-2 text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-900"
@@ -762,7 +726,7 @@ export default function AccountPage() {
                     <textarea
                       value={editBio}
                       onChange={(e) => setEditBio(e.target.value)}
-                      placeholder="Une phrase douce. Rien d&apos;obligatoire."
+                      placeholder="Une phrase douce. Rien d'obligatoire."
                       className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
                       rows={3}
                       maxLength={240}
