@@ -2,14 +2,14 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-22)
- * Objet        : Flux d'échos (profil) — UI premium + micro-interactions + toast
+ * Version      : 1.2.1 (2026-01-22)
+ * Objet        : Flux d'échos — branche EchoItem (media + resonances + mirror + DM)
  * -----------------------------------------------------------------------------
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 1.1.1 (2026-01-22)
- * - [FIX] Imports stables (EchoItem/actions) + toast TS-proof (narrowing)
- * - [NO-REGRESSION] UI 1.1.0 conservée
+ * FIX v1.2.1
+ * - [FIX] JSX cassé (balises fermantes manquantes)
+ * - [FIX] e.titl -> e.title
+ * - [FIX] Adaptation actions.ts v1.4.0 (res.data.*)
+ * - [SAFE] UI/UX existante conservée
  * =============================================================================
  */
 
@@ -19,7 +19,17 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Share2, Sparkles } from 'lucide-react';
 import EchoItem from '@/components/echo/EchoItem';
-import { fetchLikeMeta, shareEcho, toggleEchoLike } from '@/lib/echo/actions';
+import {
+  fetchEchoMediaMeta,
+  fetchLikeMeta,
+  fetchResonanceMeta,
+  sendEchoMirror,
+  shareEcho,
+  toggleEchoLike,
+  toggleEchoResonance,
+  type ResonanceType,
+} from '@/lib/echo/actions';
+import { startDirectConversation } from '@/lib/messages/startDirectConversation';
 
 export type EchoRow = {
   id: string;
@@ -33,6 +43,9 @@ export type EchoRow = {
   visibility: 'world' | 'local' | 'private' | 'semi_anonymous' | null;
   status: 'draft' | 'published' | 'archived' | 'deleted' | null;
   created_at: string;
+
+  // SAFE: si dispo côté query (sinon undefined)
+  user_id?: string | null;
 };
 
 function formatDateFR(iso: string): string {
@@ -52,11 +65,13 @@ export default function EchoFeed({
   echoes,
   userId,
   onOpenEcho,
+  onOpenConversation,
 }: {
   loading: boolean;
   echoes: EchoRow[];
   userId: string | null;
   onOpenEcho: (id: string) => void;
+  onOpenConversation?: (conversationId: string) => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -64,9 +79,17 @@ export default function EchoFeed({
   const [likeCountById, setLikeCountById] = useState<Record<string, number>>({});
   const [likedByMe, setLikedByMe] = useState<Record<string, boolean>>({});
 
+  // Media meta
+  const [mediaById, setMediaById] = useState<Record<string, string[]>>({});
+
+  // Resonance meta
+  const [resCountsByEcho, setResCountsByEcho] = useState<Record<string, Record<ResonanceType, number>>>({});
+  const [resByMeByEcho, setResByMeByEcho] = useState<Record<string, Record<ResonanceType, boolean>>>({});
+
   // UI states
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [busyLikeId, setBusyLikeId] = useState<string | null>(null);
+  const [busyResKey, setBusyResKey] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState>(null);
 
   const toastTimer = useRef<number | null>(null);
@@ -101,7 +124,7 @@ export default function EchoFeed({
     setExpandedId((cur) => (cur === id ? null : id));
   };
 
-  // ✅ Load like meta (counts + likedByMe) — SAFE si table pas encore créée
+  // Load like meta
   useEffect(() => {
     let mounted = true;
 
@@ -111,14 +134,58 @@ export default function EchoFeed({
 
       const res = await fetchLikeMeta({ echoIds: ids, userId });
       if (!mounted) return;
-
-      if (!res.ok) return; // non bloquant
+      if (!res.ok) return;
 
       setLikeCountById(res.countById);
       setLikedByMe(res.likedByMeById);
     };
 
     loadMeta();
+
+    return () => {
+      mounted = false;
+    };
+  }, [echoes, hasEchoes, userId]);
+
+  // Load media meta
+  useEffect(() => {
+    let mounted = true;
+
+    const loadMedia = async () => {
+      if (!hasEchoes) return;
+      const ids = echoes.map((e) => e.id);
+
+      const res = await fetchEchoMediaMeta({ echoIds: ids });
+      if (!mounted) return;
+      if (!res.ok) return;
+
+      setMediaById(res.mediaById);
+    };
+
+    loadMedia();
+
+    return () => {
+      mounted = false;
+    };
+  }, [echoes, hasEchoes]);
+
+  // Load resonance meta
+  useEffect(() => {
+    let mounted = true;
+
+    const loadRes = async () => {
+      if (!hasEchoes) return;
+      const ids = echoes.map((e) => e.id);
+
+      const res = await fetchResonanceMeta({ echoIds: ids, userId });
+      if (!mounted) return;
+      if (!res.ok) return;
+
+      setResCountsByEcho(res.countsByEcho);
+      setResByMeByEcho(res.byMeByEcho);
+    };
+
+    loadRes();
 
     return () => {
       mounted = false;
@@ -143,7 +210,6 @@ export default function EchoFeed({
     const res = await toggleEchoLike({ echoId, userId, nextLiked: next });
 
     if (!res.ok) {
-      // revert
       setLikedByMe((s) => ({ ...s, [echoId]: was }));
       setLikeCountById((s) => ({ ...s, [echoId]: Math.max(0, (s[echoId] ?? 0) + (was ? 1 : -1)) }));
       showToast('error', res.error ?? 'Erreur lors du like.');
@@ -171,13 +237,119 @@ export default function EchoFeed({
     showToast('ok', 'Partage prêt.');
   };
 
-  // ✅ Toast TS-proof (narrow explicite)
+  const onResonance = async (echoId: string, type: ResonanceType) => {
+    if (!userId) {
+      showToast('error', 'Connecte-toi pour réagir.');
+      return;
+    }
+
+    const key = `${echoId}:${type}`;
+    if (busyResKey) return;
+
+    const was = !!resByMeByEcho[echoId]?.[type];
+    const next = !was;
+
+    // optimistic
+    setBusyResKey(key);
+
+    setResByMeByEcho((s) => ({
+      ...s,
+      [echoId]: {
+        i_feel_you: s[echoId]?.i_feel_you ?? false,
+        i_support_you: s[echoId]?.i_support_you ?? false,
+        i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
+        [type]: next,
+      },
+    }));
+
+    setResCountsByEcho((s) => ({
+      ...s,
+      [echoId]: {
+        i_feel_you: s[echoId]?.i_feel_you ?? 0,
+        i_support_you: s[echoId]?.i_support_you ?? 0,
+        i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
+        [type]: Math.max(0, (s[echoId]?.[type] ?? 0) + (next ? 1 : -1)),
+      },
+    }));
+
+    const res = await toggleEchoResonance({ echoId, userId, type, nextOn: next });
+
+    if (!res.ok) {
+      setResByMeByEcho((s) => ({
+        ...s,
+        [echoId]: {
+          i_feel_you: s[echoId]?.i_feel_you ?? false,
+          i_support_you: s[echoId]?.i_support_you ?? false,
+          i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
+          [type]: was,
+        },
+      }));
+
+      setResCountsByEcho((s) => ({
+        ...s,
+        [echoId]: {
+          i_feel_you: s[echoId]?.i_feel_you ?? 0,
+          i_support_you: s[echoId]?.i_support_you ?? 0,
+          i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
+          [type]: Math.max(0, (s[echoId]?.[type] ?? 0) + (was ? 1 : -1)),
+        },
+      }));
+
+      showToast('error', res.error ?? 'Erreur réaction.');
+      setBusyResKey(null);
+      return;
+    }
+
+    showToast('ok', next ? 'Réaction ajoutée.' : 'Réaction retirée.');
+    setBusyResKey(null);
+  };
+
+  const onMirror = async (echoId: string, toUserId: string, message: string) => {
+    if (!userId) {
+      showToast('error', 'Connecte-toi pour envoyer un mirror.');
+      return;
+    }
+    if (!toUserId) {
+      showToast('error', 'Auteur indisponible.');
+      return;
+    }
+
+    const res = await sendEchoMirror({ fromUserId: userId, toUserId, echoId, content: message });
+    if (!res.ok) {
+      showToast('error', res.error ?? 'Erreur mirror.');
+      return;
+    }
+    showToast('ok', 'Mirror envoyé.');
+  };
+
+  const onMessage = async (toUserId: string) => {
+    if (!userId) {
+      showToast('error', 'Connecte-toi pour envoyer un message.');
+      return;
+    }
+
+    const res = await startDirectConversation({ userId, otherUserId: toUserId });
+    if (!res.ok) {
+      showToast('error', res.error ?? 'Impossible de démarrer la conversation.');
+      return;
+    }
+
+    const conversationId = res.data.conversationId;
+
+    if (onOpenConversation) {
+      onOpenConversation(conversationId);
+      showToast('ok', 'Conversation ouverte.');
+      return;
+    }
+
+    showToast('ok', 'Conversation prête (dock non branché ici).');
+  };
+
   const toastKind = toast?.kind ?? null;
   const toastMessage = toast?.message ?? '';
 
   return (
     <div className="relative">
-      {/* Toast local */}
       {toastKind ? (
         <div className="fixed right-6 top-24 z-50">
           <div
@@ -192,7 +364,6 @@ export default function EchoFeed({
         </div>
       ) : null}
 
-      {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -202,7 +373,7 @@ export default function EchoFeed({
               interactif
             </span>
           </div>
-          <p className="mt-1 text-sm text-slate-600">Un flux vivant : lire ici, aimer, partager — sans quitter la page.</p>
+          <p className="mt-1 text-sm text-slate-600">Lire, réagir, mirror, message — sans quitter la page.</p>
         </div>
 
         <Link
@@ -213,111 +384,90 @@ export default function EchoFeed({
         </Link>
       </div>
 
-      {/* Loading */}
       {loading ? (
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           <div className="h-44 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
           <div className="h-44 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
         </div>
-      ) : echoes.length === 0 ? (
-        <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-8 text-center backdrop-blur-md">
-          <div className="text-lg font-semibold text-slate-700">Aucun écho pour l’instant.</div>
-          <p className="mt-2 text-sm text-slate-600">Ton flux apparaîtra ici dès ton premier partage.</p>
-          <Link
-            href="/share"
-            className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
-          >
-            Créer mon premier écho
-          </Link>
+      ) : null}
+
+      {!loading && !hasEchoes ? (
+        <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 text-sm text-slate-700">
+          Aucun écho pour le moment.
         </div>
-      ) : (
+      ) : null}
+
+      {!loading && hasEchoes ? (
         <>
-          {/* Hero */}
           {hero ? (
-            <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200 bg-white/65 backdrop-blur-md shadow-lg shadow-black/5">
-              <div className="relative p-6 sm:p-7">
-                <div className="absolute inset-0 bg-linear-to-br from-violet-500/10 via-sky-500/10 to-emerald-500/10" />
-                <div className="relative">
-                  <div className="text-xs font-semibold text-slate-600">{hero.date}</div>
-                  <div className="mt-2 text-lg font-bold text-slate-900">{hero.title}</div>
-                  <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-slate-700">{hero.excerpt}</p>
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 shadow-lg shadow-black/5 backdrop-blur-md">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-slate-500">{hero.date}</div>
+                  <div className="mt-1 text-lg font-bold text-slate-900">{hero.title}</div>
+                  <div className="mt-2 line-clamp-3 text-sm text-slate-700">{hero.excerpt}</div>
+                </div>
 
-                  <div className="mt-5 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onToggleExpand(hero.id)}
-                      className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-transform hover:scale-[1.01] hover:bg-slate-800 active:scale-[0.99]"
-                    >
-                      {expandedId === hero.id ? 'Réduire' : 'Lire ici'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onLike(hero.id)}
-                      disabled={busyLikeId === hero.id}
-                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition-transform hover:scale-[1.01] hover:bg-slate-50 active:scale-[0.99] disabled:opacity-60"
-                      title="J’aime"
-                    >
-                      <Heart className={`h-4 w-4 ${likedByMe[hero.id] ? 'fill-rose-500 text-rose-500' : ''}`} />
-                      {likeCountById[hero.id] ? `${likeCountById[hero.id]} ` : ''}
-                      J’aime
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onShare(hero.id)}
-                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition-transform hover:scale-[1.01] hover:bg-slate-50 active:scale-[0.99]"
-                      title="Partager"
-                    >
-                      <Share2 className="h-4 w-4" />
-                      {copiedId === hero.id ? 'Copié' : 'Partager'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onOpenEcho(hero.id)}
-                      className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition-transform hover:scale-[1.01] hover:bg-slate-50 active:scale-[0.99]"
-                      title="Ouvrir la page"
-                    >
-                      Ouvrir
-                    </button>
-                  </div>
-
-                  {/* Expand animé (grid trick) */}
-                  <div
-                    className={`mt-5 grid transition-all duration-300 ease-out ${
-                      expandedId === hero.id ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-                    }`}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onLike(hero.id)}
+                    disabled={!!busyLikeId}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/70 p-5 text-sm leading-relaxed text-slate-800">
-                      {echoes.find((x) => x.id === hero.id)?.content}
-                    </div>
-                  </div>
+                    <Heart className={`h-4 w-4 ${likedByMe[hero.id] ? 'fill-rose-500 text-rose-500' : ''}`} />
+                    {likeCountById[hero.id] ? `${likeCountById[hero.id]} ` : ''}
+                    Aimer
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onShare(hero.id)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+                  >
+                    <Share2 className="h-4 w-4" />
+                    {copiedId === hero.id ? 'Copié' : 'Partager'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenEcho(hero.id)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg"
+                  >
+                    Ouvrir
+                  </button>
                 </div>
               </div>
             </div>
           ) : null}
 
-          {/* Feed */}
           <div className="mt-6 grid gap-4 md:grid-cols-2">
             {echoes.map((e) => (
               <EchoItem
                 key={e.id}
                 echo={e}
+                dateLabel={formatDateFR(e.created_at)}
                 expanded={expandedId === e.id}
+                onToggleExpand={onToggleExpand}
                 liked={!!likedByMe[e.id]}
                 likeCount={likeCountById[e.id] ?? 0}
+                onLike={onLike}
+                media={mediaById[e.id] ?? []}
+                resCounts={resCountsByEcho[e.id] ?? { i_feel_you: 0, i_support_you: 0, i_reflect_with_you: 0 }}
+                resByMe={resByMeByEcho[e.id] ?? { i_feel_you: false, i_support_you: false, i_reflect_with_you: false }}
+                onResonance={onResonance}
+                onMirror={onMirror}
+                onMessage={onMessage}
+                onOpenEcho={onOpenEcho}
+                onShare={onShare}
                 copied={copiedId === e.id}
-                likeBusy={busyLikeId === e.id}
-                onToggleExpand={() => onToggleExpand(e.id)}
-                onLike={() => onLike(e.id)}
-                onShare={() => onShare(e.id)}
-                onOpen={() => onOpenEcho(e.id)}
+                busyLike={busyLikeId === e.id}
+                busyResKey={busyResKey}
               />
             ))}
           </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 }

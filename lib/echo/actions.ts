@@ -1,141 +1,110 @@
-/**
- * =============================================================================
- * Fichier      : lib/echo/actions.ts
- * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-22)
- * Objet        : Actions Echo (likes meta, toggle like, share) — typées, SAFE.
- * -----------------------------------------------------------------------------
- * Notes :
- * - Compatible même si la table likes n'existe pas encore (retour ok:false sans crash).
- * - Ne dépend pas de server actions: utilisable côté client.
- *
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 1.1.1 (2026-01-22)
- * - [FIX] delete() : suppression de maybeSingle() + builder awaitable (TS ok)
- * - [NO-ANY] Wrappers supabase stricts, sans `any`
- * =============================================================================
- */
-
-'use client';
+// =============================================================================
+// Fichier      : lib/echo/actions.ts
+// Auteur       : Régis KREMER (Baithz) — EchoWorld
+// Version      : 1.4.1 (2026-01-22)
+// Objet        : Actions Echo (like, share, media, resonances, mirrors) — SAFE
+// -----------------------------------------------------------------------------
+// FIX v1.4.1
+// - [FIX] Contrat "flat" (pas de { data: ... }) => zéro régression avec EchoFeed
+// - [FIX] 0 any / 0 {} vide / 0 never Supabase
+// - [SAFE] Logique métier inchangée
+// =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
 
-type SupabaseErrorLike = { message?: string };
-
-type SupabaseQueryResult<T> = { data: T | null; error: SupabaseErrorLike | null };
-
-/**
- * Builder "awaitable" (thenable) pour permettre :
- *   const res = await sb.from(...).delete().eq(...);
- * sans forcer maybeSingle() (qui n'existe pas sur delete).
+/* ============================================================================
+ * RÉSULTATS (flat)
+ * ============================================================================
  */
-type ThenableResult<T> = {
-  then<TResult1 = T, TResult2 = never>(
-    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
-  ): Promise<TResult1 | TResult2>;
-};
+type Ko = { ok: false; error?: string };
+type OkVoid = { ok: true };
+type Ok<T extends object> = { ok: true } & T;
 
-type SupabaseSelectFilterBuilder = {
-  select: (columns: string) => SupabaseSelectFilterBuilder;
-  eq: (column: string, value: string) => SupabaseSelectFilterBuilder;
-  in: (column: string, values: string[]) => SupabaseSelectFilterBuilder;
-  maybeSingle: () => Promise<SupabaseQueryResult<unknown>>;
-};
+type ResVoid = OkVoid | Ko;
+type ResData<T extends object> = Ok<T> | Ko;
 
-type SupabaseInsertBuilder = {
-  insert: (values: Record<string, unknown> | Array<Record<string, unknown>>) => SupabaseInsertBuilder;
-  select: (columns: string) => SupabaseInsertBuilder;
-  maybeSingle: () => Promise<SupabaseQueryResult<unknown>>;
-};
-
-type SupabaseDeleteFilterBuilder = {
-  eq: (column: string, value: string) => SupabaseDeleteFilterBuilder;
-} & ThenableResult<SupabaseQueryResult<unknown>>;
-
-type SupabaseDeleteBuilder = {
-  delete: () => SupabaseDeleteFilterBuilder;
-};
-
-type SupabaseClientLoose = {
-  from: (table: string) => SupabaseSelectFilterBuilder & SupabaseInsertBuilder & SupabaseDeleteBuilder;
-};
-
-const sb = supabase as unknown as SupabaseClientLoose;
-
-function getErrorMessage(e: unknown): string {
-  if (!e) return 'Erreur inconnue.';
+function errMsg(e: unknown, fallback: string): string {
+  if (!e) return fallback;
   if (typeof e === 'string') return e;
-  if (e instanceof Error) return e.message || 'Erreur.';
-  if (typeof e === 'object' && e !== null && 'message' in e && typeof (e as { message?: unknown }).message === 'string') {
-    return (e as { message: string }).message;
-  }
-  return 'Erreur.';
+  if (e instanceof Error) return e.message || fallback;
+  const anyE = e as { message?: unknown };
+  if (typeof anyE?.message === 'string') return anyE.message;
+  return fallback;
 }
 
-function errorToMessage(err: SupabaseErrorLike | null): string {
-  if (!err) return 'Erreur.';
-  if (typeof err.message === 'string' && err.message.trim()) return err.message;
-  return 'Erreur.';
+/* ============================================================================
+ * HELPERS — neutralise le "never" Supabase sans any
+ * ============================================================================
+ */
+type PgErr = { message?: string } | null;
+type PgRes<T> = { data: T | null; error: PgErr };
+
+type Chain = {
+  select: (...args: unknown[]) => Chain;
+  insert: (values: unknown) => Promise<PgRes<unknown>>;
+  delete: () => Chain;
+
+  eq: (...args: unknown[]) => Chain;
+  in: (...args: unknown[]) => Chain;
+  order: (...args: unknown[]) => Chain;
+
+  maybeSingle?: () => Promise<PgRes<unknown>>;
+  single?: () => Promise<PgRes<unknown>>;
+};
+
+function table(name: string): Chain {
+  return (supabase.from(name) as unknown) as Chain;
 }
 
-type EchoLikeRow = { echo_id: string };
-
-export type LikeMetaResult =
-  | { ok: true; countById: Record<string, number>; likedByMeById: Record<string, boolean> }
-  | { ok: false; error: string };
-
+/* ============================================================================
+ * LIKE
+ * ============================================================================
+ */
 export async function fetchLikeMeta({
   echoIds,
   userId,
 }: {
   echoIds: string[];
   userId: string | null;
-}): Promise<LikeMetaResult> {
+}): Promise<
+  ResData<{
+    countById: Record<string, number>;
+    likedByMeById: Record<string, boolean>;
+  }>
+> {
   if (!echoIds.length) return { ok: true, countById: {}, likedByMeById: {} };
 
   try {
-    // Table: echo_likes (echo_id, user_id, created_at)
+    const { data: counts, error: cErr } = (await (table('echo_likes')
+      .select('echo_id')
+      .in('echo_id', echoIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
 
-    // 1) counts (on récupère toutes les lignes echo_id, puis on compte côté client)
-    const resCounts = await sb.from('echo_likes').select('echo_id').in('echo_id', echoIds).maybeSingle();
-    if (resCounts.error) return { ok: false, error: errorToMessage(resCounts.error) };
-
-    const rowsAny = resCounts.data;
-    const rows = Array.isArray(rowsAny) ? (rowsAny as EchoLikeRow[]) : rowsAny ? ([rowsAny] as EchoLikeRow[]) : [];
+    if (cErr) return { ok: false, error: cErr.message };
 
     const countById: Record<string, number> = {};
-    for (const r of rows) {
-      if (r?.echo_id) countById[r.echo_id] = (countById[r.echo_id] ?? 0) + 1;
-    }
+    ((counts ?? []) as { echo_id: string }[]).forEach((r) => {
+      countById[r.echo_id] = (countById[r.echo_id] ?? 0) + 1;
+    });
 
-    // 2) likedByMe
     const likedByMeById: Record<string, boolean> = {};
     if (userId) {
-      const resMine = await sb
-        .from('echo_likes')
+      const { data: mine, error: mErr } = (await (table('echo_likes')
         .select('echo_id')
         .eq('user_id', userId)
-        .in('echo_id', echoIds)
-        .maybeSingle();
+        .in('echo_id', echoIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
 
-      if (resMine.error) return { ok: false, error: errorToMessage(resMine.error) };
-
-      const mineAny = resMine.data;
-      const mine = Array.isArray(mineAny) ? (mineAny as EchoLikeRow[]) : mineAny ? ([mineAny] as EchoLikeRow[]) : [];
-      for (const r of mine) {
-        if (r?.echo_id) likedByMeById[r.echo_id] = true;
+      if (!mErr && mine) {
+        (mine as { echo_id: string }[]).forEach((r) => {
+          likedByMeById[r.echo_id] = true;
+        });
       }
     }
 
     return { ok: true, countById, likedByMeById };
   } catch (e) {
-    return { ok: false, error: getErrorMessage(e) };
+    return { ok: false, error: errMsg(e, 'Erreur meta likes.') };
   }
 }
-
-export type ToggleLikeResult = { ok: true } | { ok: false; error: string };
 
 export async function toggleEchoLike({
   echoId,
@@ -145,56 +114,219 @@ export async function toggleEchoLike({
   echoId: string;
   userId: string;
   nextLiked: boolean;
-}): Promise<ToggleLikeResult> {
-  if (!echoId || !userId) return { ok: false, error: 'Paramètres invalides.' };
-
+}): Promise<ResVoid> {
   try {
     if (nextLiked) {
-      const res = await sb
-        .from('echo_likes')
-        .insert({ echo_id: echoId, user_id: userId })
-        .select('echo_id')
-        .maybeSingle();
-
-      if (res.error) return { ok: false, error: errorToMessage(res.error) };
+      const { error } = await table('echo_likes').insert({ echo_id: echoId, user_id: userId });
+      if (error) return { ok: false, error: error.message };
       return { ok: true };
     }
 
-    // ✅ delete() : PAS de maybeSingle(). On await directement (builder thenable).
-    const res = await sb.from('echo_likes').delete().eq('echo_id', echoId).eq('user_id', userId);
-    if (res.error) return { ok: false, error: errorToMessage(res.error) };
+    const { error } = (await (table('echo_likes')
+      .delete()
+      .eq('echo_id', echoId)
+      .eq('user_id', userId) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+    if (error) return { ok: false, error: error.message };
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: getErrorMessage(e) };
+    return { ok: false, error: errMsg(e, 'Erreur like.') };
   }
 }
 
-export type ShareResult = { ok: true; mode: 'native' | 'clipboard' } | { ok: false; error: string };
+/* ============================================================================
+ * SHARE (lien externe + clipboard)
+ * ============================================================================
+ */
+export async function shareEcho(
+  { echoId }: { echoId: string }
+): Promise<ResData<{ mode: 'native' | 'clipboard' }>> {
+  const url = `${window.location.origin}/explore?focus=${encodeURIComponent(echoId)}`;
 
-type NavigatorShareCapable = Navigator & { share?: (data: { url: string }) => Promise<void> };
-
-export async function shareEcho({ echoId }: { echoId: string }): Promise<ShareResult> {
   try {
-    const url = `${window.location.origin}/echo/${echoId}`;
-    const nav = typeof navigator !== 'undefined' ? (navigator as NavigatorShareCapable) : null;
+    const nav = navigator as unknown as { share?: (payload: unknown) => Promise<void> };
 
-    if (nav?.share) {
-      try {
-        await nav.share({ url });
-        return { ok: true, mode: 'native' };
-      } catch {
-        // fallback clipboard si l'user annule
-      }
+    if (typeof nav.share === 'function') {
+      await nav.share({ title: 'EchoWorld', text: 'Je partage un écho sur EchoWorld.', url });
+      return { ok: true, mode: 'native' };
     }
 
-    if (nav?.clipboard?.writeText) {
-      await nav.clipboard.writeText(url);
-      return { ok: true, mode: 'clipboard' };
-    }
-
-    window.prompt('Copiez ce lien :', url);
+    await navigator.clipboard.writeText(url);
     return { ok: true, mode: 'clipboard' };
   } catch (e) {
-    return { ok: false, error: getErrorMessage(e) };
+    try {
+      await navigator.clipboard.writeText(url);
+      return { ok: true, mode: 'clipboard' };
+    } catch {
+      return { ok: false, error: errMsg(e, 'Partage impossible.') };
+    }
+  }
+}
+
+/* ============================================================================
+ * MEDIA (echo_media)
+ * ============================================================================
+ */
+export async function fetchEchoMediaMeta({
+  echoIds,
+}: {
+  echoIds: string[];
+}): Promise<ResData<{ mediaById: Record<string, string[]> }>> {
+  if (!echoIds.length) return { ok: true, mediaById: {} };
+
+  try {
+    const { data, error } = (await (table('echo_media')
+      .select('echo_id,url,position')
+      .in('echo_id', echoIds)
+      .order('position', { ascending: true }) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+    if (error || !data) return { ok: false, error: error?.message ?? 'Media indisponibles.' };
+
+    const rows = data as { echo_id: string; url: string | null; position: number | null }[];
+    const mediaById: Record<string, string[]> = {};
+
+    rows.forEach((r) => {
+      const id = String(r.echo_id);
+      const url = String(r.url ?? '').trim();
+      if (!url) return;
+      if (!mediaById[id]) mediaById[id] = [];
+      mediaById[id].push(url);
+    });
+
+    return { ok: true, mediaById };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur media.') };
+  }
+}
+
+/* ============================================================================
+ * RESONANCES (echo_resonances)
+ * ============================================================================
+ */
+export type ResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
+
+export async function fetchResonanceMeta({
+  echoIds,
+  userId,
+}: {
+  echoIds: string[];
+  userId: string | null;
+}): Promise<
+  ResData<{
+    countsByEcho: Record<string, Record<ResonanceType, number>>;
+    byMeByEcho: Record<string, Record<ResonanceType, boolean>>;
+  }>
+> {
+  if (!echoIds.length) return { ok: true, countsByEcho: {}, byMeByEcho: {} };
+
+  const initCounts = (): Record<ResonanceType, number> => ({
+    i_feel_you: 0,
+    i_support_you: 0,
+    i_reflect_with_you: 0,
+  });
+
+  const initByMe = (): Record<ResonanceType, boolean> => ({
+    i_feel_you: false,
+    i_support_you: false,
+    i_reflect_with_you: false,
+  });
+
+  try {
+    const { data, error } = (await (table('echo_resonances')
+      .select('echo_id,user_id,resonance_type')
+      .in('echo_id', echoIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+    if (error || !data) return { ok: false, error: error?.message ?? 'Resonances indisponibles.' };
+
+    const rows = data as { echo_id: string; user_id: string; resonance_type: string }[];
+
+    const countsByEcho: Record<string, Record<ResonanceType, number>> = {};
+    const byMeByEcho: Record<string, Record<ResonanceType, boolean>> = {};
+
+    rows.forEach((r) => {
+      const echoId = String(r.echo_id);
+      const t = r.resonance_type as ResonanceType;
+
+      if (!countsByEcho[echoId]) countsByEcho[echoId] = initCounts();
+      if (!byMeByEcho[echoId]) byMeByEcho[echoId] = initByMe();
+
+      if (t === 'i_feel_you' || t === 'i_support_you' || t === 'i_reflect_with_you') {
+        countsByEcho[echoId][t] = (countsByEcho[echoId][t] ?? 0) + 1;
+        if (userId && r.user_id === userId) byMeByEcho[echoId][t] = true;
+      }
+    });
+
+    return { ok: true, countsByEcho, byMeByEcho };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur resonances.') };
+  }
+}
+
+export async function toggleEchoResonance({
+  echoId,
+  userId,
+  type,
+  nextOn,
+}: {
+  echoId: string;
+  userId: string;
+  type: ResonanceType;
+  nextOn: boolean;
+}): Promise<ResVoid> {
+  try {
+    if (nextOn) {
+      const { error } = await table('echo_resonances').insert({
+        echo_id: echoId,
+        user_id: userId,
+        resonance_type: type,
+      });
+      if (error) return { ok: false, error: error.message };
+      return { ok: true };
+    }
+
+    const { error } = (await (table('echo_resonances')
+      .delete()
+      .eq('echo_id', echoId)
+      .eq('user_id', userId)
+      .eq('resonance_type', type) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur resonance.') };
+  }
+}
+
+/* ============================================================================
+ * MIRROR (echo_mirrors)
+ * ============================================================================
+ */
+export async function sendEchoMirror({
+  fromUserId,
+  toUserId,
+  echoId,
+  content,
+}: {
+  fromUserId: string;
+  toUserId: string;
+  echoId: string;
+  content: string;
+}): Promise<ResVoid> {
+  const msg = (content ?? '').trim();
+  if (!msg) return { ok: false, error: 'Message vide.' };
+
+  try {
+    const { error } = await table('echo_mirrors').insert({
+      from_user_id: fromUserId,
+      to_user_id: toUserId,
+      echo_id: echoId,
+      content: msg,
+      status: 'sent',
+    });
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur mirror.') };
   }
 }

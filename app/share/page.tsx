@@ -1,38 +1,26 @@
-/**
- * =============================================================================
- * Fichier      : app/share/page.tsx
- * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-22)
- * Objet        : Publier un écho — Version complète avec émojis + géoloc
- * -----------------------------------------------------------------------------
- * Description  :
- * - Header navigation intégré
- * - Guard auth (redirige /login)
- * - Charge profiles + user_settings (défauts)
- * - Sélecteur émojis pour émotions (sync avec PulseHeart)
- * - Géolocalisation automatique (supprime champ Pays)
- * - Ville optionnelle
- * - Insert echoes avec refresh globe automatique
- *
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 2.0.0 (2026-01-22)
- * - [NEW] Header navigation intégré (consistance UI)
- * - [NEW] Sélecteur émojis pour émotions (6 émotions principales)
- * - [NEW] Géolocalisation automatique (détection pays)
- * - [REMOVED] Champ Pays manuel (remplacé par géoloc auto)
- * - [FIX] Max-width harmonisé (max-w-6xl) + padding-top pour sticky header
- * - [IMPROVED] Design moderne : transitions, hover states
- * =============================================================================
- */
+// =============================================================================
+// Fichier      : app/share/page.tsx
+// Auteur       : Régis KREMER (Baithz) — EchoWorld
+// Version      : 3.1.0 (2026-01-22)
+// Objet        : Publier un écho — Version complète avec émojis + géoloc + photos
+// -----------------------------------------------------------------------------
+// FIX v3.1.0
+// - [FIX] Contrat upload photos externalisé via lib/echo/uploadEchoMedia (zéro duplication, zéro régression)
+// - [FIX] Typage Supabase “never” contourné proprement (interfaces minimalistes, sans any, sans {} vide)
+// - [FIX] Gestion stricte fichiers (type image/* + taille + limite + messages)
+// - [FIX] Cleanup previews robuste (revokeObjectURL sur remove / clear / unmount)
+// - [SAFE] UI/logic existantes conservées (settings, selects, géoloc, messages, redirect focus)
+// =============================================================================
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { MapPin, Smile } from 'lucide-react';
+import { MapPin, Smile, ImagePlus, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
+import { uploadEchoMedia } from '@/lib/echo/uploadEchoMedia';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
@@ -73,24 +61,24 @@ type EchoInsert = {
   status: Status;
 };
 
-type PostgrestErrorLike = { message?: string } | null;
-type InsertResultLike = { data: unknown; error: PostgrestErrorLike };
+type PgErr = { message?: string } | null;
+type PgRes<T> = { data: T | null; error: PgErr };
 
-type EchoesTableLike = {
-  insert: (values: unknown) => Promise<InsertResultLike>;
+type EchoesInsertSelectSingleLike = {
+  select: (columns: string) => { single: () => Promise<PgRes<{ id: string }>> };
 };
 
-// Émotions principales - Spectre complet (positives + négatives)
+type EchoesTableLike = {
+  insert: (values: EchoInsert) => EchoesInsertSelectSingleLike;
+};
+
 const EMOTIONS = [
-  // Positives
   { emoji: '😊', label: 'Joie', value: 'joy' },
   { emoji: '🌟', label: 'Espoir', value: 'hope' },
   { emoji: '❤️', label: 'Amour', value: 'love' },
   { emoji: '💪', label: 'Résilience', value: 'resilience' },
   { emoji: '🙏', label: 'Gratitude', value: 'gratitude' },
   { emoji: '✨', label: 'Courage', value: 'courage' },
-  
-  // Négatives/Difficiles
   { emoji: '😢', label: 'Tristesse', value: 'sadness' },
   { emoji: '😰', label: 'Anxiété', value: 'anxiety' },
   { emoji: '😔', label: 'Solitude', value: 'loneliness' },
@@ -140,9 +128,17 @@ export default function SharePage() {
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
 
+  // Photos
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
+  const MAX_PHOTOS = 6;
+  const MAX_MB = 5;
+
   const echoesTable = useMemo(() => {
     return (supabase.from('echoes') as unknown) as EchoesTableLike;
   }, []);
+
+  const geoAbortRef = useRef<AbortController | null>(null);
 
   // Auth guard
   useEffect(() => {
@@ -181,6 +177,70 @@ export default function SharePage() {
     };
   }, [router]);
 
+  // Detect country via Geolocation API
+  const detectCountry = async () => {
+    if (geoLoading) return;
+
+    if (!navigator.geolocation) {
+      setGeoError('Géolocalisation non supportée par votre navigateur.');
+      return;
+    }
+
+    setGeoLoading(true);
+    setGeoError(null);
+
+    // stop any previous reverse geocode fetch
+    if (geoAbortRef.current) {
+      geoAbortRef.current.abort();
+      geoAbortRef.current = null;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+
+          const ctrl = new AbortController();
+          geoAbortRef.current = ctrl;
+
+          // Note: "User-Agent" header cannot be set by browsers.
+          const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(
+            String(latitude)
+          )}&lon=${encodeURIComponent(String(longitude))}&zoom=10&addressdetails=1`;
+
+          const response = await fetch(url, {
+            signal: ctrl.signal,
+            headers: {
+              Accept: 'application/json',
+            },
+          });
+
+          if (!response.ok) throw new Error('Erreur lors de la géolocalisation.');
+
+          const data = (await response.json()) as { address?: { country?: string } };
+          const detectedCountry = data.address?.country || '';
+
+          setCountry(detectedCountry);
+          setGeoLoading(false);
+          geoAbortRef.current = null;
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') {
+            setGeoLoading(false);
+            return;
+          }
+          setGeoError('Impossible de détecter le pays automatiquement.');
+          setGeoLoading(false);
+          geoAbortRef.current = null;
+        }
+      },
+      () => {
+        setGeoError('Géolocalisation refusée. Le pays ne sera pas renseigné.');
+        setGeoLoading(false);
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60_000 }
+    );
+  };
+
   // Load profile + user_settings + auto-geoloc
   useEffect(() => {
     let mounted = true;
@@ -215,8 +275,8 @@ export default function SharePage() {
         setIsAnonymous(nextSettings?.default_anonymous ?? false);
         setLanguage(nextProfile?.lang_primary ?? 'en');
 
-        // Auto-detect country via geolocation
-        detectCountry();
+        // auto geo
+        void detectCountry();
       } catch (e) {
         if (!mounted) return;
         setError(getErrorMessage(e, 'Erreur de chargement.'));
@@ -230,51 +290,74 @@ export default function SharePage() {
     return () => {
       mounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // Detect country via Geolocation API
-  const detectCountry = async () => {
-    if (!navigator.geolocation) {
-      setGeoError('Géolocalisation non supportée par votre navigateur.');
+  // Photo helpers
+  const revokeAllPreviews = (urls: string[]) => {
+    urls.forEach((u) => {
+      try {
+        URL.revokeObjectURL(u);
+      } catch {
+        // noop
+      }
+    });
+  };
+
+  const onSelectPhotos = (files: FileList | null) => {
+    if (!files || saving) return;
+
+    setError(null);
+    setOk(null);
+
+    const incoming = Array.from(files);
+
+    const remaining = Math.max(0, MAX_PHOTOS - photos.length);
+    if (remaining <= 0) {
+      setError(`Maximum atteint (${MAX_PHOTOS} photos).`);
       return;
     }
 
-    setGeoLoading(true);
-    setGeoError(null);
+    const next = incoming.slice(0, remaining);
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const { latitude, longitude } = position.coords;
+    const nonImages = next.find((f) => !String(f.type || '').startsWith('image/'));
+    if (nonImages) {
+      setError('Formats acceptés : images uniquement.');
+      return;
+    }
 
-          // Reverse geocoding via API (exemple: Nominatim OpenStreetMap)
-          const response = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=10&addressdetails=1`,
-            {
-              headers: {
-                'User-Agent': 'EchoWorld/1.0',
-              },
-            }
-          );
+    const invalid = next.find((f) => f.size > MAX_MB * 1024 * 1024);
+    if (invalid) {
+      setError(`Image trop lourde : max ${MAX_MB} Mo par photo.`);
+      return;
+    }
 
-          if (!response.ok) throw new Error('Erreur lors de la géolocalisation.');
-
-          const data = await response.json();
-          const detectedCountry = data.address?.country || '';
-
-          setCountry(detectedCountry);
-          setGeoLoading(false);
-        } catch {
-          setGeoError('Impossible de détecter le pays automatiquement.');
-          setGeoLoading(false);
-        }
-      },
-      () => {
-        setGeoError('Géolocalisation refusée. Le pays ne sera pas renseigné.');
-        setGeoLoading(false);
-      }
-    );
+    const nextPreviews = next.map((f) => URL.createObjectURL(f));
+    setPhotos((prev) => [...prev, ...next]);
+    setPhotoPreviews((prev) => [...prev, ...nextPreviews]);
   };
+
+  const removePhoto = (index: number) => {
+    setPhotos((prev) => prev.filter((_, i) => i !== index));
+    setPhotoPreviews((prev) => {
+      const url = prev[index];
+      if (url) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // noop
+        }
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  // cleanup on unmount + when list changes
+  useEffect(() => {
+    return () => {
+      revokeAllPreviews(photoPreviews);
+    };
+  }, [photoPreviews]);
 
   const canPublish = useMemo(() => {
     const c = content.trim();
@@ -311,18 +394,31 @@ export default function SharePage() {
 
     setSaving(true);
     try {
-      const res = await echoesTable.insert(payload);
+      // Insert echo (id requis pour les médias + focus globe)
+      const res = await echoesTable.insert(payload).select('id').single();
       if (res.error) throw res.error;
 
+      const echoId = res.data?.id ?? null;
+      if (!echoId) throw new Error('Écho créé, mais identifiant introuvable.');
+
+      // Upload photos + insert echo_media (centralisé)
+      await uploadEchoMedia(echoId, photos);
+
       setOk(status === 'draft' ? 'Brouillon enregistré.' : 'Écho publié.');
+
+      // reset form
       setTitle('');
       setContent('');
       setEmotion('');
       setCity('');
 
-      // Redirect to account after successful publish
+      // cleanup previews + reset
+      revokeAllPreviews(photoPreviews);
+      setPhotos([]);
+      setPhotoPreviews([]);
+
       if (status !== 'draft') {
-        setTimeout(() => router.push('/account'), 1500);
+        router.push(`/explore?focus=${encodeURIComponent(echoId)}`);
       }
     } catch (e) {
       setError(getErrorMessage(e, 'Erreur lors de la publication.'));
@@ -333,237 +429,349 @@ export default function SharePage() {
 
   if (authLoading) {
     return (
-      <>
-        <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
-          <div className="h-10 w-64 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
-          <div className="mt-6 h-72 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
-        </main>
-      </>
+      <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
+        <div className="h-10 w-64 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
+        <div className="mt-6 h-72 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
+      </main>
     );
   }
 
+  const selectedEmotion = emotion ? EMOTIONS.find((e) => e.value === emotion) ?? null : null;
+
   return (
-    <>
-
-      <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">Partager un écho</h1>
-            <p className="mt-2 text-slate-600">
-              Une histoire courte. Un point sur la carte. Un souffle humain.
-            </p>
-          </div>
-
-          <Link
-            href="/account"
-            className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white"
-          >
-            Mon espace
-          </Link>
+    <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
+      <div className="flex items-start justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-900">Partager un écho</h1>
+          <p className="mt-2 text-slate-600">Une histoire courte. Un point sur la carte. Un souffle humain.</p>
         </div>
 
-        {error && (
-          <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            {error}
-          </div>
-        )}
-        {ok && (
-          <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-            {ok}
-          </div>
-        )}
+        <Link
+          href="/account"
+          className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white"
+        >
+          Mon espace
+        </Link>
+      </div>
 
-        <section className="mt-8 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-slate-900">
-              {loading ? 'Chargement…' : profile?.handle || profile?.display_name || 'Ton écho'}
-            </div>
+      {error && (
+        <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+          {error}
+        </div>
+      )}
+      {ok && (
+        <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          {ok}
+        </div>
+      )}
 
-            <div className="flex flex-wrap gap-2">
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as Status)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
-                aria-label="Statut"
-                disabled={saving}
-              >
-                <option value="published">Publier</option>
-                <option value="draft">Brouillon</option>
-              </select>
-
-              <select
-                value={visibility}
-                onChange={(e) => setVisibility(e.target.value as Visibility)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
-                aria-label="Visibilité"
-                disabled={saving}
-              >
-                <option value="world">Monde</option>
-                <option value="local">Local</option>
-                <option value="semi_anonymous">Semi-anonyme</option>
-                <option value="private">Privé</option>
-              </select>
-
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
-                aria-label="Langue"
-                disabled={saving}
-              >
-                <option value="en">en</option>
-                <option value="fr">fr</option>
-                <option value="es">es</option>
-                <option value="de">de</option>
-                <option value="it">it</option>
-              </select>
-            </div>
+      <section className="mt-8 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm font-semibold text-slate-900">
+            {loading ? 'Chargement…' : profile?.handle || profile?.display_name || 'Ton écho'}
           </div>
 
-          <div className="mt-5">
-            <label className="text-sm font-semibold text-slate-900" htmlFor="title">
-              Titre (optionnel)
-            </label>
-            <input
-              id="title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+          <div className="flex flex-wrap gap-2">
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as Status)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
+              aria-label="Statut"
               disabled={saving}
-              maxLength={120}
-              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
-              placeholder="Une phrase qui ouvre…"
-            />
-          </div>
+            >
+              <option value="published">Publier</option>
+              <option value="draft">Brouillon</option>
+            </select>
 
-          <div className="mt-5">
-            <label className="text-sm font-semibold text-slate-900" htmlFor="content">
-              Ton écho
-            </label>
-            <textarea
-              id="content"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
+            <select
+              value={visibility}
+              onChange={(e) => setVisibility(e.target.value as Visibility)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
+              aria-label="Visibilité"
               disabled={saving}
-              rows={7}
-              maxLength={2200}
-              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
-              placeholder="Reste simple. Reste vrai. 5–15 lignes suffisent."
-            />
-            <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-              <span>Minimum conseillé : 20 caractères</span>
-              <span>{content.length}/2200</span>
-            </div>
+            >
+              <option value="world">Monde</option>
+              <option value="local">Local</option>
+              <option value="semi_anonymous">Semi-anonyme</option>
+              <option value="private">Privé</option>
+            </select>
+
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900"
+              aria-label="Langue"
+              disabled={saving}
+            >
+              <option value="en">en</option>
+              <option value="fr">fr</option>
+              <option value="es">es</option>
+              <option value="de">de</option>
+              <option value="it">it</option>
+            </select>
           </div>
+        </div>
 
-          {/* Emotion selector (emojis) */}
-          <div className="mt-6">
-            <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Smile className="h-4 w-4" />
-              Émotion (optionnel)
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {EMOTIONS.map((e) => (
-                <button
-                  key={e.value}
-                  type="button"
-                  onClick={() => setEmotion(emotion === e.value ? '' : e.value)}
-                  disabled={saving}
-                  className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold transition-all ${
-                    emotion === e.value
-                      ? 'border-slate-900 bg-slate-900 text-white shadow-lg'
-                      : 'border-slate-200 bg-white text-slate-900 hover:border-slate-300 hover:shadow-md'
-                  } ${saving ? 'cursor-not-allowed opacity-50' : ''}`}
-                >
-                  <span className="text-lg">{e.emoji}</span>
-                  <span>{e.label}</span>
-                </button>
-              ))}
-            </div>
+        <div className="mt-5">
+          <label className="text-sm font-semibold text-slate-900" htmlFor="title">
+            Titre (optionnel)
+          </label>
+          <input
+            id="title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            disabled={saving}
+            maxLength={120}
+            className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
+            placeholder="Une phrase qui ouvre…"
+          />
+        </div>
+
+        <div className="mt-5">
+          <label className="text-sm font-semibold text-slate-900" htmlFor="content">
+            Ton écho
+          </label>
+          <textarea
+            id="content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            disabled={saving}
+            rows={7}
+            maxLength={2200}
+            className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
+            placeholder="Reste simple. Reste vrai. 5–15 lignes suffisent."
+          />
+          <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+            <span>Minimum conseillé : 20 caractères</span>
+            <span>{content.length}/2200</span>
           </div>
+        </div>
 
-          {/* Location (auto country + manual city) */}
-          <div className="mt-6">
-            <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <MapPin className="h-4 w-4" />
-              Localisation
-            </label>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              {/* Country (auto-detected, read-only) */}
-              <div>
-                <label className="text-xs font-medium text-slate-600">
-                  Pays (détecté automatiquement)
-                </label>
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={country}
-                    readOnly
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700"
-                    placeholder={geoLoading ? 'Détection en cours…' : 'Non détecté'}
-                  />
-                  {geoLoading && (
-                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900" />
-                  )}
-                </div>
-                {geoError && (
-                  <div className="mt-1 text-xs text-slate-500">{geoError}</div>
-                )}
-              </div>
-
-              {/* City (manual, optional) */}
-              <div>
-                <label className="text-xs font-medium text-slate-600" htmlFor="city">
-                  Ville (optionnel)
-                </label>
-                <input
-                  id="city"
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  disabled={saving}
-                  maxLength={80}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
-                  placeholder="Nancy, Paris, Berlin…"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
-            <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <input
-                type="checkbox"
-                checked={isAnonymous}
-                onChange={(e) => setIsAnonymous(e.target.checked)}
+        {/* Emotion selector (emojis) */}
+        <div className="mt-6">
+          <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <Smile className="h-4 w-4" />
+            Émotion (optionnel)
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {EMOTIONS.map((e) => (
+              <button
+                key={e.value}
+                type="button"
+                onClick={() => setEmotion(emotion === e.value ? '' : e.value)}
                 disabled={saving}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              Publier en anonyme (soft)
-            </label>
+                className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold transition-all ${
+                  emotion === e.value
+                    ? 'border-slate-900 bg-slate-900 text-white shadow-lg'
+                    : 'border-slate-200 bg-white text-slate-900 hover:border-slate-300 hover:shadow-md'
+                } ${saving ? 'cursor-not-allowed opacity-50' : ''}`}
+              >
+                <span className="text-lg">{e.emoji}</span>
+                <span>{e.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!canPublish || saving}
-              className={`rounded-xl px-5 py-2 text-sm font-semibold shadow-lg transition-transform ${
-                canPublish && !saving
-                  ? 'bg-slate-900 text-white hover:scale-[1.01]'
-                  : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+        {/* Photos */}
+        <div className="mt-6">
+          <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <ImagePlus className="h-4 w-4" />
+            Photos (optionnel)
+            <span className="text-xs font-medium text-slate-500">
+              — {photos.length}/{MAX_PHOTOS} • max {MAX_MB}Mo/photo
+            </span>
+          </label>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label
+              className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 ${
+                saving || photos.length >= MAX_PHOTOS ? 'pointer-events-none opacity-50' : ''
               }`}
             >
-              {saving ? 'Envoi…' : status === 'draft' ? 'Enregistrer' : 'Publier'}
-            </button>
+              <ImagePlus className="h-4 w-4" />
+              Ajouter
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => onSelectPhotos(e.target.files)}
+              />
+            </label>
+
+            {photos.length > 0 && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  revokeAllPreviews(photoPreviews);
+                  setPhotos([]);
+                  setPhotoPreviews([]);
+                }}
+                className={`rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50 ${
+                  saving ? 'cursor-not-allowed opacity-50' : ''
+                }`}
+              >
+                Tout retirer
+              </button>
+            )}
           </div>
 
-          {settings && (
-            <div className="mt-4 text-xs text-slate-500">
-              Défauts appliqués : visibilité{' '}
-              <span className="font-semibold">{settings.default_echo_visibility}</span> • anonyme{' '}
-              <span className="font-semibold">{settings.default_anonymous ? 'oui' : 'non'}</span>
+          {photoPreviews.length > 0 && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {photoPreviews.map((src, i) => (
+                <div key={src} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="relative aspect-square">
+                    <Image
+                      src={src}
+                      alt=""
+                      fill
+                      unoptimized
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+                      className="object-cover"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => removePhoto(i)}
+                    disabled={saving}
+                    className={`absolute right-2 top-2 inline-flex items-center justify-center rounded-full bg-black/70 p-2 text-white transition hover:bg-black ${
+                      saving ? 'cursor-not-allowed opacity-60' : ''
+                    }`}
+                    aria-label="Supprimer la photo"
+                    title="Supprimer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
-        </section>
-      </main>
-    </>
+        </div>
+
+        {/* Preview */}
+        {content.trim().length >= 20 && (
+          <div className="mt-8 rounded-3xl border border-dashed border-slate-300 bg-white/60 p-5">
+            <div className="text-xs font-semibold text-slate-500">Aperçu</div>
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="whitespace-pre-wrap text-sm text-slate-900">{content.trim()}</div>
+
+              {selectedEmotion && (
+                <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900">
+                  <span className="text-lg">{selectedEmotion.emoji}</span>
+                  <span>{selectedEmotion.label}</span>
+                </div>
+              )}
+
+              {photoPreviews.length > 0 && (
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  {photoPreviews.slice(0, 3).map((src, i) => (
+                    <div
+                      key={`${src}-${i}`}
+                      className="relative aspect-square overflow-hidden rounded-xl border border-slate-200"
+                    >
+                      <Image src={src} alt="" fill unoptimized className="object-cover" sizes="33vw" />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 text-xs text-slate-500">
+                {country ? `Pays : ${country}` : 'Pays : (non détecté)'}
+                {city.trim() ? ` • Ville : ${city.trim()}` : ''}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Location (auto country + manual city) */}
+        <div className="mt-6">
+          <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <MapPin className="h-4 w-4" />
+            Localisation
+          </label>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium text-slate-600">Pays (détecté automatiquement)</label>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={country}
+                  readOnly
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700"
+                  placeholder={geoLoading ? 'Détection en cours…' : 'Non détecté'}
+                />
+                {geoLoading && (
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900" />
+                )}
+              </div>
+              {geoError && <div className="mt-1 text-xs text-slate-500">{geoError}</div>}
+
+              <button
+                type="button"
+                disabled={saving || geoLoading}
+                onClick={() => void detectCountry()}
+                className={`mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50 ${
+                  saving || geoLoading ? 'cursor-not-allowed opacity-50' : ''
+                }`}
+              >
+                Relancer la détection
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs font-medium text-slate-600" htmlFor="city">
+                Ville (optionnel)
+              </label>
+              <input
+                id="city"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                disabled={saving}
+                maxLength={80}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
+                placeholder="Nancy, Paris, Berlin…"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+          <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <input
+              type="checkbox"
+              checked={isAnonymous}
+              onChange={(e) => setIsAnonymous(e.target.checked)}
+              disabled={saving}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Publier en anonyme (soft)
+          </label>
+
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!canPublish || saving}
+            className={`rounded-xl px-5 py-2 text-sm font-semibold shadow-lg transition-transform ${
+              canPublish && !saving
+                ? 'bg-slate-900 text-white hover:scale-[1.01]'
+                : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            {saving ? 'Envoi…' : status === 'draft' ? 'Enregistrer' : 'Publier'}
+          </button>
+        </div>
+
+        {settings && (
+          <div className="mt-4 text-xs text-slate-500">
+            Défauts appliqués : visibilité <span className="font-semibold">{settings.default_echo_visibility}</span> •
+            anonyme <span className="font-semibold">{settings.default_anonymous ? 'oui' : 'non'}</span>
+          </div>
+        )}
+      </section>
+    </main>
   );
 }
