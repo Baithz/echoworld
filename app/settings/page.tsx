@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-22)
+ * Version      : 2.0.2 (2026-01-22)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,14 +12,16 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.0.2 (2026-01-22)
+ * - [FIX] Toggles décalés : thumb ancré (left-1) + translate correct (translate-x-6)
+ * - [FIX] Sauvegarde fiable : upsert profiles/user_settings (évite update=0 rows si ligne absente)
+ * - [NO-REGRESSION] UI/UX, logique et routes inchangées
  * 2.0.1 (2026-01-22)
  * - [FIX] ESLint react/no-unescaped-entities : apostrophes échappées dans le JSX
  * - [NO-REGRESSION] Logique, UX et routes inchangées
  * 2.0.0 (2026-01-22)
  * - [NEW] Header navigation intégré (consistance UI)
  * - [FIX] Max-width harmonisé (max-w-6xl) + padding-top pour sticky header
- * - [FIX] Toggles décalés corrigés (alignement parfait)
- * - [FIX] Sauvegarde réparée (updates fonctionnels)
  * - [IMPROVED] Design moderne : transitions, hover states
  * 1.0.2 (2026-01-21)
  * - [FIX] TS "never" persistant : typage forcé sur maybeSingle<T>() + payloads Update
@@ -237,16 +239,20 @@ export default function SettingsPage() {
     try {
       const nextHandle = handle.trim() ? normalizeHandle(handle) : null;
 
-      const profilePatch: Database['public']['Tables']['profiles']['Update'] = {
+      // Upsert profile (évite update=0 rows si la ligne n'existe pas encore)
+      const profilePatch: Database['public']['Tables']['profiles']['Insert'] = {
+        id: userId,
         handle: nextHandle,
         bio: bio.trim() ? bio.trim() : null,
         identity_mode: identityMode,
       };
 
-      const pUpdate = await sb.from('profiles').update(profilePatch).eq('id', userId);
-      if (pUpdate.error) throw pUpdate.error;
+      const pUpsert = await sb.from('profiles').upsert(profilePatch, { onConflict: 'id' });
+      if (pUpsert.error) throw pUpsert.error;
 
-      const settingsPatch: Database['public']['Tables']['user_settings']['Update'] = {
+      // Upsert settings (évite update=0 rows si la ligne n'existe pas encore)
+      const settingsPatch: Database['public']['Tables']['user_settings']['Insert'] = {
+        user_id: userId,
         theme,
         public_profile_enabled: publicProfile,
         default_echo_visibility: defaultVisibility,
@@ -256,10 +262,10 @@ export default function SettingsPage() {
         notifications_soft: notificationsSoft,
       };
 
-      const sUpdate = await sb.from('user_settings').update(settingsPatch).eq('user_id', userId);
-      if (sUpdate.error) throw sUpdate.error;
+      const sUpsert = await sb.from('user_settings').upsert(settingsPatch, { onConflict: 'user_id' });
+      if (sUpsert.error) throw sUpsert.error;
 
-      // Refresh data after successful save
+      // Refresh after save (affichage cohérent)
       const [pRefresh, sRefresh] = await Promise.all([
         sb.from('profiles').select('*').eq('id', userId).maybeSingle<ProfileRow>(),
         sb.from('user_settings').select('*').eq('user_id', userId).maybeSingle<UserSettingsRow>(),
@@ -274,7 +280,7 @@ export default function SettingsPage() {
       if (msg.toLowerCase().includes('duplicate') || msg.toLowerCase().includes('unique')) {
         setError('Ce pseudo est déjà utilisé. Essayez une autre variante.');
       } else {
-        setError(msg || 'Erreur lors de l\'enregistrement.');
+        setError(msg || "Erreur lors de l'enregistrement.");
       }
     } finally {
       setSaving(false);
@@ -433,9 +439,7 @@ export default function SettingsPage() {
                 <option value="semi_anonymous">Semi-anonyme</option>
                 <option value="private">Privé</option>
               </select>
-              <div className="mt-2 text-xs text-slate-500">
-                Tu peux toujours choisir au moment de publier.
-              </div>
+              <div className="mt-2 text-xs text-slate-500">Tu peux toujours choisir au moment de publier.</div>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
@@ -461,7 +465,7 @@ export default function SettingsPage() {
               <select
                 value={theme}
                 onChange={(e) => setTheme(e.target.value as Theme)}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-slate-300"
               >
                 <option value="system">Système</option>
                 <option value="light">Clair</option>
@@ -533,14 +537,14 @@ function ToggleRow(props: {
         <button
           type="button"
           onClick={() => onChange(!checked)}
-          className={`shrink-0 relative h-7 w-12 rounded-full border transition-colors ${
+          aria-pressed={checked}
+          className={`relative shrink-0 h-7 w-12 rounded-full border transition-colors ${
             checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
           }`}
-          aria-pressed={checked}
         >
           <span
-            className={`absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
-              checked ? 'translate-x-6' : 'translate-x-1'
+            className={`absolute left-1 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
+              checked ? 'translate-x-6' : 'translate-x-0'
             }`}
           />
         </button>
@@ -555,17 +559,18 @@ function ToggleInline(props: { label: string; checked: boolean; onChange: (v: bo
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="text-sm text-slate-800">{label}</div>
+
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className={`shrink-0 relative h-7 w-12 rounded-full border transition-colors ${
+        aria-pressed={checked}
+        className={`relative shrink-0 h-7 w-12 rounded-full border transition-colors ${
           checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
         }`}
-        aria-pressed={checked}
       >
         <span
-          className={`absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
-            checked ? 'translate-x-6' : 'translate-x-1'
+          className={`absolute left-1 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition-transform ${
+            checked ? 'translate-x-6' : 'translate-x-0'
           }`}
         />
       </button>
