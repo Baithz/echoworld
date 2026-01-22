@@ -358,7 +358,7 @@ export default function Header() {
                 <>
                   {/* Dashboard -> Pour moi */}
                   <Link
-                    href="/dashboard"
+                    href="/for-me"
                     className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
                     aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
                     title="Pour moi — résonances & intérêts"
@@ -493,7 +493,7 @@ export default function Header() {
 
                 {/* NEW: Pour moi (mobile menu) */}
                 <Link
-                  href="/dashboard"
+                  href="/for-me"
                   onClick={closeMobile}
                   className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-medium text-slate-900 hover:bg-white"
                   aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
