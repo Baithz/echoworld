@@ -2,34 +2,25 @@
  * =============================================================================
  * Fichier      : app/account/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-22)
+ * Version      : 2.3.1 (2026-01-22)
  * Objet        : Mon profil — Profil utilisateur + avatar/bannière + édition inline
  * -----------------------------------------------------------------------------
- * Description  :
- * - Client Component avec interactions complètes
- * - Header navigation sticky intégré
- * - Bannière personnalisée (style Instagram/Facebook)
- * - Avatar éditable avec upload Supabase Storage
- * - Édition inline du profil (handle, bio, langue) sans passer par /settings
- * - Liste des derniers échos (12 max) avec actions
- *
- * NOTE BDD :
- * - Ce fichier suppose que `profiles.banner_url` existe (sinon l’update bannière échouera).
- *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-22)
- * - [UX] Titre page: "Mon profil" (au lieu de "Mon espace")
- * - [UX] Suppression du bouton "Paramètres" en haut à droite (redondant)
- * - [UX] "Paramètres avancés": icône ⚙️ (au lieu du crayon)
- * - [UX] Messages succès auto-dismiss (feedback temporaire)
- * - [FIX] Bouton "Modifier bannière" forcé cliquable (z-index/pointer-events/stopPropagation)
+ * 2.3.1 (2026-01-22)
+ * - [UX] Persistance position bannière via BDD (profiles.banner_pos_y) => multi-devices
+ * - [NO-REGRESSION] UI 2.3.0 conservée (modal fixed, preview, drag, transparence)
+ * - [FIX] Suppression localStorage + sync bannerPosY depuis profile
  * =============================================================================
+ *
+ * NOTE BDD :
+ * - Ce fichier suppose que `profiles.banner_url` existe.
+ * - Ce fichier suppose que `profiles.banner_pos_y` existe (int, default 0).
  */
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Camera, Edit2, Save, Upload, X, Settings } from 'lucide-react';
@@ -48,6 +39,7 @@ type ProfileRow = {
   avatar_url: string | null;
   avatar_seed: string | null;
   banner_url: string | null;
+  banner_pos_y: number | null; // ✅ persisté BDD
   lang_primary: string;
 };
 
@@ -155,6 +147,14 @@ const LANG_CHOICES: Array<{ code: string; label: string }> = [
 
 const OK_TOAST_MS = 3500;
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function bannerObjectPosition(offsetY: number): string {
+  return `center calc(50% + ${offsetY}px)`;
+}
+
 export default function AccountPage() {
   const router = useRouter();
 
@@ -174,6 +174,19 @@ export default function AccountPage() {
   const [showAvatarUpload, setShowAvatarUpload] = useState(false);
   const [showBannerUpload, setShowBannerUpload] = useState(false);
 
+  // Banner preview + position
+  const [bannerPreviewUrl, setBannerPreviewUrl] = useState<string | null>(null);
+  const [bannerFile, setBannerFile] = useState<File | null>(null);
+
+  const [bannerPosY, setBannerPosY] = useState<number>(0); // appliqué sur la bannière (persisté BDD)
+  const [bannerDraftPosY, setBannerDraftPosY] = useState<number>(0); // pendant preview
+
+  const dragRef = useRef<{ dragging: boolean; startY: number; startPosY: number }>({
+    dragging: false,
+    startY: 0,
+    startPosY: 0,
+  });
+
   // Inline edit states
   const [editing, setEditing] = useState(false);
   const [savingInline, setSavingInline] = useState(false);
@@ -181,7 +194,7 @@ export default function AccountPage() {
   const [editBio, setEditBio] = useState('');
   const [editLang, setEditLang] = useState('en');
 
-  // ✅ Success messages must disappear automatically
+  // ✅ Success messages auto-dismiss
   useEffect(() => {
     if (!ok) return;
     const t = window.setTimeout(() => setOk(null), OK_TOAST_MS);
@@ -253,10 +266,17 @@ export default function AccountPage() {
         setProfile(p);
         setEchoes((eRes.data as EchoRow[]) ?? []);
 
-        // sync inline form defaults
+        // ✅ Sync inline form defaults
         setEditHandle(p?.handle ?? '');
         setEditBio(p?.bio ?? '');
         setEditLang(p?.lang_primary ?? 'en');
+
+        // ✅ Banner position depuis BDD (multi-devices)
+        const posFromDbRaw = p?.banner_pos_y;
+        const posFromDb = Number.isFinite(Number(posFromDbRaw)) ? Number(posFromDbRaw) : 0;
+        const val = clamp(posFromDb, -140, 140);
+        setBannerPosY(val);
+        setBannerDraftPosY(val);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erreur de chargement.');
       } finally {
@@ -429,22 +449,107 @@ export default function AccountPage() {
       const { data: urlData } = sb.storage.from('banners').getPublicUrl(path);
       const bannerUrl = `${urlData.publicUrl}?v=${Date.now()}`;
 
+      const posToSave = clamp(bannerDraftPosY, -140, 140);
+
       const upd = await sb
         .from('profiles')
-        .update({ banner_url: bannerUrl })
+        .update({ banner_url: bannerUrl, banner_pos_y: posToSave })
         .eq('id', userId)
         .select('*')
         .maybeSingle();
 
       if (upd.error) throw upd.error;
 
-      setProfile((upd.data as ProfileRow | null) ?? null);
+      const row = (upd.data as ProfileRow | null) ?? null;
+      setProfile(row);
+
+      setBannerPosY(posToSave);
+      setBannerDraftPosY(posToSave);
+
       setOk('Bannière mise à jour.');
       setShowBannerUpload(false);
+      setBannerFile(null);
+      setBannerPreviewUrl(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur lors de l'upload.");
     } finally {
       setUploadingBanner(false);
+    }
+  };
+
+  const openBannerModal = () => {
+    setOk(null);
+    setError(null);
+    setShowBannerUpload(true);
+    setBannerFile(null);
+    setBannerPreviewUrl(null);
+    setBannerDraftPosY(bannerPosY);
+  };
+
+  const closeBannerModal = () => {
+    setShowBannerUpload(false);
+    setBannerFile(null);
+    setBannerPreviewUrl(null);
+    setBannerDraftPosY(bannerPosY);
+  };
+
+  const onPickBannerFile = (file: File) => {
+    setBannerFile(file);
+    const url = URL.createObjectURL(file);
+    setBannerPreviewUrl(url);
+  };
+
+  // Cleanup object URL
+  useEffect(() => {
+    return () => {
+      if (bannerPreviewUrl) URL.revokeObjectURL(bannerPreviewUrl);
+    };
+  }, [bannerPreviewUrl]);
+
+  const beginDrag = (clientY: number) => {
+    dragRef.current.dragging = true;
+    dragRef.current.startY = clientY;
+    dragRef.current.startPosY = bannerDraftPosY;
+  };
+
+  const moveDrag = (clientY: number) => {
+    if (!dragRef.current.dragging) return;
+    const dy = clientY - dragRef.current.startY;
+    const next = clamp(dragRef.current.startPosY + dy, -140, 140);
+    setBannerDraftPosY(next);
+  };
+
+  const endDrag = () => {
+    dragRef.current.dragging = false;
+  };
+
+  const saveBannerPositionToDb = async () => {
+    if (!userId) return;
+
+    const posToSave = clamp(bannerDraftPosY, -140, 140);
+
+    setError(null);
+    setOk(null);
+
+    try {
+      const upd = await sb
+        .from('profiles')
+        .update({ banner_pos_y: posToSave })
+        .eq('id', userId)
+        .select('*')
+        .maybeSingle();
+
+      if (upd.error) throw upd.error;
+
+      const row = (upd.data as ProfileRow | null) ?? null;
+      setProfile(row);
+
+      setBannerPosY(posToSave);
+      setBannerDraftPosY(posToSave);
+
+      setOk('Position enregistrée.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur lors de l'enregistrement.");
     }
   };
 
@@ -470,8 +575,6 @@ export default function AccountPage() {
             <h1 className="text-3xl font-bold text-slate-900">Mon profil</h1>
             <p className="mt-2 text-slate-600">Ta présence, tes récits, et une navigation calme.</p>
           </div>
-
-          {/* ✅ Suppression du bouton "Paramètres" ici (redondant) */}
           <div />
         </div>
 
@@ -486,257 +589,351 @@ export default function AccountPage() {
           </div>
         )}
 
-        <section className="mt-10 overflow-hidden rounded-3xl border border-slate-200 bg-white/70 backdrop-blur-md shadow-lg shadow-black/5">
-          <div className="relative h-48 w-full overflow-hidden bg-linear-to-br from-violet-500/20 via-sky-500/15 to-emerald-500/10">
+        {/* Card */}
+        <section className="mt-10 overflow-hidden rounded-3xl border border-slate-200 bg-white/40 backdrop-blur-md shadow-lg shadow-black/5">
+          {/* Banner */}
+          <div className="relative h-56 w-full overflow-hidden bg-linear-to-br from-violet-500/20 via-sky-500/15 to-emerald-500/10">
             {profile?.banner_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={profile.banner_url} alt="Bannière" className="h-full w-full object-cover" />
+              <img
+                src={profile.banner_url}
+                alt="Bannière"
+                className="h-full w-full object-cover"
+                style={{ objectPosition: bannerObjectPosition(bannerPosY) }}
+              />
             ) : (
               <div className="flex h-full w-full items-center justify-center">
                 <div className="text-sm font-semibold text-slate-400">Aucune bannière</div>
               </div>
             )}
 
-            {/* ✅ FIX: bouton bannière forcé cliquable */}
+            {/* CTA banner */}
             <button
               type="button"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setOk(null);
-                setError(null);
-                setShowBannerUpload(true);
+                openBannerModal();
               }}
-              className="absolute bottom-4 right-4 z-20 pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-black/60"
+              className="absolute bottom-4 right-4 z-20 pointer-events-auto inline-flex items-center gap-2 rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition-all hover:bg-black/60"
             >
               <Camera className="h-4 w-4" />
               Modifier bannière
             </button>
+          </div>
 
-            {showBannerUpload && (
-              <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-                <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
-                  <button
-                    type="button"
-                    onClick={() => setShowBannerUpload(false)}
-                    className="absolute right-4 top-4 rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-
-                  <h3 className="text-lg font-bold text-slate-900">Changer la bannière</h3>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Format JPG, PNG ou WEBP • Max 10 MB • Recommandé : 1500×500
-                  </p>
-
-                  <label className="mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 transition-colors hover:border-slate-400 hover:bg-slate-100">
-                    <Upload className="h-8 w-8 text-slate-400" />
-                    <div className="text-center">
-                      <div className="text-sm font-semibold text-slate-900">
-                        {uploadingBanner ? 'Upload en cours…' : 'Choisir une image'}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">ou glisser-déposer ici</div>
+          {/* ✅ Plus transparent (bannière visible dessous) */}
+          <div className="relative -mt-10 px-6 pb-6">
+            <div className="rounded-3xl border border-white/30 bg-white/35 backdrop-blur-md shadow-lg shadow-black/5">
+              <div className="px-6 pb-6 pt-14">
+                {/* Avatar */}
+                <div className="absolute left-6 top-0 -translate-y-1/2">
+                  <div className="relative inline-block">
+                    <div className="flex h-32 w-32 items-center justify-center overflow-hidden rounded-3xl border-4 border-white bg-white shadow-xl">
+                      {profile?.avatar_type === 'image' && profile.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={profile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                      ) : (
+                        <span className="text-3xl font-bold text-slate-900">{avatarLabel}</span>
+                      )}
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowAvatarUpload((v) => !v)}
+                      className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white shadow-lg transition-all hover:scale-105 hover:shadow-xl"
+                    >
+                      <Camera className="h-4 w-4 text-slate-900" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Header identity + actions */}
+                <div className="pl-0 md:pl-40">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-2xl font-bold text-slate-900">{identity}</h2>
+
+                    {!editing ? (
+                      <button
+                        type="button"
+                        onClick={startInlineEdit}
+                        className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100/70 hover:text-slate-900"
+                        title="Modifier le profil"
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={saveInlineEdit}
+                          disabled={!canSaveInline}
+                          className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
+                            canSaveInline
+                              ? 'bg-slate-900 text-white hover:bg-slate-800'
+                              : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                          }`}
+                          title="Enregistrer"
+                        >
+                          <Save className="h-4 w-4" />
+                          {savingInline ? 'Enregistrement…' : 'Enregistrer'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={cancelInlineEdit}
+                          disabled={savingInline}
+                          className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-slate-400"
+                          title="Annuler"
+                        >
+                          Annuler
+                        </button>
+                      </div>
+                    )}
+
+                    <Link
+                      href="/settings"
+                      className="ml-1 rounded-lg p-2 text-slate-300 transition-colors hover:bg-slate-100/70 hover:text-slate-900"
+                      title="Paramètres avancés"
+                    >
+                      <span className="sr-only">Paramètres avancés</span>
+                      <Settings className="h-4 w-4" />
+                    </Link>
+                  </div>
+
+                  {!editing ? (
+                    <>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-600">
+                        <span>
+                          Mode : <span className="font-semibold">{profile?.identity_mode ?? 'symbolic'}</span>
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Langue : <span className="font-semibold">{profile?.lang_primary ?? 'en'}</span>
+                        </span>
+                      </div>
+
+                      {profile?.bio && (
+                        <div className="mt-4 rounded-2xl border border-slate-200 bg-white/60 px-4 py-3 text-sm text-slate-800">
+                          {profile.bio}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="text-sm font-semibold text-slate-900">Pseudo (handle)</label>
+                        <input
+                          value={editHandle}
+                          onChange={(e) => setEditHandle(e.target.value)}
+                          placeholder="ex: night_river"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
+                          maxLength={24}
+                          autoComplete="off"
+                          inputMode="text"
+                        />
+                        <div className="mt-2 text-xs text-slate-500">
+                          {editHandle.trim()
+                            ? `Format appliqué : ${normalizeHandle(editHandle)}`
+                            : 'Optionnel (tu peux rester sans pseudo).'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-semibold text-slate-900">Langue</label>
+                        <select
+                          value={editLang}
+                          onChange={(e) => setEditLang(e.target.value)}
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
+                        >
+                          {LANG_CHOICES.map((l) => (
+                            <option key={l.code} value={l.code}>
+                              {l.label} ({l.code})
+                            </option>
+                          ))}
+                        </select>
+                        <div className="mt-2 text-xs text-slate-500">Langue principale du profil.</div>
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="text-sm font-semibold text-slate-900">Bio</label>
+                        <textarea
+                          value={editBio}
+                          onChange={(e) => setEditBio(e.target.value)}
+                          placeholder="Une phrase douce. Rien d'obligatoire."
+                          className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
+                          rows={3}
+                          maxLength={240}
+                        />
+                        <div className="mt-2 text-xs text-slate-500">{editBio.length}/240</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Avatar modal */}
+                {showAvatarUpload && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6 backdrop-blur-sm">
+                    <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+                      <button
+                        type="button"
+                        onClick={() => setShowAvatarUpload(false)}
+                        className="absolute right-4 top-4 rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+
+                      <h3 className="text-lg font-bold text-slate-900">Changer l&apos;avatar</h3>
+                      <p className="mt-1 text-sm text-slate-600">JPG/PNG/WEBP/GIF • Max 5 MB • Recommandé : 512×512</p>
+
+                      <label className="mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 transition-colors hover:border-slate-400 hover:bg-slate-100">
+                        <Upload className="h-8 w-8 text-slate-400" />
+                        <div className="text-center">
+                          <div className="text-sm font-semibold text-slate-900">
+                            {uploadingAvatar ? 'Upload en cours…' : 'Choisir une image'}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">ou glisser-déposer ici</div>
+                        </div>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/gif"
+                          className="hidden"
+                          disabled={uploadingAvatar}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) uploadAvatar(file);
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Banner modal (fixed) */}
+          {showBannerUpload && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6 backdrop-blur-sm"
+              onMouseUp={endDrag}
+              onMouseLeave={endDrag}
+              onTouchEnd={endDrag}
+            >
+              <div className="relative w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+                <button
+                  type="button"
+                  onClick={closeBannerModal}
+                  className="absolute right-4 top-4 rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+
+                <h3 className="text-lg font-bold text-slate-900">Changer la bannière</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  JPG/PNG/WEBP • Max 10 MB • Recommandé : 1500×500 • Glisse pour caler l’image
+                </p>
+
+                {/* Preview area */}
+                <div
+                  className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"
+                  style={{ height: 220 }}
+                  onMouseMove={(e) => moveDrag(e.clientY)}
+                  onTouchMove={(e) => moveDrag(e.touches[0]?.clientY ?? 0)}
+                >
+                  {bannerPreviewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={bannerPreviewUrl}
+                      alt="Preview bannière"
+                      className="h-full w-full select-none object-cover"
+                      style={{ objectPosition: bannerObjectPosition(bannerDraftPosY) }}
+                      draggable={false}
+                      onMouseDown={(e) => beginDrag(e.clientY)}
+                      onTouchStart={(e) => beginDrag(e.touches[0]?.clientY ?? 0)}
+                      onMouseUp={endDrag}
+                      onTouchEnd={endDrag}
+                    />
+                  ) : profile?.banner_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={profile.banner_url}
+                      alt="Bannière actuelle"
+                      className="h-full w-full select-none object-cover"
+                      style={{ objectPosition: bannerObjectPosition(bannerDraftPosY) }}
+                      draggable={false}
+                      onMouseDown={(e) => beginDrag(e.clientY)}
+                      onTouchStart={(e) => beginDrag(e.touches[0]?.clientY ?? 0)}
+                      onMouseUp={endDrag}
+                      onTouchEnd={endDrag}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <div className="text-sm font-semibold text-slate-400">Aucune image sélectionnée</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50">
+                    <Upload className="h-4 w-4" />
+                    Choisir une image
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
                       className="hidden"
                       disabled={uploadingBanner}
                       onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) uploadBanner(file);
+                        const f = e.target.files?.[0];
+                        if (f) onPickBannerFile(f);
                       }}
                     />
                   </label>
-                </div>
-              </div>
-            )}
-          </div>
 
-          <div className="relative px-6 pb-6">
-            <div className="relative -mt-16 mb-4">
-              <div className="relative inline-block">
-                <div className="flex h-32 w-32 items-center justify-center overflow-hidden rounded-3xl border-4 border-white bg-white shadow-xl">
-                  {profile?.avatar_type === 'image' && profile.avatar_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={profile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
-                  ) : (
-                    <span className="text-3xl font-bold text-slate-900">{avatarLabel}</span>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowAvatarUpload((v) => !v)}
-                  className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white shadow-lg transition-all hover:scale-105 hover:shadow-xl"
-                >
-                  <Camera className="h-4 w-4 text-slate-900" />
-                </button>
-              </div>
-
-              {showAvatarUpload && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6 backdrop-blur-sm">
-                  <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowAvatarUpload(false)}
-                      className="absolute right-4 top-4 rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                      onClick={() => setBannerDraftPosY(0)}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+                      disabled={uploadingBanner}
                     >
-                      <X className="h-5 w-5" />
+                      Recentrer
                     </button>
 
-                    <h3 className="text-lg font-bold text-slate-900">Changer l&apos;avatar</h3>
-                    <p className="mt-1 text-sm text-slate-600">
-                      JPG/PNG/WEBP/GIF • Max 5 MB • Recommandé : 512×512
-                    </p>
-
-                    <label className="mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 transition-colors hover:border-slate-400 hover:bg-slate-100">
-                      <Upload className="h-8 w-8 text-slate-400" />
-                      <div className="text-center">
-                        <div className="text-sm font-semibold text-slate-900">
-                          {uploadingAvatar ? 'Upload en cours…' : 'Choisir une image'}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-500">ou glisser-déposer ici</div>
-                      </div>
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,image/gif"
-                        className="hidden"
-                        disabled={uploadingAvatar}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) uploadAvatar(file);
-                        }}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-2xl font-bold text-slate-900">{identity}</h2>
-
-                {!editing ? (
-                  <button
-                    type="button"
-                    onClick={startInlineEdit}
-                    className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                    title="Modifier le profil"
-                  >
-                    <Edit2 className="h-4 w-4" />
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={saveInlineEdit}
-                      disabled={!canSaveInline}
-                      className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${
-                        canSaveInline
-                          ? 'bg-slate-900 text-white hover:bg-slate-800'
-                          : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                      onClick={saveBannerPositionToDb}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+                      disabled={uploadingBanner}
+                    >
+                      Sauver position
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!bannerFile) {
+                          setError('Choisis une image avant de valider.');
+                          return;
+                        }
+                        uploadBanner(bannerFile);
+                      }}
+                      className={`rounded-xl px-4 py-3 text-sm font-semibold ${
+                        uploadingBanner ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800'
                       }`}
-                      title="Enregistrer"
+                      disabled={uploadingBanner}
                     >
-                      <Save className="h-4 w-4" />
-                      {savingInline ? 'Enregistrement…' : 'Enregistrer'}
+                      {uploadingBanner ? 'Upload…' : 'Uploader'}
                     </button>
-
-                    <button
-                      type="button"
-                      onClick={cancelInlineEdit}
-                      disabled={savingInline}
-                      className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-slate-400"
-                      title="Annuler"
-                    >
-                      Annuler
-                    </button>
-                  </div>
-                )}
-
-                {/* ✅ Paramètres avancés = roue dentée */}
-                <Link
-                  href="/settings"
-                  className="ml-1 rounded-lg p-2 text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                  title="Paramètres avancés"
-                >
-                  <span className="sr-only">Paramètres avancés</span>
-                  <Settings className="h-4 w-4" />
-                </Link>
-              </div>
-
-              {!editing ? (
-                <>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-600">
-                    <span>
-                      Mode : <span className="font-semibold">{profile?.identity_mode ?? 'symbolic'}</span>
-                    </span>
-                    <span>•</span>
-                    <span>
-                      Langue : <span className="font-semibold">{profile?.lang_primary ?? 'en'}</span>
-                    </span>
-                  </div>
-
-                  {profile?.bio && (
-                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
-                      {profile.bio}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="text-sm font-semibold text-slate-900">Pseudo (handle)</label>
-                    <input
-                      value={editHandle}
-                      onChange={(e) => setEditHandle(e.target.value)}
-                      placeholder="ex: night_river"
-                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
-                      maxLength={24}
-                      autoComplete="off"
-                      inputMode="text"
-                    />
-                    <div className="mt-2 text-xs text-slate-500">
-                      {editHandle.trim()
-                        ? `Format appliqué : ${normalizeHandle(editHandle)}`
-                        : 'Optionnel (tu peux rester sans pseudo).'}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-slate-900">Langue</label>
-                    <select
-                      value={editLang}
-                      onChange={(e) => setEditLang(e.target.value)}
-                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
-                    >
-                      {LANG_CHOICES.map((l) => (
-                        <option key={l.code} value={l.code}>
-                          {l.label} ({l.code})
-                        </option>
-                      ))}
-                    </select>
-                    <div className="mt-2 text-xs text-slate-500">Langue principale du profil.</div>
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="text-sm font-semibold text-slate-900">Bio</label>
-                    <textarea
-                      value={editBio}
-                      onChange={(e) => setEditBio(e.target.value)}
-                      placeholder="Une phrase douce. Rien d'obligatoire."
-                      className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
-                      rows={3}
-                      maxLength={240}
-                    />
-                    <div className="mt-2 text-xs text-slate-500">{editBio.length}/240</div>
                   </div>
                 </div>
-              )}
+
+                <div className="mt-3 text-xs text-slate-500">
+                  Astuce : clique/maintien puis glisse verticalement pour caler la bannière.
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </section>
 
         <section className="mt-10">
@@ -762,9 +959,7 @@ export default function AccountPage() {
           ) : echoes.length === 0 ? (
             <div className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-8 text-center backdrop-blur-md">
               <div className="text-lg font-semibold text-slate-700">Aucun écho pour l&apos;instant.</div>
-              <p className="mt-2 text-sm text-slate-600">
-                Commence à partager tes histoires pour voir apparaître tes échos ici.
-              </p>
+              <p className="mt-2 text-sm text-slate-600">Commence à partager tes histoires pour voir apparaître tes échos ici.</p>
               <Link
                 href="/share"
                 className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
