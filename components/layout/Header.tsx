@@ -2,21 +2,22 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.5.0 (2026-01-22)
+ * Version      : 1.5.1 (2026-01-22)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism (sans dropdown)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Desktop: Messages ouvre ChatDock (toggleChatDock) si user, sinon /login
- * - Desktop: Ajout recherche globale (membres / échos / sujets) inline dans le header
+ * - Desktop: Recherche globale (membres / échos / sujets) inline dans le header
+ * - Desktop: "Dashboard" renommé "Pour moi" (intention: résonance & intérêts)
+ * - Desktop: Logo simplifié (suppression du container) + logo plus grand
  * - Mobile: conserve navigation vers /messages et /notifications + bouton recherche (overlay)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.5.0 (2026-01-22)
- * - [NEW] GlobalSearch desktop (inline) + mobile (overlay) dans le header
- * - [KEEP] Comportement Messages desktop (dock si connecté, /login sinon)
- * - [KEEP] Badges, identité, notifications page, mobile inchangé
- * - [SAFE] Aucun changement de styles du header existant (insertion only)
+ * 1.5.1 (2026-01-22)
+ * - [UPDATE] Logo : suppression du container (border/bg/shadow) + taille augmentée
+ * - [UPDATE] Dashboard -> Pour moi (label + aria) + icône plus "personnelle"
+ * - [KEEP] GlobalSearch desktop/mobile, messages dock, badges, identité, mobile inchangé
  * =============================================================================
  */
 
@@ -35,7 +36,7 @@ import {
   User,
   Settings,
   LogOut,
-  LayoutDashboard,
+  Heart,
   Mail,
   Bell,
 } from 'lucide-react';
@@ -269,12 +270,13 @@ export default function Header() {
             onClick={closeMobile}
             aria-label="EchoWorld — Home"
           >
-            <div className="relative h-11 w-11 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-transform group-hover:scale-105">
+            {/* Logo: plus grand, sans container */}
+            <div className="relative h-12 w-12 shrink-0 transition-transform group-hover:scale-105">
               <Image
                 src="/brand/echoworld-logo.png"
                 alt="EchoWorld"
                 fill
-                className="object-contain p-1"
+                className="object-contain"
                 priority
               />
             </div>
@@ -301,7 +303,6 @@ export default function Header() {
               );
             })}
 
-            {/* NEW: Global search (desktop inline) */}
             <GlobalSearch variant="desktop" />
           </nav>
 
@@ -310,7 +311,7 @@ export default function Header() {
               <LanguageSelect />
             </div>
 
-            {/* NEW: Mobile search button (overlay) */}
+            {/* Mobile search button (overlay) */}
             <div className="lg:hidden">
               <GlobalSearch variant="mobile" />
             </div>
@@ -355,13 +356,15 @@ export default function Header() {
                 <div className="h-10 w-24 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
               ) : user ? (
                 <>
+                  {/* Dashboard -> Pour moi */}
                   <Link
                     href="/dashboard"
                     className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
-                    aria-label="Dashboard"
+                    aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
+                    title="Pour moi — résonances & intérêts"
                   >
-                    <LayoutDashboard className="h-4 w-4" />
-                    Dashboard
+                    <Heart className="h-4 w-4" />
+                    Pour moi
                   </Link>
 
                   <Link
@@ -430,7 +433,7 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile nav (inchangé: liens vers pages) */}
+      {/* Mobile nav */}
       {isMobileMenuOpen && (
         <div
           id="mobile-nav"
@@ -487,6 +490,19 @@ export default function Header() {
                     </span>
                   ) : null}
                 </Link>
+
+                {/* NEW: Pour moi (mobile menu) */}
+                <Link
+                  href="/dashboard"
+                  onClick={closeMobile}
+                  className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-medium text-slate-900 hover:bg-white"
+                  aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
+                >
+                  <span className="flex items-center gap-3">
+                    <Heart className="h-5 w-5" />
+                    Pour moi
+                  </span>
+                </Link>
               </div>
 
               <div className="border-t border-slate-200 pt-4">
@@ -520,15 +536,6 @@ export default function Header() {
                         </div>
                       </div>
                     </div>
-
-                    <Link
-                      href="/dashboard"
-                      onClick={closeMobile}
-                      className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-semibold text-slate-900 hover:bg-white"
-                    >
-                      <LayoutDashboard className="h-5 w-5" />
-                      Dashboard
-                    </Link>
 
                     <Link
                       href="/settings"
