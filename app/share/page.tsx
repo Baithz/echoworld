@@ -1,13 +1,13 @@
 // =============================================================================
 // Fichier      : app/share/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 3.3.0 (2026-01-22)
+// Version      : 3.3.1 (2026-01-22)
 // Objet        : Publier un écho — Version complète avec émojis + géoloc + photos
 // -----------------------------------------------------------------------------
-// FIX v3.3.0
-// - [NEW] Géocodage ville/pays → remplissage echoes.location en GeoJSON Point
-// - [SAFE] Fallback géocodage sur pays seul si la ville est vide ou non trouvée
-// - [SAFE] Emotion obligatoirement renseignée + contrôlée (type Emotion + isEmotion)
+// FIX v3.3.1
+// - [FIX] echoes.location (type geography) → envoi EWKT "SRID=4326;POINT(lng lat)"
+// - [SAFE] Conserve GeoJSON en interne (géocodage), conversion au moment de l'insert
+// - [SAFE] Zéro régression UI / validations / upload photos
 // -----------------------------------------------------------------------------
 // FIX v3.2.0
 // - [FIX] Émotions alignées sur la contrainte BDD echoes.emotion_check (8 valeurs autorisées)
@@ -30,7 +30,7 @@ import { uploadEchoMedia } from '@/lib/echo/uploadEchoMedia';
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
 
-// GeoJSON Point pour echoes.location
+// GeoJSON Point (interne) pour géocodage
 type GeoPoint = {
   type: 'Point';
   coordinates: [number, number]; // [lng, lat]
@@ -81,7 +81,8 @@ type EchoInsert = {
   is_anonymous: boolean;
   visibility: Visibility;
   status: Status;
-  location: GeoPoint | null; // ✅ NEW : GeoJSON Point [lng, lat]
+  // NOTE: echoes.location = geography → PostgREST attend WKT/EWKT (string)
+  location: string | null; // "SRID=4326;POINT(lng lat)"
 };
 
 type PgErr = { message?: string } | null;
@@ -117,6 +118,18 @@ function getErrorMessage(err: unknown, fallback: string): string {
 
 function isEmotion(value: string): value is Emotion {
   return EMOTIONS.some((e) => e.value === value);
+}
+
+function isValidGeoPoint(p: GeoPoint | null): p is GeoPoint {
+  if (!p || p.type !== 'Point') return false;
+  const [lng, lat] = p.coordinates ?? [];
+  return Number.isFinite(lng) && Number.isFinite(lat);
+}
+
+function geoPointToEWKT(p: GeoPoint): string {
+  const [lng, lat] = p.coordinates;
+  // SRID explicite pour geography
+  return `SRID=4326;POINT(${lng} ${lat})`;
 }
 
 // Géocodage ville/pays via Nominatim → GeoJSON Point [lng, lat]
@@ -468,7 +481,8 @@ export default function SharePage() {
       is_anonymous: !!isAnonymous,
       visibility,
       status,
-      location: geoPoint,
+      // geography → EWKT (sinon "parse error - invalid geometry")
+      location: isValidGeoPoint(geoPoint) ? geoPointToEWKT(geoPoint) : null,
     };
 
     setSaving(true);
