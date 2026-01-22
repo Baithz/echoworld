@@ -2,13 +2,13 @@
  * =============================================================================
  * Fichier      : lib/echo/uploadEchoMedia.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.2 (2026-01-22)
+ * Version      : 1.0.3 (2026-01-22)
  * Objet        : Upload des médias liés à un écho (photos)
  * -----------------------------------------------------------------------------
- * Fix v1.0.2 :
- * - [FIX] Path storage sans double "echo-media/"
- * - [SAFE] Garde-fous: max 3 fichiers, types autorisés, taille max 5 Mo
- * - [SAFE] Typage strict minimal, sans any, sans never
+ * Fix v1.0.3 :
+ * - [SAFE] Nom du bucket centralisé (évite les divergences)
+ * - [IMPROVED] Message d'erreur explicite si bucket manquant / mal nommé
+ * - [SAFE] Zéro régression : même logique upload + getPublicUrl + insert echo_media
  * =============================================================================
  */
 
@@ -30,6 +30,7 @@ type EchoMediaTableLike = {
 type StorageUploadResult = { error: PostgrestErrorLike };
 type StoragePublicUrlResult = { data: { publicUrl: string } };
 
+const BUCKET = 'echo-media'; // IMPORTANT : doit matcher exactement le bucket Storage Supabase
 const MAX_FILES = 3;
 const MAX_BYTES = 5 * 1024 * 1024;
 const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -41,6 +42,14 @@ function safeFileName(originalName: string): string {
   const uuid =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`;
   return ext ? `${uuid}.${ext}` : `${uuid}_${cleaned}`;
+}
+
+function asMessage(err: unknown): string {
+  if (!err) return 'Erreur inconnue.';
+  if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message || 'Erreur inconnue.';
+  const e = err as { message?: unknown };
+  return typeof e?.message === 'string' ? e.message : 'Erreur inconnue.';
 }
 
 export async function uploadEchoMedia(echoId: string, files: File[]): Promise<void> {
@@ -56,21 +65,28 @@ export async function uploadEchoMedia(echoId: string, files: File[]): Promise<vo
   const echoMediaTable = (supabase.from('echo_media') as unknown) as EchoMediaTableLike;
 
   const rows: EchoMediaInsertRow[] = [];
+  const storage = supabase.storage.from(BUCKET);
 
   for (let i = 0; i < sliced.length; i++) {
     const file = sliced[i];
     const safeName = safeFileName(file.name);
 
-    // IMPORTANT: bucket = 'echo-media', path = dossier interne (sans prefix 'echo-media/')
+    // bucket = BUCKET, path = dossier interne (sans prefix 'BUCKET/')
     const path = `${echoId}/${i}-${safeName}`;
 
-    const up = (await supabase.storage
-      .from('echo-media')
-      .upload(path, file, { upsert: false })) as StorageUploadResult;
+    const up = (await storage.upload(path, file, { upsert: false })) as StorageUploadResult;
 
-    if (up.error) throw up.error;
+    if (up.error) {
+      const msg = asMessage(up.error);
+      if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
+        throw new Error(
+          `Bucket Storage introuvable : "${BUCKET}". Vérifie Supabase > Storage (nom exact, casse, tirets).`
+        );
+      }
+      throw new Error(msg);
+    }
 
-    const pub = supabase.storage.from('echo-media').getPublicUrl(path) as StoragePublicUrlResult;
+    const pub = storage.getPublicUrl(path) as StoragePublicUrlResult;
 
     rows.push({
       echo_id: echoId,
@@ -80,5 +96,5 @@ export async function uploadEchoMedia(echoId: string, files: File[]): Promise<vo
   }
 
   const { error } = await echoMediaTable.insert(rows);
-  if (error) throw error;
+  if (error) throw new Error(asMessage(error));
 }
