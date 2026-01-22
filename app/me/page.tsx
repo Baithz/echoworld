@@ -25,7 +25,6 @@
 import Link from 'next/link';
 import { getCurrentUserContext } from '@/lib/user/getCurrentUser';
 import { redirect } from 'next/navigation';
-import Header from '@/components/layout/Header';
 
 export default async function MePage() {
   const { user, profile } = await getCurrentUserContext();
@@ -45,7 +44,6 @@ export default async function MePage() {
 
   return (
     <>
-      <Header />
 
       <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
         {/* Header section */}

@@ -16,7 +16,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Header from '@/components/layout/Header';
 import AuthShell from '@/components/auth/AuthShell';
 import { supabase } from '@/lib/supabase/client';
 
@@ -47,7 +46,6 @@ export default function LoginPage() {
 
   return (
     <>
-      <Header />
       <main className="relative">
         {checking ? (
           <div className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20 md:pt-32">

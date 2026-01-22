@@ -32,7 +32,6 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { MapPin, Smile } from 'lucide-react';
-import Header from '@/components/layout/Header';
 import { supabase } from '@/lib/supabase/client';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
@@ -335,7 +334,6 @@ export default function SharePage() {
   if (authLoading) {
     return (
       <>
-        <Header />
         <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
           <div className="h-10 w-64 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
           <div className="mt-6 h-72 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
@@ -346,7 +344,6 @@ export default function SharePage() {
 
   return (
     <>
-      <Header />
 
       <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
         <div className="flex items-start justify-between gap-6">

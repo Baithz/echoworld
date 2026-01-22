@@ -27,7 +27,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { Camera, Edit2, Save, Upload, X, Settings } from 'lucide-react';
-import Header from '@/components/layout/Header';
 import EchoFeed from '@/components/echo/EchoFeed';
 import { supabase } from '@/lib/supabase/client';
 
@@ -593,7 +592,6 @@ export default function AccountPage() {
   if (authLoading) {
     return (
       <>
-        <Header />
         <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
           <div className="h-10 w-56 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
           <div className="mt-6 h-40 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
@@ -604,7 +602,6 @@ export default function AccountPage() {
 
   return (
     <>
-      <Header />
 
       <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
         <div className="flex items-start justify-between gap-6">

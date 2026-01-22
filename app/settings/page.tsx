@@ -29,7 +29,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import Header from '@/components/layout/Header';
 import { supabase } from '@/lib/supabase/client';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -334,7 +333,6 @@ export default function SettingsPage() {
   if (authLoading) {
     return (
       <>
-        <Header />
         <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
           <div className="h-10 w-64 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
           <div className="mt-6 h-40 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
@@ -345,7 +343,6 @@ export default function SettingsPage() {
 
   return (
     <>
-      <Header />
 
       <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
         <div className="flex items-start justify-between gap-6">
