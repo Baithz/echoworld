@@ -1,15 +1,15 @@
 // =============================================================================
 // Fichier      : app/share/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 3.1.0 (2026-01-22)
+// Version      : 3.2.0 (2026-01-22)
 // Objet        : Publier un écho — Version complète avec émojis + géoloc + photos
 // -----------------------------------------------------------------------------
-// FIX v3.1.0
-// - [FIX] Contrat upload photos externalisé via lib/echo/uploadEchoMedia (zéro duplication, zéro régression)
-// - [FIX] Typage Supabase “never” contourné proprement (interfaces minimalistes, sans any, sans {} vide)
-// - [FIX] Gestion stricte fichiers (type image/* + taille + limite + messages)
-// - [FIX] Cleanup previews robuste (revokeObjectURL sur remove / clear / unmount)
-// - [SAFE] UI/logic existantes conservées (settings, selects, géoloc, messages, redirect focus)
+// FIX v3.2.0
+// - [FIX] Émotions alignées sur la contrainte BDD echoes.emotion_check (8 valeurs autorisées)
+// - [NEW] Émotion obligatoire (UI + validation + blocage du bouton publier)
+// - [SAFE] Blocage publication si authLoading / userId absent (évite echoes.user_id = null)
+// - [SAFE] Cleanup géoloc renforcé (AbortController + unmount)
+// - [SAFE] Aucune régression UI (structure et styles conservés)
 // =============================================================================
 
 'use client';
@@ -24,6 +24,17 @@ import { uploadEchoMedia } from '@/lib/echo/uploadEchoMedia';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
+
+// IMPORTANT : aligné avec la contrainte echoes_emotion_check (BDD)
+type Emotion =
+  | 'joy'
+  | 'hope'
+  | 'love'
+  | 'resilience'
+  | 'gratitude'
+  | 'courage'
+  | 'peace'
+  | 'wonder';
 
 type ProfileRow = {
   id: string;
@@ -52,7 +63,7 @@ type EchoInsert = {
   user_id: string;
   title: string | null;
   content: string;
-  emotion: string | null;
+  emotion: Emotion; // obligatoire
   language: string | null;
   country: string | null;
   city: string | null;
@@ -72,21 +83,15 @@ type EchoesTableLike = {
   insert: (values: EchoInsert) => EchoesInsertSelectSingleLike;
 };
 
-const EMOTIONS = [
+const EMOTIONS: Array<{ emoji: string; label: string; value: Emotion }> = [
   { emoji: '😊', label: 'Joie', value: 'joy' },
   { emoji: '🌟', label: 'Espoir', value: 'hope' },
   { emoji: '❤️', label: 'Amour', value: 'love' },
   { emoji: '💪', label: 'Résilience', value: 'resilience' },
   { emoji: '🙏', label: 'Gratitude', value: 'gratitude' },
   { emoji: '✨', label: 'Courage', value: 'courage' },
-  { emoji: '😢', label: 'Tristesse', value: 'sadness' },
-  { emoji: '😰', label: 'Anxiété', value: 'anxiety' },
-  { emoji: '😔', label: 'Solitude', value: 'loneliness' },
-  { emoji: '😞', label: 'Mélancolie', value: 'melancholy' },
-  { emoji: '😨', label: 'Peur', value: 'fear' },
-  { emoji: '😤', label: 'Frustration', value: 'frustration' },
-  { emoji: '😣', label: 'Douleur', value: 'pain' },
-  { emoji: '😶', label: 'Vide', value: 'emptiness' },
+  { emoji: '🕊️', label: 'Paix', value: 'peace' },
+  { emoji: '🌍', label: 'Émerveillement', value: 'wonder' },
 ];
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -96,6 +101,10 @@ function getErrorMessage(err: unknown, fallback: string): string {
   const e = err as { message?: unknown };
   if (typeof e?.message === 'string') return e.message;
   return fallback;
+}
+
+function isEmotion(value: string): value is Emotion {
+  return EMOTIONS.some((e) => e.value === value);
 }
 
 export default function SharePage() {
@@ -111,7 +120,7 @@ export default function SharePage() {
   // Form
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [emotion, setEmotion] = useState<string>('');
+  const [emotion, setEmotion] = useState<string>(''); // stocké en string (UI), validé avant insert
   const [country, setCountry] = useState('');
   const [city, setCity] = useState('');
 
@@ -163,7 +172,7 @@ export default function SharePage() {
       }
     };
 
-    loadAuth();
+    void loadAuth();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       const u = session?.user ?? null;
@@ -177,6 +186,21 @@ export default function SharePage() {
     };
   }, [router]);
 
+  // Cleanup geoloc fetch on unmount
+  useEffect(() => {
+    return () => {
+      if (geoAbortRef.current) {
+        try {
+          geoAbortRef.current.abort();
+        } catch {
+          // noop
+        } finally {
+          geoAbortRef.current = null;
+        }
+      }
+    };
+  }, []);
+
   // Detect country via Geolocation API
   const detectCountry = async () => {
     if (geoLoading) return;
@@ -189,7 +213,6 @@ export default function SharePage() {
     setGeoLoading(true);
     setGeoError(null);
 
-    // stop any previous reverse geocode fetch
     if (geoAbortRef.current) {
       geoAbortRef.current.abort();
       geoAbortRef.current = null;
@@ -203,16 +226,13 @@ export default function SharePage() {
           const ctrl = new AbortController();
           geoAbortRef.current = ctrl;
 
-          // Note: "User-Agent" header cannot be set by browsers.
           const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(
             String(latitude)
           )}&lon=${encodeURIComponent(String(longitude))}&zoom=10&addressdetails=1`;
 
           const response = await fetch(url, {
             signal: ctrl.signal,
-            headers: {
-              Accept: 'application/json',
-            },
+            headers: { Accept: 'application/json' },
           });
 
           if (!response.ok) throw new Error('Erreur lors de la géolocalisation.');
@@ -275,7 +295,6 @@ export default function SharePage() {
         setIsAnonymous(nextSettings?.default_anonymous ?? false);
         setLanguage(nextProfile?.lang_primary ?? 'en');
 
-        // auto geo
         void detectCountry();
       } catch (e) {
         if (!mounted) return;
@@ -285,7 +304,7 @@ export default function SharePage() {
       }
     };
 
-    load();
+    void load();
 
     return () => {
       mounted = false;
@@ -352,7 +371,7 @@ export default function SharePage() {
     });
   };
 
-  // cleanup on unmount + when list changes
+  // cleanup previews on unmount + when list changes (cleanup = revoke previous list)
   useEffect(() => {
     return () => {
       revokeAllPreviews(photoPreviews);
@@ -361,15 +380,18 @@ export default function SharePage() {
 
   const canPublish = useMemo(() => {
     const c = content.trim();
-    return !!userId && c.length >= 20;
-  }, [userId, content]);
+    return !authLoading && !!userId && c.length >= 20 && isEmotion(emotion);
+  }, [authLoading, userId, content, emotion]);
 
   const submit = async () => {
+    if (saving) return;
+
     setError(null);
     setOk(null);
 
-    if (!userId) {
-      router.push('/login');
+    // SAFE: empêche la création d'un echo avec user_id null
+    if (authLoading || !userId) {
+      router.replace('/login');
       return;
     }
 
@@ -379,11 +401,16 @@ export default function SharePage() {
       return;
     }
 
+    if (!isEmotion(emotion)) {
+      setError("Choisis une émotion pour publier l'écho.");
+      return;
+    }
+
     const payload: EchoInsert = {
       user_id: userId,
       title: title.trim() ? title.trim() : null,
       content: c,
-      emotion: emotion ? emotion : null,
+      emotion,
       language: language.trim() ? language.trim() : null,
       country: country.trim() ? country.trim() : null,
       city: city.trim() ? city.trim() : null,
@@ -394,25 +421,21 @@ export default function SharePage() {
 
     setSaving(true);
     try {
-      // Insert echo (id requis pour les médias + focus globe)
       const res = await echoesTable.insert(payload).select('id').single();
       if (res.error) throw res.error;
 
       const echoId = res.data?.id ?? null;
       if (!echoId) throw new Error('Écho créé, mais identifiant introuvable.');
 
-      // Upload photos + insert echo_media (centralisé)
       await uploadEchoMedia(echoId, photos);
 
       setOk(status === 'draft' ? 'Brouillon enregistré.' : 'Écho publié.');
 
-      // reset form
       setTitle('');
       setContent('');
       setEmotion('');
       setCity('');
 
-      // cleanup previews + reset
       revokeAllPreviews(photoPreviews);
       setPhotos([]);
       setPhotoPreviews([]);
@@ -436,7 +459,7 @@ export default function SharePage() {
     );
   }
 
-  const selectedEmotion = emotion ? EMOTIONS.find((e) => e.value === emotion) ?? null : null;
+  const selectedEmotion = isEmotion(emotion) ? EMOTIONS.find((e) => e.value === emotion) ?? null : null;
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 pt-28 pb-20">
@@ -547,11 +570,11 @@ export default function SharePage() {
           </div>
         </div>
 
-        {/* Emotion selector (emojis) */}
+        {/* Emotion selector (obligatoire) */}
         <div className="mt-6">
           <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
             <Smile className="h-4 w-4" />
-            Émotion (optionnel)
+            Émotion <span className="text-xs font-medium text-rose-600">(obligatoire)</span>
           </label>
           <div className="flex flex-wrap gap-2">
             {EMOTIONS.map((e) => (
@@ -571,6 +594,10 @@ export default function SharePage() {
               </button>
             ))}
           </div>
+
+          {!isEmotion(emotion) && (
+            <div className="mt-2 text-xs text-slate-500">Choisis une émotion pour activer le bouton “Publier”.</div>
+          )}
         </div>
 
         {/* Photos */}
