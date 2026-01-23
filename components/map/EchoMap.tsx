@@ -10,13 +10,13 @@
  * - Unifie la résolution de bbox (nearMe / monde / bounds) pour init + reload filtres + swap style
  * - Corrige un risque runtime (applyStyleIfNeeded appelé avant déclaration)
  * - Garantit que les filtres utilisés lors des fetch restent "live" (refs) même après mount
- * - Conserve intégralement : clusters/points/heat/pulse/cinema/focus + swap globe/détail
+ * - Conserve intégralement : clusters/points/heat/pulse/cinéma/focus + swap globe/détail
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 2.5.1 (2026-01-23)
  * - [FIX] Projection globe persistante via transformStyle (MapLibre) au swap de style
- * - [NEW] Atmosphère/sky sur le style globe pour rendu “vu de l’espace”
+ * - [NEW] Atmosphère/sky sur le style globe pour rendu “vu de l’espace” (spec MapLibre)
  * - [KEEP] Aucune modification des IDs de layers / sources / interactions
  * 2.5.0 (2026-01-23)
  * - [FIX] WORLD_BBOX au dézoom (expérience monde cohérente, pas de vide)
@@ -199,6 +199,7 @@ export default function EchoMap({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
+      // IMPORTANT: on pose directement le style “globe” ci-dessous via setStyle(transformStyle)
       style: STYLE_GLOBE_URL,
       center: [0, 20],
       zoom: 1.8,
@@ -213,7 +214,7 @@ export default function EchoMap({
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
-    // --- Globe apply helper (doit être appelé APRES style.load)
+    // --- Globe apply helper (garde-fou si un style exotique ignore projection)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
     const applyGlobeProjection = () => {
       const m = mapRef.current;
@@ -227,45 +228,45 @@ export default function EchoMap({
       }
     };
 
-    // --- Style transform : force projection globe + atmosphère côté style (fiable, persiste au swap)
-    type StyleLike = StyleSpecification & {
-      projection?: { type: string };
-      sky?: Record<string, unknown>;
-    };
-
+    // --- transformStyle TYPÉ: doit retourner StyleSpecification (sinon TS2322)
     const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
-      return (_prev, next): StyleSpecification => {
-        // MapLibre attend un StyleSpecification
-        if (!next || typeof next !== 'object') {
-          return next as unknown as StyleSpecification;
-        }
-
-        const s = next as StyleLike;
-
+      return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
         if (mode === 'globe') {
-          // projection globe (le vrai “planète”)
-          s.projection = { type: 'globe' };
+          // projection globe (le vrai “planète”) -> doit être dans le style (doc MapLibre) :contentReference[oaicite:1]{index=1}
+          (next as StyleSpecification).projection = { type: 'globe' };
 
-          // atmosphère (rendu “vu de l’espace”)
-          s.sky = {
-            'sky-type': 'atmosphere',
-            'sky-atmosphere-sun': [0.0, 90.0],
-            'sky-atmosphere-sun-intensity': 10,
-            'sky-atmosphere-color': 'rgba(135,206,235,0.55)',
-            'sky-atmosphere-halo-color': 'rgba(255,255,255,0.35)',
+          // sky/atmosphère: on utilise les clés montrées dans l’exemple MapLibre (compat)
+          // (ne pas injecter des clés “sky-atmosphere-*” qui peuvent varier selon implémentations)
+          (next as StyleSpecification).sky = {
+            'atmosphere-blend': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              0,
+              1,
+              5,
+              1,
+              7,
+              0,
+            ],
           };
+
+          // petit boost light (comme l’exemple)
+          (next as StyleSpecification).light = {
+            anchor: 'map',
+            position: [1.5, 90, 80],
+          } as unknown as StyleSpecification['light'];
         }
 
-        return s;
+        return next;
       };
     };
 
     const setStyleForMode = (m: maplibregl.Map, mode: 'globe' | 'detail', styleUrl: string) => {
-      // setStyle avec transformStyle => globe réel + sky persistant après swap
       m.setStyle(styleUrl, { transformStyle: transformForMode(mode) });
     };
 
-    // Force le style “globe” avec projection + sky dès le départ (évite rendu carte plate).
+    // Force le style globe injecté (projection + sky) dès le départ
     setStyleForMode(map, 'globe', STYLE_GLOBE_URL);
     currentStyleRef.current = 'globe';
 
@@ -469,11 +470,11 @@ export default function EchoMap({
 
       const geojson = await fetchGeojson();
 
-      // IMPORTANT : setStyle AVEC transform => projection globe + sky persistants
+      // IMPORTANT : setStyle AVEC transform => projection globe persistée au swap
       setStyleForMode(m, want, nextStyle);
 
       m.once('style.load', () => {
-        // garde-fou (si jamais transform est ignoré par un style exotique)
+        // garde-fou
         if (want === 'globe') applyGlobeProjection();
 
         ensureEchoLayers(geojson ?? undefined);
@@ -535,7 +536,7 @@ export default function EchoMap({
     };
 
     const onLoad = async () => {
-      // Sur le premier load: projection globe (satellite) au dézoom
+      // Globe (garde-fou)
       applyGlobeProjection();
 
       const geojson = await fetchGeojson();
@@ -576,7 +577,6 @@ export default function EchoMap({
       if (!map.isStyleLoaded()) return;
 
       const z = map.getZoom();
-
       let bbox: [number, number, number, number] = WORLD_BBOX;
 
       if (filters.nearMe && navigator.geolocation) {
