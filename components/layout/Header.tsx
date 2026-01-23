@@ -303,7 +303,7 @@ export default function Header() {
               );
             })}
 
-            <GlobalSearch variant="desktop" />
+            <GlobalSearch variant="desktop" currentUserId={user?.id ?? null} />
           </nav>
 
           <div className="flex items-center gap-4">

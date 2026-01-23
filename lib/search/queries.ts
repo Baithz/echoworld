@@ -1,14 +1,17 @@
 // =============================================================================
 // Fichier      : lib/search/queries.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.1 (2026-01-23)
+// Version      : 1.1.2 (2026-01-23)
 // Objet        : Requêtes Supabase (client) pour recherche globale
 // Notes        : SAFE: si table/colonne indispo -> fail soft (retourne [])
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.1.2 (2026-01-23)
+// - [IMPROVED] searchUsers : normalise le handle renvoyé (slug safe pour /u/[handle])
+// - [IMPROVED] searchUsers : label affiche @handle si display_name absent
 // 1.1.1 (2026-01-23)
 // - [SECURITY] searchUsers : filtre explicitement sur public_profile_enabled = true
-// - [CLEAN] ProfilSearchRow : retire le champ public_profile_enabled côté client
+// - [CLEAN] ProfileSearchRow : retire le champ public_profile_enabled côté client
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -42,6 +45,17 @@ function normalizeTerm(input: string): string {
   if (!t) return '';
   // Si l'utilisateur tape "@handle", on recherche sur "handle" sans @
   return t.startsWith('@') ? t.slice(1).trim() : t;
+}
+
+// Normalise un handle pour l'URL /u/[handle]
+function normalizeHandle(input: string | null): string | null {
+  const raw = (input ?? '').trim().replace(/^@/, '').trim();
+  if (!raw) return null;
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
 }
 
 function escapeOrValue(input: string): string {
@@ -102,13 +116,19 @@ export async function searchUsers(term: string, limit = 5): Promise<SearchUserRe
       .slice()
       .sort((a, b) => score(b) - score(a))
       .slice(0, limit)
-      .map((r) => ({
-        type: 'user' as const,
-        id: String(r.id),
-        handle: r.handle ?? null,
-        avatar_url: r.avatar_url ?? null,
-        label: (r.display_name ?? r.handle ?? 'User') as string,
-      }));
+      .map((r) => {
+        const normalizedHandle = normalizeHandle(r.handle);
+
+        return {
+          type: 'user' as const,
+          id: String(r.id),
+          handle: normalizedHandle,
+          avatar_url: r.avatar_url ?? null,
+          // Si pas de display_name, on montre @handle (si dispo) plutôt que "User"
+          label: (r.display_name ??
+            (normalizedHandle ? `@${normalizedHandle}` : 'User')) as string,
+        };
+      });
   } catch {
     return [];
   }

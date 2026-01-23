@@ -1,12 +1,20 @@
 // =============================================================================
 // Fichier      : components/search/GlobalSearch.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.0 (2026-01-23)
+// Version      : 1.2.2 (2026-01-23)
 // Objet        : Recherche globale dans le header (desktop inline + mobile overlay)
 // ----------------------------------------------------------------------------
 // Notes :
 // - La route profil canonique est /u/[handle] (si handle présent)
-// - Fallback profil : /user/[id] (si handle manquant)
+// - Fallback profil : /user/[id] (si handle manquant, et id = UUID)
+// - Si le résultat correspond à l'utilisateur courant => /account
+//
+// CHANGELOG
+// 1.2.2 (2026-01-23)
+// - [FIX] TS2339: suppression de l'accès à r.preview sur SearchUserResult (champ inexistant)
+// - [KEEP] Routing profils : normalisation handle + anti-404 sur /user/[id]
+// - [KEEP] currentUserId : si on clique sur soi-même => /account
+// - [KEEP] UI identique (desktop+mobile, debounce, résultats)
 // =============================================================================
 
 'use client';
@@ -15,23 +23,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, X } from 'lucide-react';
 import { useGlobalSearch } from '@/components/search/useGlobalSearch';
-import type { SearchResult } from '@/lib/search/types';
+import type { SearchResult, SearchUserResult } from '@/lib/search/types';
 import SearchResults from '@/components/search/SearchResults';
 
 type Variant = 'desktop' | 'mobile';
 
 type Props = {
   variant: Variant;
+  currentUserId?: string | null; // pour router vers /account si c'est moi
 };
-
-function routeForResult(r: SearchResult): string {
-  if (r.type === 'user') {
-    if (r.handle) return `/u/${r.handle}`;
-    return `/user/${r.id}`;
-  }
-  if (r.type === 'echo') return `/echo/${r.id}`;
-  return `/explore?topic=${encodeURIComponent(r.label)}`;
-}
 
 function normalizeQuery(q: string): { raw: string; normalized: string; isHandleHint: boolean } {
   const raw = (q ?? '').trim();
@@ -39,7 +39,64 @@ function normalizeQuery(q: string): { raw: string; normalized: string; isHandleH
   return { raw, normalized, isHandleHint: raw.startsWith('@') && normalized.length > 0 };
 }
 
-export default function GlobalSearch({ variant }: Props) {
+// Normalise un handle de manière robuste pour la route /u/[handle]
+function normalizeHandle(input: string): string {
+  const raw = (input ?? '').trim().replace(/^@/, '').trim();
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
+// Essaie de récupérer un handle fiable à partir d'un SearchUserResult (pas de preview ici)
+function safeUserHandleFromResult(r: SearchUserResult): string {
+  // 1) handle direct sur le résultat
+  if (r.handle) return normalizeHandle(r.handle);
+
+  // 2) label style "@pouete"
+  const label = (r.label ?? '').trim();
+  if (label.startsWith('@')) return normalizeHandle(label);
+
+  // Pas de fallback via preview : SearchUserResult ne possède pas ce champ (TS-safe)
+  return '';
+}
+
+function routeForResult(r: SearchResult, currentUserId: string | null): string {
+  if (r.type === 'user') {
+    // Si on clique sur soi-même => Mon profil
+    if (currentUserId && r.id === currentUserId) return '/account';
+
+    // Route canonique handle si possible (et normalisée)
+    const h = safeUserHandleFromResult(r);
+    if (h) return `/u/${h}`;
+
+    // Fallback par id (uniquement si id semble être un UUID)
+    // (évite /user/pouete => 404)
+    if (isUuid(r.id)) return `/user/${r.id}`;
+
+    // Dernier fallback: on tente /u/<id> si id ressemble à un handle
+    const idAsHandle = normalizeHandle(r.id);
+    if (idAsHandle) return `/u/${idAsHandle}`;
+
+    // Si vraiment rien n'est exploitable, on renvoie vers explore
+    return '/explore';
+  }
+
+  if (r.type === 'echo') return `/echo/${r.id}`;
+
+  // Topics
+  return `/explore?topic=${encodeURIComponent(r.label)}`;
+}
+
+export default function GlobalSearch({ variant, currentUserId = null }: Props) {
   const router = useRouter();
   const { query, setQuery, loading, bundle, hasResults } = useGlobalSearch({
     debounceMs: 220,
@@ -60,7 +117,7 @@ export default function GlobalSearch({ variant }: Props) {
   const close = () => setOpen(false);
 
   const pick = (r: SearchResult) => {
-    const href = routeForResult(r);
+    const href = routeForResult(r, currentUserId);
     close();
     router.push(href);
   };
