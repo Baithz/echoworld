@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.3 (2026-01-23)
+// Version      : 1.2.4 (2026-01-23)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Règles :
@@ -13,6 +13,13 @@
 // Notes:
 // - La base utilise désormais profiles.public_profile_enabled (colonne) côté RLS.
 // - Les helpers "bundle" évitent tout type-guard ambigu -> guards explicites.
+// -----------------------------------------------------------------------------
+// CHANGELOG
+// 1.2.4 (2026-01-23)
+// - [FIX] getProfileByHandle : ne “slugifie” plus le handle avant lookup DB
+// - [IMPROVED] Ajout cleanHandleForLookup + normalizeHandleForUrl (source of truth = DB)
+// 1.2.3 (2026-01-23)
+// - Version précédente (profil public + echoes + stats) considérée comme stable
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -81,6 +88,26 @@ const PROFILE_SELECT =
 const ECHO_SELECT =
   'id, user_id, title, content, emotion, is_anonymous, country, city, language, created_at, status, visibility, emotion_tags, theme_tags' as const;
 
+// ----------------------------------------------------------------------------
+// Handle normalization (DB lookup) : on ne "slugifie" PAS pour requêter.
+// On retire juste '@' + trim. La DB est la source de vérité.
+// ----------------------------------------------------------------------------
+function cleanHandleForLookup(input: string): string {
+  return (input ?? '').trim().replace(/^@/, '').trim();
+}
+
+// Normalisation pour URL canonique (optionnel, pour redirect uniquement)
+export function normalizeHandleForUrl(input: string): string {
+  const raw = cleanHandleForLookup(input);
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    // IMPORTANT: on garde aussi '.' car beaucoup de handles l'utilisent
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 32);
+}
+
 function pickProfile(row: ProfileRow): PublicProfile {
   return {
     id: String(row.id),
@@ -111,16 +138,6 @@ function pickEcho(row: EchoRow): PublicEcho {
   };
 }
 
-function normalizeHandle(input: string): string {
-  const raw = (input ?? '').trim().replace(/^@/, '').trim();
-  if (!raw) return '';
-  return raw
-    .toLowerCase()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_-]/g, '')
-    .slice(0, 32);
-}
-
 export async function getProfileById(id: string): Promise<PublicProfile | null> {
   const clean = (id ?? '').trim();
   if (!clean) return null;
@@ -142,22 +159,34 @@ export async function getProfileById(id: string): Promise<PublicProfile | null> 
 }
 
 export async function getProfileByHandle(handle: string): Promise<PublicProfile | null> {
-  const clean = normalizeHandle(handle);
+  const clean = cleanHandleForLookup(handle);
   if (!clean) return null;
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // handle est censé être unique (index sur lower(handle)).
-    // .ilike sans wildcard => égalité case-insensitive.
-    const { data, error } = await supabase
+    // 1) Lookup direct (case-insensitive exact) : ilike sans wildcard = "pattern exact"
+    const first = await supabase
       .from('profiles')
       .select(PROFILE_SELECT)
       .ilike('handle', clean)
       .maybeSingle<ProfileRow>();
 
-    if (error || !data) return null;
-    return pickProfile(data);
+    if (!first.error && first.data) return pickProfile(first.data);
+
+    // 2) Fallback : si l'URL a été "slugifiée" côté front, on tente la version URL-normalisée
+    const alt = normalizeHandleForUrl(clean);
+    if (alt && alt !== clean.toLowerCase()) {
+      const second = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .ilike('handle', alt)
+        .maybeSingle<ProfileRow>();
+
+      if (!second.error && second.data) return pickProfile(second.data);
+    }
+
+    return null;
   } catch {
     return null;
   }
