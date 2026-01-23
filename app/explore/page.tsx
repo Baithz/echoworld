@@ -144,7 +144,7 @@ export default function ExplorePage({ searchParams }: ExplorePageProps) {
       </div>
 
       {/* Filters (top-left) */}
-      <div className="absolute left-4 top-4 z-20 pointer-events-none">
+      <div className="absolute left-4 top-21 z-30 pointer-events-none">
         <ExploreFilters
           emotion={filters.emotion}
           since={filters.since}

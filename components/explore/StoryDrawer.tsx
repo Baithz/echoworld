@@ -17,7 +17,7 @@
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 1.2.1 (2026-01-23)
- * - [FIX] ESLint react-hooks/refs : useReducedMotion via state (pas de ref en render)
+ * - [FIX] Hook useReducedMotion: initialisation via state + listen change (ESLint OK)
  * - [KEEP] Zéro régression sur focus trap / scroll lock / a11y / copy link
  * -----------------------------------------------------------------------------
  * 1.2.0 (2026-01-23)
@@ -72,17 +72,14 @@ function clampText(s: string, max = 800): string {
 }
 
 function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
-  });
+  const [reduced, setReduced] = useState(false);
 
   useEffect(() => {
     const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     if (!mq) return;
 
-    const update = () => setReduced(Boolean(mq.matches));
-    update();
+    const apply = () => setReduced(Boolean(mq.matches));
+    apply();
 
     // compat ancienne API Safari
     const anyMq = mq as unknown as {
@@ -92,12 +89,12 @@ function useReducedMotion(): boolean {
       removeListener?: (cb: () => void) => void;
     };
 
-    if (anyMq.addEventListener) anyMq.addEventListener('change', update);
-    else if (anyMq.addListener) anyMq.addListener(update);
+    if (anyMq.addEventListener) anyMq.addEventListener('change', apply);
+    else if (anyMq.addListener) anyMq.addListener(apply);
 
     return () => {
-      if (anyMq.removeEventListener) anyMq.removeEventListener('change', update);
-      else if (anyMq.removeListener) anyMq.removeListener(update);
+      if (anyMq.removeEventListener) anyMq.removeEventListener('change', apply);
+      else if (anyMq.removeListener) anyMq.removeListener(apply);
     };
   }, []);
 

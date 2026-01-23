@@ -14,8 +14,8 @@
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 1.1.1 (2026-01-23)
- * - [FIX] Import palette: mapStyle (chemin réel dans components/map)
- * - [KEEP] IDs/layers inchangés (clusters / cluster-count / echo-point / echo-heat)
+ * - [FIX] Import palette depuis ./mapStyle (au lieu de ./constants)
+ * - [KEEP] IDs/layers inchangés
  * =============================================================================
  */
 
@@ -30,12 +30,7 @@ import { EMOTION_COLORS } from './mapStyle';
 
 export const SOURCE_ID = 'echoes';
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
 function buildEmotionMatchExpression(): ExpressionSpecification {
-  // Construction explicite (stable) pour éviter flat/Object.entries + soucis typing.
   return [
     'match',
     ['get', 'emotion'],
@@ -55,10 +50,6 @@ function buildEmotionMatchExpression(): ExpressionSpecification {
   ] as unknown as ExpressionSpecification;
 }
 
-// -----------------------------------------------------------------------------
-// Layers
-// -----------------------------------------------------------------------------
-
 export const CLUSTER_LAYER: CircleLayerSpecification = {
   id: 'clusters',
   type: 'circle',
@@ -66,15 +57,7 @@ export const CLUSTER_LAYER: CircleLayerSpecification = {
   filter: ['has', 'point_count'],
   paint: {
     'circle-color': '#5C6BC0',
-    'circle-radius': [
-      'step',
-      ['get', 'point_count'],
-      18, // <= 10
-      10,
-      24, // <= 50
-      50,
-      30, // > 50
-    ],
+    'circle-radius': ['step', ['get', 'point_count'], 18, 10, 24, 50, 30],
     'circle-opacity': 0.6,
   },
 };

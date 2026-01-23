@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.1 (2026-01-23)
+ * Version      : 2.3.0 (2026-01-23)
  * Objet        : Carte EchoWorld avancée - Pulse émotionnel + filtres + focus
  * -----------------------------------------------------------------------------
  * Description  :
@@ -13,9 +13,14 @@
  * - Glow shader-like (layer cercle blur) animé au-dessus des points
  * - Gestion clusters (expansion zoom) et points (sélection écho)
  * - Transitions caméra “cinéma” (2 phases + cancel propre) + reuse pour focus
+ * - renderWorldCopies:false + projection globe si supportée (pas de frise répétée)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.3.0 (2026-01-23)
+ * - [NEW] Désactivation des world copies (renderWorldCopies:false)
+ * - [NEW] Tentative setProjection('globe') avec feature-detect (pas de crash)
+ * - [KEEP] Comportement existant (pulse, clusters, filtres, focus, nearMe)
  * 2.2.1 (2026-01-23)
  * - [FIX] Focus utilise cinemaTo() via ref (évite logique divergente)
  * - [FIX] Nettoyage timeouts caméra (pas de fuite)
@@ -174,7 +179,17 @@ export default function EchoMap({
       zoom: 1.8,
       pitch: 0,
       attributionControl: false,
+      renderWorldCopies: false, // stop la frise répétée du monde
     });
+
+    // Projection globe si supportée par la version MapLibre
+    type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
+    const mProj = map as MapWithProjection;
+    try {
+      mProj.setProjection?.({ type: 'globe' });
+    } catch {
+      // Ignore si non supporté
+    }
 
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
@@ -199,7 +214,9 @@ export default function EchoMap({
           try {
             m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
             m.setPaintProperty('echo-heat', 'heatmap-intensity', intensity);
-          } catch {}
+          } catch {
+            // layer pas encore prêt
+          }
         }
 
         // Glow pulse (blur/opacity)
@@ -207,7 +224,9 @@ export default function EchoMap({
           const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
           m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.10 + 0.20 * glow);
           m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
-        } catch {}
+        } catch {
+          // layer pas encore prêt
+        }
 
         pulseRafRef.current = requestAnimationFrame(tick);
       };
@@ -225,7 +244,9 @@ export default function EchoMap({
 
       try {
         map.stop();
-      } catch {}
+      } catch {
+        // no-op
+      }
     };
 
     cancelCameraRef.current = cancelCamera;
