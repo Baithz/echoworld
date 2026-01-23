@@ -3,22 +3,20 @@
  * Fichier      : lib/echo/getEchoesForMap.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
  * Version      : 1.3.0 (2026-01-23)
- * Objet        : Service GeoJSON pour carte EchoMap (RPC bbox + fallback robuste)
+ * Objet        : Service GeoJSON pour carte EchoMap (RPC bbox + fallback monde)
  * -----------------------------------------------------------------------------
  * Description  :
  * - getEchoesForMap(params) => FeatureCollection<Point>
- * - RPC public.get_echoes_in_bbox(bbox jsonb, emotion text, since timestamptz, limit_rows int)
+ * - RPC get_echoes_in_bbox(bbox jsonb, emotion text, since timestamptz, lim int)
  * - Normalisation bbox (antiméridien + clamp) avant RPC
- * - Fallback : RPC "WORLD_BBOX" si bbox absent / RPC renvoie vide / bbox KO
- * - Ultime fallback : select direct echoes (best-effort) (si RPC indisponible)
+ * - Fallback : si bbox vide/KO/retour vide => RPC monde (assure visibilité)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
  * 1.3.0 (2026-01-23)
- * - [FIX] Alignement strict sur la nouvelle RPC get_echoes_in_bbox(bbox jsonb, emotion, since, limit_rows)
- * - [FIX] location geography désormais toujours renvoyée en GeoJSON via RPC (plus de dépendance PostgREST)
- * - [IMPROVED] Fallback robuste : WORLD_BBOX via RPC (garantit des points visibles)
- * - [KEEP] Normalisation bbox + split antiméridien + dédup + zéro any
+ * - [FIX] Aligne l'appel RPC sur la signature réelle (bbox jsonb) => échos visibles
+ * - [IMPROVED] Fallback robuste via RPC monde (plus de select geography non-GeoJSON)
+ * - [KEEP] Limite + split antiméridien + dédup + filtres emotion/since
  * =============================================================================
  */
 
@@ -27,7 +25,7 @@ import type { Feature, FeatureCollection, Point } from 'geojson';
 
 export type EchoMapProps = {
   id: string;
-  title: string | null; // non renvoyé par RPC -> null ici (détails via getEchoById)
+  title: string | null;
   emotion: string | null;
   created_at: string;
   city: string | null;
@@ -37,30 +35,20 @@ export type EchoMapProps = {
 export type EchoMapFeature = Feature<Point, EchoMapProps>;
 export type EchoMapFeatureCollection = FeatureCollection<Point, EchoMapProps>;
 
-// RPC (retour SQL)
+// Ligne RPC (retour SQL)
 type RpcEchoRow = {
   id: string;
+  title?: string | null;
   emotion: string | null;
   created_at: string;
   city: string | null;
   country: string | null;
-  location: unknown; // ST_AsGeoJSON(...)::jsonb => objet GeoJSON (à valider)
-};
-
-// Ultime fallback PostgREST (best-effort)
-type EchoRow = {
-  id: string;
-  title: string | null;
-  emotion: string | null;
-  created_at: string;
-  city: string | null;
-  country: string | null;
-  location: unknown | null;
+  location: Point; // JSON GeoJSON Point
 };
 
 const LIMIT = 600;
 
-// "Vue monde" (fallback) : bornes sûres pour éviter singularités
+// fallback monde (même format que WORLD_BBOX dans EchoMap)
 const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
 
 function isPointGeometry(v: unknown): v is Point {
@@ -142,103 +130,64 @@ function safeId(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-async function rpcFetch(params: {
+type RpcCall = (
+  fn: string,
+  args?: Record<string, unknown>
+) => Promise<{ data: RpcEchoRow[] | null; error: unknown | null }>;
+
+/**
+ * Appel RPC aligné sur ta signature SQL:
+ *   get_echoes_in_bbox(bbox jsonb, emotion text, since timestamptz, lim int)
+ */
+async function fetchViaRpc(params: {
   bbox: [number, number, number, number];
   emotion?: string;
   since?: Date;
-  limit: number;
+  limit?: number;
 }): Promise<RpcEchoRow[]> {
-  const boxes = normalizeBbox(params.bbox);
+  const rpc = (supabase.rpc as unknown) as RpcCall;
 
-  // Supabase client non typé => cast local strict
-  const rpc = (supabase.rpc as unknown) as (
-    fn: string,
-    args?: Record<string, unknown>
-  ) => Promise<{ data: RpcEchoRow[] | null; error: unknown | null }>;
-
-  const collected: RpcEchoRow[] = [];
-  const perBoxLimit = Math.max(1, Math.floor(params.limit / boxes.length));
-
-  for (const [minLng, minLat, maxLng, maxLat] of boxes) {
-    const bboxJson = [minLng, minLat, maxLng, maxLat];
-
-    const { data, error } = await rpc('get_echoes_in_bbox', {
-      bbox: bboxJson,
-      emotion: params.emotion ?? null,
-      since: params.since ? params.since.toISOString() : null,
-      limit_rows: perBoxLimit,
-    });
-
-    if (error) throw asError(error);
-    for (const row of data ?? []) collected.push(row);
-  }
-
-  // Dédup par id (antiméridien / chevauchement)
-  const seen = new Set<string>();
-  return collected.filter((r) => {
-    const id = safeId(r?.id);
-    if (!id) return false;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
+  const { data, error } = await rpc('get_echoes_in_bbox', {
+    bbox: params.bbox, // <= IMPORTANT: jsonb bbox
+    emotion_filter: params.emotion ?? null,
+    since_ts: params.since?.toISOString() ?? null,
+    lim: params.limit ?? LIMIT,
   });
+
+  if (error) throw asError(error);
+  return (data ?? []) as RpcEchoRow[];
 }
 
-async function fetchFallbackViaRpc(params: { emotion?: string; since?: Date }): Promise<EchoMapFeatureCollection> {
-  const rows = await rpcFetch({ bbox: WORLD_BBOX, emotion: params.emotion, since: params.since, limit: LIMIT });
+async function fetchWorldFallback(params: { emotion?: string; since?: Date }): Promise<EchoMapFeatureCollection> {
+  const rows = await fetchViaRpc({
+    bbox: WORLD_BBOX,
+    emotion: params.emotion,
+    since: params.since,
+    limit: LIMIT,
+  });
 
+  const seen = new Set<string>();
   const features = rows
-    .filter((r) => isPointGeometry(r.location))
+    .filter((r) => {
+      const id = safeId(r?.id);
+      if (!id) return false;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return isPointGeometry(r.location);
+    })
     .map((r) =>
       toFeature({
         id: r.id,
-        title: null,
+        title: (r.title ?? null) as string | null,
         emotion: r.emotion,
         created_at: r.created_at,
         city: r.city,
         country: r.country,
-        location: r.location as Point,
+        location: r.location,
       })
     );
 
   return { type: 'FeatureCollection', features };
-}
-
-/**
- * Ultime fallback PostgREST (best-effort)
- * NOTE: geography peut ne PAS être renvoyé en GeoJSON => features potentiellement vides.
- * Utilisé uniquement si RPC indisponible.
- */
-async function fetchFallbackPostgrest(params: { emotion?: string; since?: Date }): Promise<EchoMapFeatureCollection> {
-  let q = supabase
-    .from('echoes')
-    .select('id,title,emotion,created_at,city,country,location')
-    .eq('status', 'published');
-
-  if (params.emotion) q = q.eq('emotion', params.emotion);
-  if (params.since) q = q.gte('created_at', params.since.toISOString());
-
-  const { data, error } = await q.order('created_at', { ascending: false }).limit(LIMIT);
-  if (error) throw asError(error);
-
-  const rows = (data ?? []) as unknown as EchoRow[];
-
-  return {
-    type: 'FeatureCollection',
-    features: rows
-      .filter((r) => isPointGeometry(r.location))
-      .map((r) =>
-        toFeature({
-          id: r.id,
-          title: r.title,
-          emotion: r.emotion,
-          created_at: r.created_at,
-          city: r.city,
-          country: r.country,
-          location: r.location as Point,
-        })
-      ),
-  };
 }
 
 export async function getEchoesForMap(params: {
@@ -246,47 +195,59 @@ export async function getEchoesForMap(params: {
   emotion?: string;
   since?: Date;
 }): Promise<EchoMapFeatureCollection> {
-  // 1) RPC bbox (prioritaire)
-  if (params.bbox) {
-    try {
-      const rows = await rpcFetch({ bbox: params.bbox, emotion: params.emotion, since: params.since, limit: LIMIT });
+  const baseFilters = { emotion: params.emotion, since: params.since };
 
-      const features = rows
-        .filter((r) => isPointGeometry(r.location))
-        .map((r) =>
-          toFeature({
-            id: r.id,
-            title: null,
-            emotion: r.emotion,
-            created_at: r.created_at,
-            city: r.city,
-            country: r.country,
-            location: r.location as Point,
-          })
-        );
-
-      // 2) Si RPC bbox renvoie vide => fallback WORLD via RPC (garantit visibilité)
-      if (features.length === 0) {
-        return await fetchFallbackViaRpc({ emotion: params.emotion, since: params.since });
-      }
-
-      return { type: 'FeatureCollection', features };
-    } catch {
-      // 3) RPC bbox KO => fallback WORLD via RPC
-      try {
-        return await fetchFallbackViaRpc({ emotion: params.emotion, since: params.since });
-      } catch {
-        // 4) RPC indisponible => dernier recours PostgREST
-        return await fetchFallbackPostgrest({ emotion: params.emotion, since: params.since });
-      }
-    }
+  // Sans bbox -> fallback monde via RPC (pas de select geography)
+  if (!params.bbox) {
+    return await fetchWorldFallback(baseFilters);
   }
 
-  // Pas de bbox : fallback WORLD via RPC
+  const boxes = normalizeBbox(params.bbox);
+
   try {
-    return await fetchFallbackViaRpc({ emotion: params.emotion, since: params.since });
+    const collected: RpcEchoRow[] = [];
+    const perBoxLimit = Math.max(1, Math.floor(LIMIT / boxes.length));
+
+    for (const b of boxes) {
+      const rows = await fetchViaRpc({
+        bbox: b,
+        emotion: params.emotion,
+        since: params.since,
+        limit: perBoxLimit,
+      });
+      for (const r of rows) collected.push(r);
+    }
+
+    // Dédup par id + garde uniquement les vrais Points
+    const seen = new Set<string>();
+    const features = collected
+      .filter((r) => {
+        const id = safeId(r?.id);
+        if (!id) return false;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return isPointGeometry(r.location);
+      })
+      .map((r) =>
+        toFeature({
+          id: r.id,
+          title: (r.title ?? null) as string | null,
+          emotion: r.emotion,
+          created_at: r.created_at,
+          city: r.city,
+          country: r.country,
+          location: r.location,
+        })
+      );
+
+    // Si bbox renvoie vide (zoom monde / zone vide) -> fallback monde
+    if (features.length === 0) {
+      return await fetchWorldFallback(baseFilters);
+    }
+
+    return { type: 'FeatureCollection', features };
   } catch {
-    // dernier recours PostgREST
-    return await fetchFallbackPostgrest({ emotion: params.emotion, since: params.since });
+    // RPC KO -> fallback monde
+    return await fetchWorldFallback(baseFilters);
   }
 }
