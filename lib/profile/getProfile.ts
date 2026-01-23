@@ -1,14 +1,18 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.1 (2026-01-23)
+// Version      : 1.2.3 (2026-01-23)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Règles :
-// - Respecte public_profile_enabled (false => profil non accessible)
+// - Respecte profiles.public_profile_enabled (false => profil non accessible)
 // - Échos publics : status=published + visibility in (world, local)
 // - SAFE: fail-soft => null / [] / 0
 // - TS strict: aucun accès à profile sans check non-null explicite
+//
+// Notes:
+// - La base utilise désormais profiles.public_profile_enabled (colonne) côté RLS.
+// - Les helpers "bundle" évitent tout type-guard ambigu -> guards explicites.
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -138,6 +142,8 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
   try {
     const supabase = await createSupabaseServerClient();
 
+    // handle est censé être unique (index sur lower(handle)).
+    // .ilike sans wildcard => égalité case-insensitive.
     const { data, error } = await supabase
       .from('profiles')
       .select(PROFILE_SELECT)
@@ -151,9 +157,17 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
   }
 }
 
+/**
+ * Échos publics d'un profil :
+ * - status = published
+ * - visibility in (world, local)
+ * - tri created_at desc
+ */
 export async function getUserPublicEchoes(userId: string, limit = 12): Promise<PublicEcho[]> {
   const clean = (userId ?? '').trim();
   if (!clean) return [];
+
+  const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) ? Math.floor(limit) : 12, 50));
 
   try {
     const supabase = await createSupabaseServerClient();
@@ -165,7 +179,7 @@ export async function getUserPublicEchoes(userId: string, limit = 12): Promise<P
       .eq('status', 'published')
       .in('visibility', ['world', 'local'])
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .limit(safeLimit);
 
     if (error || !data) return [];
     return (data as unknown as EchoRow[]).map(pickEcho);
@@ -174,6 +188,9 @@ export async function getUserPublicEchoes(userId: string, limit = 12): Promise<P
   }
 }
 
+/**
+ * Count réel des échos publics (non limité).
+ */
 export async function getUserPublicEchoesCount(userId: string): Promise<number> {
   const clean = (userId ?? '').trim();
   if (!clean) return 0;
@@ -195,6 +212,10 @@ export async function getUserPublicEchoesCount(userId: string): Promise<number> 
   }
 }
 
+/**
+ * Top themes (agrégation simple en mémoire).
+ * On scanne un nombre raisonnable d'échos récents pour éviter de charger trop.
+ */
 export async function getUserPublicTopThemes(
   userId: string,
   opts?: { scanLimit?: number; topN?: number }
@@ -252,7 +273,9 @@ export async function getPublicProfileWithEchoesById(userId: string, limit = 12)
   if (!profile) return { profile: null, echoes: [] };
   if (profile.public_profile_enabled === false) return { profile: null, echoes: [] };
 
-  const echoes = await getUserPublicEchoes(profile.id, limit);
+  const profileId = profile.id;
+  const echoes = await getUserPublicEchoes(profileId, limit);
+
   return { profile, echoes };
 }
 
@@ -264,7 +287,9 @@ export async function getPublicProfileWithEchoesByHandle(handle: string, limit =
   if (!profile) return { profile: null, echoes: [] };
   if (profile.public_profile_enabled === false) return { profile: null, echoes: [] };
 
-  const echoes = await getUserPublicEchoes(profile.id, limit);
+  const profileId = profile.id;
+  const echoes = await getUserPublicEchoes(profileId, limit);
+
   return { profile, echoes };
 }
 
@@ -277,10 +302,12 @@ export async function getPublicProfileDataById(userId: string, limit = 12): Prom
   if (!profile) return { profile: null, echoes: [], stats: null };
   if (profile.public_profile_enabled === false) return { profile: null, echoes: [], stats: null };
 
+  const profileId = profile.id;
+
   const [echoes, echoesCount, topThemes] = await Promise.all([
-    getUserPublicEchoes(profile.id, limit),
-    getUserPublicEchoesCount(profile.id),
-    getUserPublicTopThemes(profile.id),
+    getUserPublicEchoes(profileId, limit),
+    getUserPublicEchoesCount(profileId),
+    getUserPublicTopThemes(profileId),
   ]);
 
   const stats: PublicProfileStats = {
@@ -301,10 +328,12 @@ export async function getPublicProfileDataByHandle(handle: string, limit = 12): 
   if (!profile) return { profile: null, echoes: [], stats: null };
   if (profile.public_profile_enabled === false) return { profile: null, echoes: [], stats: null };
 
+  const profileId = profile.id;
+
   const [echoes, echoesCount, topThemes] = await Promise.all([
-    getUserPublicEchoes(profile.id, limit),
-    getUserPublicEchoesCount(profile.id),
-    getUserPublicTopThemes(profile.id),
+    getUserPublicEchoes(profileId, limit),
+    getUserPublicEchoesCount(profileId),
+    getUserPublicTopThemes(profileId),
   ]);
 
   const stats: PublicProfileStats = {

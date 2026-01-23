@@ -2,21 +2,21 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-22)
+ * Version      : 2.2.0 (2026-01-23)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
- * - Lecture/édition de user_settings (theme, privacy, defaults, notifications soft)
- * - Lecture/édition minimale de profiles (handle, bio, identity_mode, lang_primary)
- * - [NEW] Section "Pour moi" : réglages MVP de résonance (likes/mirrors/fresh)
+ * - Lecture/édition de user_settings (theme, defaults, notifications soft, pour-moi MVP)
+ * - Lecture/édition de profiles (handle, bio, identity_mode, lang_primary, public_profile_enabled)
+ * - [FIX] Source de vérité “Profil public” = profiles.public_profile_enabled (aligné RLS + search)
  * - FAIL-SOFT : si colonnes "for_me_*" absentes en BDD, sauvegarde fallback sans casser
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.0 (2026-01-22)
- * - [NEW] Section Paramètres "Pour moi" (résonance) + ancre #for-me
- * - [NEW] Sauvegarde FAIL-SOFT : retry sans champs for_me_* si colonnes absentes
- * - [KEEP] UI/UX existante + toasts + routes inchangées
+ * 2.2.0 (2026-01-23)
+ * - [FIX] Profil public: lecture + écriture sur profiles.public_profile_enabled
+ * - [FIX] user_settings.public_profile_enabled n’est plus utilisé pour la visibilité publique
+ * - [KEEP] UX/toasts/fail-soft “Pour moi” inchangés
  * =============================================================================
  */
 
@@ -45,11 +45,20 @@ type ProfileRow = {
   lang_secondary: string[];
   location_mode: 'precise' | 'fuzzy' | 'hidden';
   location_fuzzy: string | null;
+
+  // ---------------------------------------------------------------------------
+  // VISIBILITÉ PROFIL PUBLIC (source de vérité)
+  // ---------------------------------------------------------------------------
+  public_profile_enabled: boolean;
 };
 
 type UserSettingsRow = {
   user_id: string;
+
+  // NOTE: ce champ peut exister en base mais n’est plus la source de vérité
+  // pour l’accès public aux profils (désormais dans profiles.public_profile_enabled).
   public_profile_enabled: boolean;
+
   default_echo_visibility: Visibility;
   default_anonymous: boolean;
   allow_responses: boolean;
@@ -117,7 +126,6 @@ function safeLang(v: string | null | undefined): string {
 
 function looksLikeMissingColumnError(msg: string): boolean {
   const m = msg.toLowerCase();
-  // Supabase/PostgREST: "column user_settings.xxx does not exist"
   return (m.includes('does not exist') || m.includes('unknown column') || m.includes('not exist')) && m.includes('for_me_');
 }
 
@@ -155,6 +163,8 @@ export default function SettingsPage() {
   const [langPrimary, setLangPrimary] = useState<string>('en');
 
   const [theme, setTheme] = useState<Theme>('system');
+
+  // IMPORTANT: ce toggle pilote profiles.public_profile_enabled
   const [publicProfile, setPublicProfile] = useState(false);
 
   const [defaultVisibility, setDefaultVisibility] = useState<Visibility>('world');
@@ -253,8 +263,10 @@ export default function SettingsPage() {
         setIdentityMode(p?.identity_mode ?? 'symbolic');
         setLangPrimary(safeLang(p?.lang_primary ?? 'en'));
 
+        // IMPORTANT: lecture depuis profiles (source de vérité)
+        setPublicProfile(!!p?.public_profile_enabled);
+
         setTheme(s?.theme ?? 'system');
-        setPublicProfile(!!s?.public_profile_enabled);
 
         setDefaultVisibility(s?.default_echo_visibility ?? 'world');
         setDefaultAnonymous(!!s?.default_anonymous);
@@ -297,21 +309,28 @@ export default function SettingsPage() {
       const nextBio = bio.trim() ? bio.trim() : null;
       const nextLang = safeLang(langPrimary);
 
+      // -----------------------------------------------------------------------
+      // PROFILES (inclut public_profile_enabled)
+      // -----------------------------------------------------------------------
       const profilePatch: Database['public']['Tables']['profiles']['Insert'] = {
         id: userId,
         handle: nextHandle,
         bio: nextBio,
         identity_mode: identityMode,
         lang_primary: nextLang,
+        public_profile_enabled: publicProfile,
       };
 
       const pUpsert = await sb.from('profiles').upsert(profilePatch, { onConflict: 'id' });
       if (pUpsert.error) throw pUpsert.error;
 
+      // -----------------------------------------------------------------------
+      // USER_SETTINGS (ne pilote plus la visibilité du profil public)
+      // -----------------------------------------------------------------------
       const baseSettingsPatch: Database['public']['Tables']['user_settings']['Insert'] = {
         user_id: userId,
         theme,
-        public_profile_enabled: publicProfile,
+        // on ne touche plus à user_settings.public_profile_enabled (désormais obsolète)
         default_echo_visibility: defaultVisibility,
         default_anonymous: defaultAnonymous,
         allow_responses: allowResponses,
@@ -319,7 +338,6 @@ export default function SettingsPage() {
         notifications_soft: notificationsSoft,
       };
 
-      // Tentative 1 : avec for_me_*
       const extendedSettingsPatch: Database['public']['Tables']['user_settings']['Insert'] = {
         ...baseSettingsPatch,
         for_me_enabled: forMeEnabled,
@@ -333,7 +351,6 @@ export default function SettingsPage() {
 
       if (sTry.error) {
         const msg = String(sTry.error.message ?? sTry.error);
-        // FAIL-SOFT : si colonnes pas encore en base -> retry sans champs for_me_*
         if (looksLikeMissingColumnError(msg)) {
           const sRetry = await sb.from('user_settings').upsert(baseSettingsPatch, { onConflict: 'user_id' });
           if (sRetry.error) throw sRetry.error;
@@ -362,8 +379,10 @@ export default function SettingsPage() {
       setIdentityMode(p?.identity_mode ?? 'symbolic');
       setLangPrimary(safeLang(p?.lang_primary ?? 'en'));
 
+      // IMPORTANT: resync depuis profiles
+      setPublicProfile(!!p?.public_profile_enabled);
+
       setTheme(s?.theme ?? theme);
-      setPublicProfile(!!s?.public_profile_enabled);
 
       setDefaultVisibility(s?.default_echo_visibility ?? defaultVisibility);
       setDefaultAnonymous(!!s?.default_anonymous);
@@ -372,7 +391,6 @@ export default function SettingsPage() {
       setAllowMirrors(s?.allow_mirrors ?? allowMirrors);
       setNotificationsSoft(s?.notifications_soft ?? notificationsSoft);
 
-      // Re-sync "Pour moi" si présent
       setForMeEnabled(s?.for_me_enabled ?? forMeEnabled);
       setForMeUseLikes(s?.for_me_use_likes ?? forMeUseLikes);
       setForMeUseMirrors(s?.for_me_use_mirrors ?? forMeUseMirrors);
@@ -528,7 +546,7 @@ export default function SettingsPage() {
         <div className="mt-6 grid gap-5 md:grid-cols-2">
           <ToggleRow
             label="Profil public"
-            hint="Autorise l'accès à une page publique (si activée plus tard)."
+            hint="Autorise ta découverte via la recherche et l’accès à /u/[handle] (si handle défini)."
             checked={publicProfile}
             onChange={setPublicProfile}
           />
@@ -587,11 +605,7 @@ export default function SettingsPage() {
             <div className="text-sm font-semibold text-slate-900">Sources prises en compte</div>
             <div className="mt-3 space-y-3">
               <ToggleInline label="Likes" checked={forMeUseLikes} onChange={setForMeUseLikes} />
-              <ToggleInline
-                label="Miroirs"
-                checked={forMeUseMirrors}
-                onChange={setForMeUseMirrors}
-              />
+              <ToggleInline label="Miroirs" checked={forMeUseMirrors} onChange={setForMeUseMirrors} />
               <div className="text-xs text-slate-500">
                 Si “Miroirs” est désactivé ici ou dans “Interactions”, ils ne compteront pas dans le calcul.
               </div>

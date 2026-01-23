@@ -1,9 +1,14 @@
 // =============================================================================
 // Fichier      : lib/search/queries.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.0 (2026-01-23)
+// Version      : 1.1.1 (2026-01-23)
 // Objet        : Requêtes Supabase (client) pour recherche globale
 // Notes        : SAFE: si table/colonne indispo -> fail soft (retourne [])
+// -----------------------------------------------------------------------------
+// CHANGELOG
+// 1.1.1 (2026-01-23)
+// - [SECURITY] searchUsers : filtre explicitement sur public_profile_enabled = true
+// - [CLEAN] ProfilSearchRow : retire le champ public_profile_enabled côté client
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -14,7 +19,6 @@ type ProfileSearchRow = {
   handle: string | null;
   display_name: string | null;
   avatar_url: string | null;
-  public_profile_enabled: boolean | null;
 };
 
 type EchoSearchRow = {
@@ -52,6 +56,9 @@ function buildOrIlike(fields: string[], q: string): string {
   return fields.map((f) => `${f}.ilike.%${safe}%`).join(',');
 }
 
+// -----------------------------------------------------------------------------
+// Recherche utilisateurs
+// -----------------------------------------------------------------------------
 export async function searchUsers(term: string, limit = 5): Promise<SearchUserResult[]> {
   const normalized = normalizeTerm(term);
   const q = escapeOrValue(normalized);
@@ -60,10 +67,9 @@ export async function searchUsers(term: string, limit = 5): Promise<SearchUserRe
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, handle, display_name, avatar_url, public_profile_enabled')
-      // Inclut TRUE et NULL (valeur non renseignée), exclut uniquement FALSE
-      // -> évite de "perdre" des profils quand public_profile_enabled est NULL
-      .neq('public_profile_enabled', false)
+      .select('id, handle, display_name, avatar_url')
+      // Filtre explicite sur profils publics uniquement
+      .eq('public_profile_enabled', true)
       // OR: handle ILIKE OR display_name ILIKE
       .or(buildOrIlike(['handle', 'display_name'], q))
       .limit(limit);
@@ -108,6 +114,9 @@ export async function searchUsers(term: string, limit = 5): Promise<SearchUserRe
   }
 }
 
+// -----------------------------------------------------------------------------
+// Recherche échos
+// -----------------------------------------------------------------------------
 export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoResult[]> {
   const q = escapeOrValue(normalizeTerm(term));
   if (!q) return [];
@@ -137,6 +146,9 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
   }
 }
 
+// -----------------------------------------------------------------------------
+// Recherche topics / tags
+// -----------------------------------------------------------------------------
 export async function searchTopics(term: string, limit = 5): Promise<SearchTopicResult[]> {
   const q = escapeOrValue(normalizeTerm(term));
   if (!q) return [];

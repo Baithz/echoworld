@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.4 (2026-01-23)
+ * Version      : 2.5.5 (2026-01-23)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,9 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.5.5 (2026-01-23)
+ * - [FIX] ESLint react-hooks/exhaustive-deps en déstructurant safeFilters (emotion/since/nearMe)
+ * - [KEEP] Comportement identique (SSR safe + swap globe/détail inchangé)
  * 2.5.4 (2026-01-23)
  * - [FIX] Prop filters optionnelle (SSR/prerender safe)
  * - [FIX] safeFilters par défaut + refs synchronisées (évite crash filters.since undefined)
@@ -178,14 +181,17 @@ export default function EchoMap({
   // Filters "safe" pour SSR / prerender
   const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
 
-  const sinceDate = useMemo(() => sinceToDate(safeFilters.since), [safeFilters.since]);
+  // Déstructuration pour hooks (évite deps sur l’objet safeFilters)
+  const { emotion, since, nearMe } = safeFilters;
+
+  const sinceDate = useMemo(() => sinceToDate(since), [since]);
 
   const filtersRef = useRef<Filters>(safeFilters);
   const sinceDateRef = useRef<Date | null>(sinceDate);
 
   useEffect(() => {
-    filtersRef.current = safeFilters;
-  }, [safeFilters.emotion, safeFilters.since, safeFilters.nearMe]);
+    filtersRef.current = { emotion, since, nearMe };
+  }, [emotion, since, nearMe]);
 
   useEffect(() => {
     sinceDateRef.current = sinceDate;
@@ -550,7 +556,7 @@ export default function EchoMap({
       const z = map.getZoom();
       let bbox: [number, number, number, number] = WORLD_BBOX;
 
-      if (safeFilters.nearMe && navigator.geolocation) {
+      if (nearMe && navigator.geolocation) {
         const pos = await new Promise<GeolocationPosition | null>((resolve) => {
           navigator.geolocation.getCurrentPosition(
             (p) => resolve(p),
@@ -575,7 +581,7 @@ export default function EchoMap({
 
       const data = (await getEchoesForMap({
         bbox,
-        emotion: safeFilters.emotion ?? undefined,
+        emotion: emotion ?? undefined,
         since: sinceDate ?? undefined,
       })) as unknown as FeatureCollection<Point>;
 
@@ -592,7 +598,7 @@ export default function EchoMap({
     };
 
     void reload();
-  }, [safeFilters.emotion, safeFilters.since, safeFilters.nearMe, sinceDate]);
+  }, [emotion, since, nearMe, sinceDate]);
 
   // Focus update
   useEffect(() => {
