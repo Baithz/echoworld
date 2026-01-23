@@ -2,17 +2,27 @@
  * =============================================================================
  * Fichier      : components/map/mapStyle.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-23)
+ * Version      : 1.1.1 (2026-01-23)
  * Objet        : Constantes MapLibre côté composants (style + palette émotions)
  * -----------------------------------------------------------------------------
  * Description  :
  * - MAP_STYLE_URL (override via NEXT_PUBLIC_MAP_STYLE_URL)
+ * - Fallback MapTiler Hybrid (clé intégrée) pour un rendu “Terre” + routes/bâtiments
  * - EMOTION_COLORS (palette utilisée par layers + glow)
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.1.1 (2026-01-23)
+ * - [IMPROVED] Clé MapTiler intégrée (fallback Hybrid)
+ * - [KEEP] Compat NEXT_PUBLIC_MAP_STYLE_URL (prioritaire)
  * =============================================================================
  */
 
+const MAPTILER_KEY = '8w5FOB1MYt3pBuhiSiVd';
+
 export const MAP_STYLE_URL =
-  process.env.NEXT_PUBLIC_MAP_STYLE_URL ?? 'https://demotiles.maplibre.org/globe.json';
+  process.env.NEXT_PUBLIC_MAP_STYLE_URL ??
+  `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`;
 
 export const EMOTION_COLORS = {
   joy: '#FFD54F',

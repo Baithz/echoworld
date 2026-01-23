@@ -60,11 +60,6 @@ type EchoFeatureProps = {
   [k: string]: unknown;
 };
 
-/**
- * Typings compat runtime :
- * Certains d.ts exposent getClusterExpansionZoom(callback) au lieu de (clusterId, callback).
- * Le runtime MapLibre accepte bien (clusterId, callback). On fixe le typing localement.
- */
 type GeoJSONSourceClusterCompat = GeoJSONSource & {
   getClusterExpansionZoom: (
     clusterId: number,
@@ -159,11 +154,9 @@ export default function EchoMap({
   const indexRef = useRef<Map<string, { lng: number; lat: number }>>(new Map());
   const pulseRafRef = useRef<number | null>(null);
 
-  // Caméra : annulation + timeouts
   const cameraTokenRef = useRef<number>(0);
   const cameraTimeoutRef = useRef<number | null>(null);
 
-  // Expose cinema/cancel pour autres useEffect (focus)
   const cinemaToRef = useRef<((center: [number, number], targetZoom: number) => void) | null>(null);
   const cancelCameraRef = useRef<(() => void) | null>(null);
 
@@ -179,16 +172,17 @@ export default function EchoMap({
       zoom: 1.8,
       pitch: 0,
       attributionControl: false,
-      renderWorldCopies: false, // stop la frise répétée du monde
+      renderWorldCopies: false,
+      minZoom: 1.2,
+      maxZoom: 18,
+      maxPitch: 60,
     });
 
-    // Projection globe si supportée par la version MapLibre
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
-    const mProj = map as MapWithProjection;
     try {
-      mProj.setProjection?.({ type: 'globe' });
+      (map as MapWithProjection).setProjection?.({ type: 'globe' });
     } catch {
-      // Ignore si non supporté
+      // ignore
     }
 
     mapRef.current = map;
@@ -207,26 +201,20 @@ export default function EchoMap({
         const z = m.getZoom();
         const t = Date.now() / 1000;
 
-        // Heatmap pulse uniquement en zoom faible
         if (z <= 4.5) {
           const opacity = 0.18 + 0.10 * (0.5 + 0.5 * Math.sin(t * 1.2));
           const intensity = 0.9 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.2));
           try {
             m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
             m.setPaintProperty('echo-heat', 'heatmap-intensity', intensity);
-          } catch {
-            // layer pas encore prêt
-          }
+          } catch {}
         }
 
-        // Glow pulse (blur/opacity)
         try {
           const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
           m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.10 + 0.20 * glow);
           m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
-        } catch {
-          // layer pas encore prêt
-        }
+        } catch {}
 
         pulseRafRef.current = requestAnimationFrame(tick);
       };
@@ -244,18 +232,11 @@ export default function EchoMap({
 
       try {
         map.stop();
-      } catch {
-        // no-op
-      }
+      } catch {}
     };
 
     cancelCameraRef.current = cancelCamera;
 
-    /**
-     * Cinéma : 2 temps
-     * 1) push-in (pitch + zoom) court
-     * 2) settle (pitch -> 0)
-     */
     const cinemaTo = (center: [number, number], targetZoom: number) => {
       const m = mapRef.current;
       if (!m) return;
@@ -271,7 +252,6 @@ export default function EchoMap({
         return;
       }
 
-      // Phase 1 : push-in
       m.easeTo({
         center,
         zoom: baseZoom,
@@ -281,7 +261,6 @@ export default function EchoMap({
         pitch: 22,
       });
 
-      // Phase 2 : settle
       cameraTimeoutRef.current = window.setTimeout(() => {
         if (cameraTokenRef.current !== token) return;
         const mm = mapRef.current;
@@ -350,7 +329,6 @@ export default function EchoMap({
           clusterRadius: 50,
         });
 
-        // ordre visuel : heat (bas) -> glow -> clusters -> points (haut)
         map.addLayer(HEAT_LAYER as unknown as AddLayerObject);
         map.addLayer(createGlowLayer() as unknown as AddLayerObject);
         map.addLayer(CLUSTER_LAYER as unknown as AddLayerObject);
@@ -389,7 +367,6 @@ export default function EchoMap({
         src.getClusterExpansionZoom(clusterId, (err: unknown, zoom: number) => {
           if (err || typeof zoom !== 'number') return;
           if (!isPointGeometry(f)) return;
-
           cinemaTo(f.geometry.coordinates, zoom);
         });
       });
@@ -417,7 +394,6 @@ export default function EchoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload data when filters change
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -449,17 +425,15 @@ export default function EchoMap({
     void reload();
   }, [filters.emotion, filters.since, filters.nearMe, sinceDate]);
 
-  // Focus update (réutilise cinemaTo)
   useEffect(() => {
     if (!focusId) return;
+    const map = mapRef.current;
+    if (!map) return;
 
     const p = indexRef.current.get(focusId);
     if (!p) return;
 
-    // si la map n'est pas encore prête, on laisse la logique "loadData()" gérer le focus initial
-    if (!mapRef.current) return;
-
-    cinemaToRef.current?.([p.lng, p.lat], Math.max(mapRef.current.getZoom(), 9));
+    cinemaToRef.current?.([p.lng, p.lat], Math.max(map.getZoom(), 9));
   }, [focusId]);
 
   return <div ref={containerRef} className="h-screen w-screen" />;
