@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.2 (2026-01-23)
+ * Version      : 2.5.4 (2026-01-23)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,12 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.5.4 (2026-01-23)
+ * - [FIX] ESLint react-hooks/exhaustive-deps (plus de dépendance sur l’objet safeFilters)
+ * - [FIX] Déstructuration emotion/since/nearMe + refs synchro via primitives
+ * 2.5.3 (2026-01-23)
+ * - [FIX] Prop filters optionnelle + safeFilters par défaut (SSR / prerender robustes)
+ * - [FIX] Refs live synchronisées sur safeFilters (évite crash filters.since undefined)
  * 2.5.2 (2026-01-23)
  * - [FIX] Projection globe forcée aussi sur le style "detail" (évite retour mercator = carte plate)
  * - [FIX] transformStyle typé strict (TransformStyleFunction -> StyleSpecification) (corrige TS2322)
@@ -160,7 +166,7 @@ export default function EchoMap({
   onSelectEcho,
 }: {
   focusId?: string;
-  filters: Filters;
+  filters?: Filters; // optionnel pour SSR / prerender
   onSelectEcho: (id: string) => void;
 }) {
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -185,15 +191,22 @@ export default function EchoMap({
     onZoomEnd?: () => void;
   }>({});
 
-  const sinceDate = useMemo(() => sinceToDate(filters.since), [filters.since]);
+  // Filters "safe" pour SSR / prerender
+  const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
+
+  // Déstructuration pour que les hooks ne dépendent pas de l’objet complet (ESLint friendly)
+  const { emotion, since, nearMe } = safeFilters;
+
+  const sinceDate = useMemo(() => sinceToDate(since), [since]);
 
   // Refs "live" pour éviter la capture des filtres au mount
-  const filtersRef = useRef<Filters>(filters);
+  const filtersRef = useRef<Filters>(safeFilters);
   const sinceDateRef = useRef<Date | null>(sinceDate);
 
   useEffect(() => {
-    filtersRef.current = filters;
-  }, [filters]);
+    // on synchronise la ref avec les primitives courantes
+    filtersRef.current = { emotion, since, nearMe };
+  }, [emotion, since, nearMe]);
 
   useEffect(() => {
     sinceDateRef.current = sinceDate;
@@ -567,7 +580,7 @@ export default function EchoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload data when filters change (nearMe + monde cohérents)
+  // Reload data when filters changent (nearMe + monde cohérents)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -578,7 +591,7 @@ export default function EchoMap({
       const z = map.getZoom();
       let bbox: [number, number, number, number] = WORLD_BBOX;
 
-      if (filters.nearMe && navigator.geolocation) {
+      if (nearMe && navigator.geolocation) {
         const pos = await new Promise<GeolocationPosition | null>((resolve) => {
           navigator.geolocation.getCurrentPosition(
             (p) => resolve(p),
@@ -603,7 +616,7 @@ export default function EchoMap({
 
       const data = (await getEchoesForMap({
         bbox,
-        emotion: filters.emotion ?? undefined,
+        emotion: emotion ?? undefined,
         since: sinceDate ?? undefined,
       })) as unknown as FeatureCollection<Point>;
 
@@ -620,7 +633,7 @@ export default function EchoMap({
     };
 
     void reload();
-  }, [filters.emotion, filters.since, filters.nearMe, sinceDate]);
+  }, [emotion, since, nearMe, sinceDate]);
 
   // Focus update
   useEffect(() => {
