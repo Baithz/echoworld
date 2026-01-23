@@ -2,29 +2,161 @@
  * =============================================================================
  * Fichier      : app/explore/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.2 (2026-01-22)
- * Objet        : Page Explore - Globe plein écran + navigation
+ * Version      : 2.1.0 (2026-01-23)
+ * Objet        : Page /explore (client) - Carte EchoMap + filtres + StoryDrawer
  * -----------------------------------------------------------------------------
  * Description  :
- * - Route dédiée au globe (hors Home)
- * - Header commun (navigation)
- * - Affichage full via `WorldGlobe mode="full"`
- * - SAFE: évite double Header si app/layout.tsx rend déjà <Header />
- * - Pas de scroll parasite (hauteur viewport - header)
+ * - Importe EchoMap de façon robuste (default ou named export) sans "any"
+ * - Gère les filtres contrôlés (émotion, période, nearMe)
+ * - Gère la sélection d’un écho + chargement détail via getEchoById (safe)
+ * - Ouvre un StoryDrawer latéral synchronisé avec la carte
+ * - Sync de l’URL avec le paramètre ?focus=<id>
+ * - Overlays atmosphère (gradients) au-dessus de la carte
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.1.0 (2026-01-23)
+ * - [IMPROVED] Gestion erreurs + anti-race (abort local)
+ * - [IMPROVED] Toggle sélection (reclick => close)
+ * - [IMPROVED] Close handler centralisé (clear focus + loading)
  * =============================================================================
  */
 
-import WorldGlobe from '../../components/home/WorldGlobe';
+'use client';
 
-// IMPORTANT:
-// - Si ton app/layout.tsx rend déjà <Header />, laisse ce fichier SANS header.
-// - Si ton app/layout.tsx NE rend PAS <Header />, alors ajoute-le ici.
-export default function ExplorePage() {
+import React, { useEffect, useMemo, useState } from 'react';
+import * as EchoMapModule from '@/components/map/EchoMap';
+import type { ComponentType } from 'react';
+import StoryDrawer from '@/components/explore/StoryDrawer';
+import ExploreFilters from '@/components/explore/ExploreFilters';
+import { getEchoById, type EchoDetail } from '@/lib/echo/getEchoById';
+
+type ExplorePageProps = {
+  searchParams?: { focus?: string };
+};
+
+type Filters = {
+  emotion: 'joy' | 'sadness' | 'anger' | 'fear' | 'love' | 'hope' | null;
+  since: '24h' | '7d' | null;
+  nearMe: boolean;
+};
+
+type EchoMapProps = {
+  focusId?: string;
+  filters: Filters;
+  onSelectEcho: (id: string) => void;
+};
+
+type EchoMapDefaultModule = {
+  default?: ComponentType<EchoMapProps>;
+  EchoMap?: ComponentType<EchoMapProps>;
+};
+
+// Import robuste default/named sans any
+const EchoMap =
+  ((EchoMapModule as unknown as EchoMapDefaultModule).default ??
+    (EchoMapModule as unknown as EchoMapDefaultModule).EchoMap) as ComponentType<EchoMapProps>;
+
+export default function ExplorePage({ searchParams }: ExplorePageProps) {
+  const initialFocus = searchParams?.focus ?? null;
+
+  const [filters, setFilters] = useState<Filters>({
+    emotion: null,
+    since: null,
+    nearMe: false,
+  });
+
+  const [selectedId, setSelectedId] = useState<string | null>(initialFocus);
+  const [drawerOpen, setDrawerOpen] = useState<boolean>(Boolean(initialFocus));
+  const [loading, setLoading] = useState<boolean>(false);
+  const [story, setStory] = useState<EchoDetail | null>(null);
+
+  const focusId = useMemo(() => selectedId ?? undefined, [selectedId]);
+
+  const closeDrawer = () => {
+    setSelectedId(null);
+    setDrawerOpen(false);
+    setLoading(false);
+    setStory(null);
+  };
+
+  // charge story quand selectedId change (anti-race + erreurs safe)
+  useEffect(() => {
+    const id = selectedId;
+
+    if (!id) {
+      setStory(null);
+      setDrawerOpen(false);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    setDrawerOpen(true);
+    setLoading(true);
+
+    (async () => {
+      try {
+        const s = await getEchoById(id);
+        if (cancelled) return;
+        setStory(s);
+      } catch {
+        if (cancelled) return;
+        // en cas d’erreur, on évite un drawer bloqué en loading
+        setStory(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  // Sync URL ?focus=...
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedId) url.searchParams.set('focus', selectedId);
+    else url.searchParams.delete('focus');
+    window.history.replaceState({}, '', url.toString());
+  }, [selectedId]);
+
+  const onSelectEcho = (id: string) => {
+    // toggle : si on reclique le même point -> fermeture
+    if (id && id === selectedId) {
+      closeDrawer();
+      return;
+    }
+    setSelectedId(id);
+  };
+
   return (
-    <main className="h-[calc(100vh-80px)] px-6 pt-20">
-      <section className="mx-auto h-full w-full">
-        <WorldGlobe mode="full" />
-      </section>
+    <main className="relative h-screen w-screen overflow-hidden bg-black">
+      {/* Map */}
+      <EchoMap focusId={focusId} filters={filters} onSelectEcho={onSelectEcho} />
+
+      {/* Atmosphere overlay (design) */}
+      <div className="pointer-events-none absolute inset-0 z-10">
+        <div className="absolute inset-0 bg-linear-to-b from-black/35 via-black/10 to-black/45" />
+        <div className="absolute inset-0 mask-[radial-gradient(circle_at_50%_35%,black,transparent_70%)] bg-white/10 blur-2xl opacity-40" />
+      </div>
+
+      {/* Filters (top-left) */}
+      <div className="absolute left-4 top-4 z-20 pointer-events-none">
+        <ExploreFilters
+          emotion={filters.emotion}
+          since={filters.since}
+          nearMe={filters.nearMe}
+          onEmotion={(v) => setFilters((p) => ({ ...p, emotion: v }))}
+          onSince={(v) => setFilters((p) => ({ ...p, since: v }))}
+          onNearMe={(v) => setFilters((p) => ({ ...p, nearMe: v }))}
+        />
+      </div>
+
+      {/* Drawer */}
+      <StoryDrawer open={drawerOpen} loading={loading} story={story} onClose={closeDrawer} />
     </main>
   );
 }
