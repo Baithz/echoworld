@@ -37,8 +37,8 @@ import type {
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useMemo, useRef } from 'react';
-import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from './mapStyle';
-import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from './echoLayers';
+import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from '@/components/map/mapStyle';
+import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from '@/components/map/echoLayers';
 import { getEchoesForMap } from '@/lib/echo/getEchoesForMap';
 import type { FeatureCollection, Point } from 'geojson';
 
