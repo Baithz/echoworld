@@ -1,10 +1,12 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileView.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.0.0 (2026-01-23)
+// Version      : 2.1.0 (2026-01-23)
 // Objet        : Vue UI profil public premium (bannière, avatar, actions, échos)
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 2.1.0 (2026-01-23)
+// - [FIX] Ajout pt-28 pour compenser le header fixe (évite superposition)
 // 2.0.0 (2026-01-23)
 // - [NEW] Ajout bannière avec banner_url + banner_pos_y (comme /account)
 // - [NEW] Boutons "Suivre" et "Message" (ProfileActions)
@@ -32,8 +34,8 @@ type Props = {
     topThemes?: string[];
     location?: { country?: string | null; city?: string | null };
   };
-  currentUserId?: string | null; // pour savoir si c'est moi
-  isFollowing?: boolean; // si je suis déjà ce profil
+  currentUserId?: string | null;
+  isFollowing?: boolean;
 };
 
 function initials(name: string) {
@@ -70,7 +72,7 @@ export default function ProfileView({
     .join(', ');
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-8">
+    <div className="mx-auto w-full max-w-6xl px-4 py-8 pt-28">
       {/* Card principale */}
       <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-black/5">
         {/* Bannière */}
