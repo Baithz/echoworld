@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/explore/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-23)
+ * Version      : 2.2.0 (2026-01-23)
  * Objet        : Page /explore (client) - Carte EchoMap + filtres + StoryDrawer
  * -----------------------------------------------------------------------------
  * Description  :
@@ -15,10 +15,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.0 (2026-01-23)
- * - [IMPROVED] Gestion erreurs + anti-race (abort local)
- * - [IMPROVED] Toggle sélection (reclick => close)
- * - [IMPROVED] Close handler centralisé (clear focus + loading)
+ * 2.2.0 (2026-01-23)
+ * - [FIX] Position filtres : suppression top-21 (non standard Tailwind) => top-20 stable
+ * - [IMPROVED] Si getEchoById échoue : fermeture propre (évite drawer “vide” ambigu)
+ * - [KEEP] Toggle sélection, sync URL, overlays, anti-race => inchangés
  * =============================================================================
  */
 
@@ -100,11 +100,18 @@ export default function ExplorePage({ searchParams }: ExplorePageProps) {
       try {
         const s = await getEchoById(id);
         if (cancelled) return;
+
+        // si l’API renvoie null/undefined, on évite un drawer sans contenu
+        if (!s) {
+          closeDrawer();
+          return;
+        }
+
         setStory(s);
       } catch {
         if (cancelled) return;
-        // en cas d’erreur, on évite un drawer bloqué en loading
-        setStory(null);
+        // en cas d’erreur, fermeture propre (au lieu de drawer vide)
+        closeDrawer();
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -144,7 +151,7 @@ export default function ExplorePage({ searchParams }: ExplorePageProps) {
       </div>
 
       {/* Filters (top-left) */}
-      <div className="absolute left-4 top-21 z-30 pointer-events-none">
+      <div className="absolute left-4 top-20 z-30">
         <ExploreFilters
           emotion={filters.emotion}
           since={filters.since}

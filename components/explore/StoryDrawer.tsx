@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/explore/StoryDrawer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.1 (2026-01-23)
+ * Version      : 1.3.0 (2026-01-23)
  * Objet        : Drawer latéral d’écho - Lecture rapide depuis la carte (cinéma)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -16,21 +16,18 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.2.1 (2026-01-23)
- * - [FIX] Hook useReducedMotion: initialisation via state + listen change (ESLint OK)
- * - [KEEP] Zéro régression sur focus trap / scroll lock / a11y / copy link
- * -----------------------------------------------------------------------------
- * 1.2.0 (2026-01-23)
- * - [NEW] Focus trap (Tab/Shift+Tab) + restore focus
- * - [NEW] Lock scroll body quand open
- * - [IMPROVED] a11y (aria-labelledby/desc) + prefers-reduced-motion
- * - [IMPROVED] Copier lien: fallback + gestion erreurs silencieuse
+ * 1.3.0 (2026-01-23)
+ * - [IMPROVED] Formatter date memoïsé (évite new Intl.DateTimeFormat à chaque rendu)
+ * - [FIX] Date invalide: fallback safe (pas de "Invalid Date" visible)
+ * - [IMPROVED] Badge émotion coloré via EMOTION_COLORS (layout inchangé)
+ * - [KEEP] Focus trap / scroll lock / a11y / copy link / animations
  * =============================================================================
  */
 
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { EMOTION_COLORS, type EmotionKey } from '@/components/map/mapStyle';
 
 type Story = {
   id: string;
@@ -42,9 +39,14 @@ type Story = {
   country: string | null;
 };
 
+function safeDate(iso: string): Date | null {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function formatRelativeFR(isoDate: string): string {
-  const d = new Date(isoDate);
-  if (Number.isNaN(d.getTime())) return isoDate;
+  const d = safeDate(isoDate);
+  if (!d) return isoDate;
 
   const now = Date.now();
   const diffMs = now - d.getTime();
@@ -147,6 +149,12 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+function emotionColor(emotion: string | null | undefined): string {
+  if (!emotion) return EMOTION_COLORS.default;
+  const key = emotion as EmotionKey;
+  return EMOTION_COLORS[key] ?? EMOTION_COLORS.default;
+}
+
 export default function StoryDrawer({
   open,
   loading,
@@ -179,6 +187,24 @@ export default function StoryDrawer({
 
   const titleId = useMemo(() => `story-drawer-title`, []);
   const descId = useMemo(() => `story-drawer-desc`, []);
+
+  const dateFormatter = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const absoluteDateLabel = useMemo(() => {
+    if (!story) return null;
+    const d = safeDate(story.created_at);
+    if (!d) return null;
+    if (dateFormatter) return dateFormatter.format(d);
+    return d.toLocaleString();
+  }, [story, dateFormatter]);
+
+  const emotionBadgeColor = useMemo(() => emotionColor(story?.emotion), [story?.emotion]);
 
   // Lock scroll + store last focus + autofocus close
   useEffect(() => {
@@ -325,16 +351,31 @@ export default function StoryDrawer({
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-2">
                   {story.emotion && (
-                    <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80 border border-white/10">
-                      {story.emotion}
+                    <span
+                      className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/90 border border-white/10"
+                      style={{
+                        boxShadow: `0 0 0 1px ${emotionBadgeColor}33 inset, 0 0 18px ${emotionBadgeColor}1f`,
+                        borderColor: `${emotionBadgeColor}55`,
+                      }}
+                      title={story.emotion}
+                      aria-label={`Émotion : ${story.emotion}`}
+                    >
+                      <span aria-hidden="true" className="mr-1 inline-block align-middle">
+                        ●
+                      </span>
+                      <span className="align-middle">{story.emotion}</span>
                     </span>
                   )}
-                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/70 border border-white/10">
-                    {new Intl.DateTimeFormat('fr-FR', {
-                      dateStyle: 'medium',
-                      timeStyle: 'short',
-                    }).format(new Date(story.created_at))}
-                  </span>
+
+                  {absoluteDateLabel ? (
+                    <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/70 border border-white/10">
+                      {absoluteDateLabel}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/60 border border-white/10">
+                      Date inconnue
+                    </span>
+                  )}
                 </div>
 
                 <div className="text-white/90 leading-relaxed whitespace-pre-wrap">

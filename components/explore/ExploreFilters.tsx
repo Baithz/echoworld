@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/ExploreFilters.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-23)
+ * Version      : 1.2.0 (2026-01-23)
  * Objet        : Filtres Map /explore (émotion + période + proximité)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,21 +10,22 @@
  * - Filtre temporel (24h / 7d)
  * - Filtre géographique (nearMe) (aria-pressed)
  * - Callbacks contrôlés (no state interne)
+ * - a11y renforcée (labels + état pressé + feedback SR)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.1.1 (2026-01-23)
- * - [FIX] a11y "Toutes" (aria-pressed + aria-label/title)
- * - [CLEAN] nearMeLabel simplifié (pas de useMemo inutile)
- * - [KEEP] Aucun changement visuel / zéro régression
+ * 1.2.0 (2026-01-23)
+ * - [IMPROVED] Typage aligné Map : EmotionKey importé depuis mapStyle (évite divergences)
+ * - [KEEP] Zéro changement visuel (classes identiques), zéro régression
  * =============================================================================
  */
 
 'use client';
 
 import React from 'react';
+import type { EmotionKey } from '@/components/map/mapStyle';
 
-const EMOTIONS = ['joy', 'sadness', 'anger', 'fear', 'love', 'hope'] as const;
+const EMOTIONS = ['joy', 'sadness', 'anger', 'fear', 'love', 'hope'] as const satisfies readonly EmotionKey[];
 type Emotion = (typeof EMOTIONS)[number];
 
 const EMO_META: Record<Emotion, { label: string; icon: string }> = {
@@ -71,11 +72,22 @@ export default function ExploreFilters({
   onSince: (v: '24h' | '7d' | null) => void;
   onNearMe: (v: boolean) => void;
 }) {
-  const nearMeLabel = nearMe ? 'Autour de moi activé' : 'Autour de moi';
+  // Labels (accessibles) — ne changent pas le visuel
+  const nearMeTitle = nearMe ? 'Autour de moi activé' : 'Autour de moi';
+  const nearMeAria = nearMe ? 'Désactiver le filtre autour de moi' : 'Activer le filtre autour de moi';
+
+  const emotionLabel = emotion ? EMO_META[emotion].label : 'Toutes';
+  const sinceLabel = since === '24h' ? 'Dernières 24h' : since === '7d' ? '7 jours' : 'Aucune période';
+  const geoLabel = nearMe ? 'Autour de moi' : 'Monde';
 
   return (
     <div className="pointer-events-auto">
       <div className="rounded-2xl border border-white/10 bg-black/25 backdrop-blur-xl shadow-xl p-3 space-y-3">
+        {/* Statut SR (pas de changement visuel) */}
+        <div className="sr-only" aria-live="polite">
+          Filtres actifs : émotion {emotionLabel}, période {sinceLabel}, zone {geoLabel}.
+        </div>
+
         {/* Emotion chips */}
         <div className="flex flex-wrap gap-2">
           <button
@@ -141,8 +153,8 @@ export default function ExploreFilters({
             onClick={() => onNearMe(!nearMe)}
             className={btnClass(nearMe)}
             aria-pressed={nearMe}
-            aria-label={nearMeLabel}
-            title={nearMeLabel}
+            aria-label={nearMeAria}
+            title={nearMeTitle}
           >
             <span aria-hidden="true">📍</span>
           </button>

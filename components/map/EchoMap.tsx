@@ -2,16 +2,27 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.1 (2026-01-23)
+ * Version      : 2.5.1 (2026-01-23)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Stabilise la visibilité des échos au dézoom (WORLD_BBOX) pour éviter une Terre "vide"
+ * - Unifie la résolution de bbox (nearMe / monde / bounds) pour init + reload filtres + swap style
+ * - Corrige un risque runtime (applyStyleIfNeeded appelé avant déclaration)
+ * - Garantit que les filtres utilisés lors des fetch restent "live" (refs) même après mount
+ * - Conserve intégralement : clusters/points/heat/pulse/cinema/focus + swap globe/détail
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.4.1 (2026-01-23)
- * - [FIX] Globe forcé après style.load (et après chaque setStyle)
- * - [FIX] Ré-injection source/layers échos + rebind interactions après swap
- * - [FIX] nearMe rétabli (bboxAround utilisé) + ESLint prefer-const
- * - [KEEP] clusters/points/heat/pulse/cinema/focus
+ * 2.5.1 (2026-01-23)
+ * - [FIX] Projection globe persistante via transformStyle (MapLibre) au swap de style
+ * - [NEW] Atmosphère/sky sur le style globe pour rendu “vu de l’espace”
+ * - [KEEP] Aucune modification des IDs de layers / sources / interactions
+ * 2.5.0 (2026-01-23)
+ * - [FIX] WORLD_BBOX au dézoom (expérience monde cohérente, pas de vide)
+ * - [FIX] nearMe cohérent (même logique init/reload/swap)
+ * - [FIX] applyStyleIfNeeded (function hoist) + fetch filtres "live"
+ * - [KEEP] Aucun changement d’IDs layers, aucune régression interactions/cinéma/pulse
  * =============================================================================
  */
 
@@ -25,17 +36,13 @@ import type {
   AddLayerObject,
   MapGeoJSONFeature as MapFeature,
   CircleLayerSpecification,
+  StyleSpecification,
+  TransformStyleFunction,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useMemo, useRef } from 'react';
 import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from './mapStyle';
-import {
-  SOURCE_ID,
-  CLUSTER_LAYER,
-  CLUSTER_COUNT_LAYER,
-  POINT_LAYER,
-  HEAT_LAYER,
-} from './echoLayers';
+import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from './echoLayers';
 import { getEchoesForMap } from '@/lib/echo/getEchoesForMap';
 import type { FeatureCollection, Point } from 'geojson';
 
@@ -58,16 +65,19 @@ type EchoFeatureProps = {
  * Certains d.ts exposent getClusterExpansionZoom(callback) au lieu de (clusterId, callback).
  */
 type GeoJSONSourceClusterCompat = GeoJSONSource & {
-  getClusterExpansionZoom: (
-    clusterId: number,
-    callback: (error: unknown, zoom: number) => void
-  ) => void;
+  getClusterExpansionZoom: (clusterId: number, callback: (error: unknown, zoom: number) => void) => void;
 };
 
 const GLOW_LAYER_ID = 'echo-glow';
 
 // Seuil de bascule (globe->detail)
 const DETAIL_ZOOM_THRESHOLD = 5;
+
+// "Vue monde" : bbox globale pour éviter une Terre vide au dézoom.
+// (bornes lat réduites pour éviter singularités / antimeridian extrêmes)
+const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
+// Seuil zoom où l’on considère qu’on est en "vue monde"
+const WORLD_ZOOM_THRESHOLD = 2.8;
 
 function sinceToDate(since: Filters['since']): Date | null {
   if (!since) return null;
@@ -172,6 +182,18 @@ export default function EchoMap({
 
   const sinceDate = useMemo(() => sinceToDate(filters.since), [filters.since]);
 
+  // Refs "live" pour éviter la capture des filtres au mount
+  const filtersRef = useRef<Filters>(filters);
+  const sinceDateRef = useRef<Date | null>(sinceDate);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
+
+  useEffect(() => {
+    sinceDateRef.current = sinceDate;
+  }, [sinceDate]);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -204,6 +226,48 @@ export default function EchoMap({
         // ignore
       }
     };
+
+    // --- Style transform : force projection globe + atmosphère côté style (fiable, persiste au swap)
+    type StyleLike = StyleSpecification & {
+      projection?: { type: string };
+      sky?: Record<string, unknown>;
+    };
+
+    const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
+      return (_prev, next): StyleSpecification => {
+        // MapLibre attend un StyleSpecification
+        if (!next || typeof next !== 'object') {
+          return next as unknown as StyleSpecification;
+        }
+
+        const s = next as StyleLike;
+
+        if (mode === 'globe') {
+          // projection globe (le vrai “planète”)
+          s.projection = { type: 'globe' };
+
+          // atmosphère (rendu “vu de l’espace”)
+          s.sky = {
+            'sky-type': 'atmosphere',
+            'sky-atmosphere-sun': [0.0, 90.0],
+            'sky-atmosphere-sun-intensity': 10,
+            'sky-atmosphere-color': 'rgba(135,206,235,0.55)',
+            'sky-atmosphere-halo-color': 'rgba(255,255,255,0.35)',
+          };
+        }
+
+        return s;
+      };
+    };
+
+    const setStyleForMode = (m: maplibregl.Map, mode: 'globe' | 'detail', styleUrl: string) => {
+      // setStyle avec transformStyle => globe réel + sky persistant après swap
+      m.setStyle(styleUrl, { transformStyle: transformForMode(mode) });
+    };
+
+    // Force le style “globe” avec projection + sky dès le départ (évite rendu carte plate).
+    setStyleForMode(map, 'globe', STYLE_GLOBE_URL);
+    currentStyleRef.current = 'globe';
 
     const cancelCamera = () => {
       cameraTokenRef.current += 1;
@@ -266,7 +330,7 @@ export default function EchoMap({
         const t = Date.now() / 1000;
 
         if (z <= 4.5) {
-          const opacity = 0.18 + 0.10 * (0.5 + 0.5 * Math.sin(t * 1.2));
+          const opacity = 0.18 + 0.1 * (0.5 + 0.5 * Math.sin(t * 1.2));
           const intensity = 0.9 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.2));
           try {
             m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
@@ -278,7 +342,7 @@ export default function EchoMap({
 
         try {
           const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
-          m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.10 + 0.20 * glow);
+          m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.1 + 0.2 * glow);
           m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
         } catch {
           // ignore
@@ -290,14 +354,14 @@ export default function EchoMap({
       pulseRafRef.current = requestAnimationFrame(tick);
     };
 
-    // --- Data
-    const fetchGeojson = async () => {
+    // --- Résolution bbox unifiée (nearMe / monde / bounds)
+    const resolveBbox = async (): Promise<[number, number, number, number]> => {
       const m = mapRef.current;
-      if (!m) return null;
+      if (!m) return WORLD_BBOX;
 
-      let bbox: [number, number, number, number] | undefined;
+      const f = filtersRef.current;
 
-      if (filters.nearMe && navigator.geolocation) {
+      if (f.nearMe && navigator.geolocation) {
         const pos = await new Promise<GeolocationPosition | null>((resolve) => {
           navigator.geolocation.getCurrentPosition(
             (p) => resolve(p),
@@ -309,20 +373,29 @@ export default function EchoMap({
         if (pos) {
           const lng = pos.coords.longitude;
           const lat = pos.coords.latitude;
-          bbox = bboxAround(lng, lat, 40);
-          cinemaTo([lng, lat], Math.max(m.getZoom(), 6.5));
+          cinemaToRef.current?.([lng, lat], Math.max(m.getZoom(), 6.5));
+          return bboxAround(lng, lat, 40);
         }
       }
 
-      if (!bbox) {
-        const b = m.getBounds();
-        bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-      }
+      const z = m.getZoom();
+      if (z <= WORLD_ZOOM_THRESHOLD) return WORLD_BBOX;
+
+      const b = m.getBounds();
+      return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    };
+
+    // --- Data
+    const fetchGeojson = async () => {
+      const m = mapRef.current;
+      if (!m) return null;
+
+      const bbox = await resolveBbox();
 
       const geojson = (await getEchoesForMap({
         bbox,
-        emotion: filters.emotion ?? undefined,
-        since: sinceDate ?? undefined,
+        emotion: filtersRef.current.emotion ?? undefined,
+        since: sinceDateRef.current ?? undefined,
       })) as unknown as FeatureCollection<Point>;
 
       indexRef.current.clear();
@@ -377,6 +450,40 @@ export default function EchoMap({
       if (h.onZoomEnd) m.off('zoomend', h.onZoomEnd);
     };
 
+    // --- Style swap (globe <-> detail)
+    async function applyStyleIfNeeded() {
+      const m = mapRef.current;
+      if (!m) return;
+
+      const z = m.getZoom();
+      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
+      if (want === currentStyleRef.current) return;
+
+      const center = m.getCenter();
+      const zoom = m.getZoom();
+      const bearing = m.getBearing();
+      const pitch = m.getPitch();
+
+      currentStyleRef.current = want;
+      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
+
+      const geojson = await fetchGeojson();
+
+      // IMPORTANT : setStyle AVEC transform => projection globe + sky persistants
+      setStyleForMode(m, want, nextStyle);
+
+      m.once('style.load', () => {
+        // garde-fou (si jamais transform est ignoré par un style exotique)
+        if (want === 'globe') applyGlobeProjection();
+
+        ensureEchoLayers(geojson ?? undefined);
+        bindInteractions();
+
+        // restaure caméra
+        m.jumpTo({ center, zoom, bearing, pitch });
+      });
+    }
+
     const bindInteractions = () => {
       const m = mapRef.current;
       if (!m) return;
@@ -407,10 +514,16 @@ export default function EchoMap({
         });
       };
 
-      const onEnter = () => { m.getCanvas().style.cursor = 'pointer'; };
-      const onLeave = () => { m.getCanvas().style.cursor = ''; };
+      const onEnter = () => {
+        m.getCanvas().style.cursor = 'pointer';
+      };
+      const onLeave = () => {
+        m.getCanvas().style.cursor = '';
+      };
 
-      const onZoomEnd = () => { void applyStyleIfNeeded(); };
+      const onZoomEnd = () => {
+        void applyStyleIfNeeded();
+      };
 
       handlersRef.current = { onPointClick, onClusterClick, onEnter, onLeave, onZoomEnd };
 
@@ -419,38 +532,6 @@ export default function EchoMap({
       m.on('mouseenter', 'echo-point', onEnter);
       m.on('mouseleave', 'echo-point', onLeave);
       m.on('zoomend', onZoomEnd);
-    };
-
-    // --- Style swap (globe <-> detail)
-    const applyStyleIfNeeded = async () => {
-      const m = mapRef.current;
-      if (!m) return;
-
-      const z = m.getZoom();
-      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
-      if (want === currentStyleRef.current) return;
-
-      const center = m.getCenter();
-      const zoom = m.getZoom();
-      const bearing = m.getBearing();
-      const pitch = m.getPitch();
-
-      currentStyleRef.current = want;
-      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
-
-      const geojson = await fetchGeojson();
-      m.setStyle(nextStyle);
-
-      m.once('style.load', () => {
-        // globe appliqué APRÈS chargement du style (sinon ignoré)
-        if (want === 'globe') applyGlobeProjection();
-
-        ensureEchoLayers(geojson ?? undefined);
-        bindInteractions();
-
-        // restaure caméra
-        m.jumpTo({ center, zoom, bearing, pitch });
-      });
     };
 
     const onLoad = async () => {
@@ -486,7 +567,7 @@ export default function EchoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload data when filters change
+  // Reload data when filters change (nearMe + monde cohérents)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -494,29 +575,49 @@ export default function EchoMap({
     const reload = async () => {
       if (!map.isStyleLoaded()) return;
 
-      const geojson = await (async () => {
-        const b = map.getBounds();
-        const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const z = map.getZoom();
 
-        const data = (await getEchoesForMap({
-          bbox,
-          emotion: filters.emotion ?? undefined,
-          since: sinceDate ?? undefined,
-        })) as unknown as FeatureCollection<Point>;
+      let bbox: [number, number, number, number] = WORLD_BBOX;
 
-        indexRef.current.clear();
-        for (const f of data.features) {
-          const props = f.properties as unknown as { id?: unknown } | null;
-          const id = typeof props?.id === 'string' ? props.id : undefined;
-          const [lng, lat] = f.geometry.coordinates;
-          if (id && Number.isFinite(lng) && Number.isFinite(lat)) indexRef.current.set(id, { lng, lat });
+      if (filters.nearMe && navigator.geolocation) {
+        const pos = await new Promise<GeolocationPosition | null>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (p) => resolve(p),
+            () => resolve(null),
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 }
+          );
+        });
+
+        if (pos) {
+          const lng = pos.coords.longitude;
+          const lat = pos.coords.latitude;
+          bbox = bboxAround(lng, lat, 40);
+          cinemaToRef.current?.([lng, lat], Math.max(map.getZoom(), 6.5));
+        } else {
+          const b = map.getBounds();
+          bbox = z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
         }
+      } else {
+        const b = map.getBounds();
+        bbox = z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      }
 
-        return data;
-      })();
+      const data = (await getEchoesForMap({
+        bbox,
+        emotion: filters.emotion ?? undefined,
+        since: sinceDate ?? undefined,
+      })) as unknown as FeatureCollection<Point>;
+
+      indexRef.current.clear();
+      for (const f of data.features) {
+        const props = f.properties as unknown as { id?: unknown } | null;
+        const id = typeof props?.id === 'string' ? props.id : undefined;
+        const [lng, lat] = f.geometry.coordinates;
+        if (id && Number.isFinite(lng) && Number.isFinite(lat)) indexRef.current.set(id, { lng, lat });
+      }
 
       const src = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
-      if (src) src.setData(geojson as unknown as GeoJSON.FeatureCollection);
+      if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
     };
 
     void reload();
