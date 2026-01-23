@@ -2,25 +2,32 @@
  * =============================================================================
  * Fichier      : components/map/mapStyle.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-23)
- * Objet        : Constantes MapLibre côté composants (style + palette émotions)
+ * Version      : 1.2.0 (2026-01-23)
+ * Objet        : Styles MapLibre (globe + détail) + palette émotions
  * -----------------------------------------------------------------------------
  * Description  :
- * - MAP_STYLE_URL (override via NEXT_PUBLIC_MAP_STYLE_URL)
- * - Fallback MapTiler Hybrid (clé intégrée) pour un rendu “Terre” + routes/bâtiments
- * - EMOTION_COLORS (palette utilisée par layers + glow)
+ * - STYLE_GLOBE_URL : rendu globe “Terre” au dézoom (projection globe côté MapLibre)
+ * - STYLE_DETAIL_URL : rendu détail (routes/bâtiments) via MapTiler Hybrid
+ * - Priorité : NEXT_PUBLIC_MAP_STYLE_URL (si fourni) override le style détail
+ * - EMOTION_COLORS : palette utilisée par layers + glow
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.1.1 (2026-01-23)
- * - [IMPROVED] Clé MapTiler intégrée (fallback Hybrid)
- * - [KEEP] Compat NEXT_PUBLIC_MAP_STYLE_URL (prioritaire)
+ * 1.2.0 (2026-01-23)
+ * - [NEW] STYLE_GLOBE_URL + STYLE_DETAIL_URL (swap auto possible)
+ * - [IMPROVED] Clé MapTiler intégrée (Hybrid)
+ * - [KEEP] Compat NEXT_PUBLIC_MAP_STYLE_URL (prioritaire sur détail)
  * =============================================================================
  */
 
+export const STYLE_GLOBE_URL =
+  'https://demotiles.maplibre.org/globe.json';
+
+// NOTE: recommandé en prod = env NEXT_PUBLIC_MAPTILER_KEY.
+// Ici, clé intégrée car tu n’es pas en local.
 const MAPTILER_KEY = '8w5FOB1MYt3pBuhiSiVd';
 
-export const MAP_STYLE_URL =
+export const STYLE_DETAIL_URL =
   process.env.NEXT_PUBLIC_MAP_STYLE_URL ??
   `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`;
 

@@ -2,25 +2,27 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.1 (2026-01-23)
- * Objet        : Carte EchoWorld avancée - Pulse émotionnel + filtres + focus
+ * Version      : 2.4.1 (2026-01-23)
+ * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
- * - Instancie MapLibre (client)
- * - Charge les échos via getEchoesForMap (bbox, emotion, since, nearMe)
- * - Index local des points par id pour focus / zoom ciblé
- * - Heatmap "respiration" animée aux faibles zooms
- * - Glow shader-like (layer cercle blur) animé au-dessus des points
- * - Gestion clusters (expansion zoom) et points (sélection écho)
- * - Transitions caméra “cinéma” (2 phases + cancel propre) + reuse pour focus
- * - renderWorldCopies:false + projection globe si supportée (pas de frise répétée)
+ * - MapLibre client + styles swap auto :
+ *   • globe (dézoom, planète)
+ *   • hybrid (zoom détail : routes/bâtiments)
+ * - renderWorldCopies:false (stop frise répétée)
+ * - setProjection('globe') si supporté (feature-detect)
+ * - Ré-injection source/layers après setStyle() (style swap)
+ * - Keep : clusters / points / heat / pulse / cinema / focus / nearMe
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.3.1 (2026-01-23)
- * - [IMPROVED] setProjection compat (string OU objet) + try/catch robuste
- * - [IMPROVED] reload: attend style chargé (évite appels trop tôt)
- * - [KEEP] Comportement existant (pulse, clusters, filtres, focus, nearMe)
+ * 2.4.1 (2026-01-23)
+ * - [FIX] ESLint prefer-const (bbox) + bboxAround réutilisé (nearMe)
+ * - [FIX] Gestion zoomend/off stable (handler nommé)
+ * - [KEEP] swap globe/detail + réinjection layers
+ * 2.4.0 (2026-01-23)
+ * - [NEW] Style swap auto : globe -> hybrid
+ * - [NEW] Ré-injection source/layers après setStyle()
  * =============================================================================
  */
 
@@ -37,7 +39,8 @@ import type {
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useMemo, useRef } from 'react';
-import { MAP_STYLE_URL, EMOTION_COLORS } from './mapStyle';
+
+import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from './mapStyle';
 import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from './echoLayers';
 import { getEchoesForMap } from '@/lib/echo/getEchoesForMap';
 import type { FeatureCollection, Point } from 'geojson';
@@ -64,6 +67,12 @@ type GeoJSONSourceClusterCompat = GeoJSONSource & {
 };
 
 const GLOW_LAYER_ID = 'echo-glow';
+
+// seuil de bascule globe -> hybrid
+const DETAIL_ZOOM_THRESHOLD = 5;
+
+// nearMe bbox radius (km)
+const NEAR_ME_RADIUS_KM = 40;
 
 function sinceToDate(since: Filters['since']): Date | null {
   if (!since) return null;
@@ -135,6 +144,10 @@ function createGlowLayer(): CircleLayerSpecification {
   };
 }
 
+type MapWithProjection = maplibregl.Map & {
+  setProjection?: (p: { type: string } | string) => void;
+};
+
 export default function EchoMap({
   focusId,
   filters,
@@ -152,18 +165,23 @@ export default function EchoMap({
 
   const cameraTokenRef = useRef<number>(0);
   const cameraTimeoutRef = useRef<number | null>(null);
-
   const cinemaToRef = useRef<((center: [number, number], targetZoom: number) => void) | null>(null);
-  const cancelCameraRef = useRef<(() => void) | null>(null);
+
+  // état courant du style
+  const currentStyleRef = useRef<'globe' | 'detail'>('globe');
+
+  // cache geoloc (nearMe)
+  const nearMeRef = useRef<{ lng: number; lat: number; ts: number } | null>(null);
 
   const sinceDate = useMemo(() => sinceToDate(filters.since), [filters.since]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
+    // Start en globe pour dézoom “Terre”
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAP_STYLE_URL,
+      style: STYLE_GLOBE_URL,
       center: [0, 20],
       zoom: 1.8,
       pitch: 0,
@@ -174,11 +192,9 @@ export default function EchoMap({
       maxPitch: 60,
     });
 
-    // Projection globe (si supportée)
-    type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
+    // Projection globe si supportée
     try {
       const mp = map as MapWithProjection;
-      // selon versions : objet OU string
       mp.setProjection?.({ type: 'globe' });
       mp.setProjection?.('globe');
     } catch {
@@ -188,54 +204,18 @@ export default function EchoMap({
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
-    const stopPulse = () => {
-      if (pulseRafRef.current !== null) cancelAnimationFrame(pulseRafRef.current);
-      pulseRafRef.current = null;
-    };
-
-    const startPulse = () => {
-      const tick = () => {
-        const m = mapRef.current;
-        if (!m) return;
-
-        const z = m.getZoom();
-        const t = Date.now() / 1000;
-
-        if (z <= 4.5) {
-          const opacity = 0.18 + 0.10 * (0.5 + 0.5 * Math.sin(t * 1.2));
-          const intensity = 0.9 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.2));
-          try {
-            m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
-            m.setPaintProperty('echo-heat', 'heatmap-intensity', intensity);
-          } catch {}
-        }
-
-        try {
-          const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
-          m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.10 + 0.20 * glow);
-          m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
-        } catch {}
-
-        pulseRafRef.current = requestAnimationFrame(tick);
-      };
-
-      pulseRafRef.current = requestAnimationFrame(tick);
-    };
-
     const cancelCamera = () => {
       cameraTokenRef.current += 1;
-
       if (cameraTimeoutRef.current !== null) {
         window.clearTimeout(cameraTimeoutRef.current);
         cameraTimeoutRef.current = null;
       }
-
       try {
         map.stop();
-      } catch {}
+      } catch {
+        // no-op
+      }
     };
-
-    cancelCameraRef.current = cancelCamera;
 
     const cinemaTo = (center: [number, number], targetZoom: number) => {
       const m = mapRef.current;
@@ -244,7 +224,6 @@ export default function EchoMap({
       cancelCamera();
       const token = cameraTokenRef.current;
       const reduce = prefersReducedMotion();
-
       const baseZoom = Math.max(m.getZoom(), targetZoom);
 
       if (reduce) {
@@ -265,41 +244,120 @@ export default function EchoMap({
         if (cameraTokenRef.current !== token) return;
         const mm = mapRef.current;
         if (!mm) return;
-
-        mm.easeTo({
-          pitch: 0,
-          duration: 700,
-          easing: (tt) => tt * (2 - tt),
-        });
+        mm.easeTo({ pitch: 0, duration: 700, easing: (tt) => tt * (2 - tt) });
       }, 520);
     };
 
     cinemaToRef.current = cinemaTo;
 
-    const loadData = async () => {
-      let bbox: [number, number, number, number] | undefined;
+    const stopPulse = () => {
+      if (pulseRafRef.current !== null) cancelAnimationFrame(pulseRafRef.current);
+      pulseRafRef.current = null;
+    };
 
-      if (filters.nearMe && navigator.geolocation) {
-        const pos = await new Promise<GeolocationPosition | null>((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (p) => resolve(p),
-            () => resolve(null),
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 }
-          );
+    const startPulse = () => {
+      const tick = () => {
+        const m = mapRef.current;
+        if (!m) return;
+
+        const z = m.getZoom();
+        const t = Date.now() / 1000;
+
+        if (z <= 4.5) {
+          const opacity = 0.18 + 0.10 * (0.5 + 0.5 * Math.sin(t * 1.2));
+          const intensity = 0.9 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.2));
+          try {
+            m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
+            m.setPaintProperty('echo-heat', 'heatmap-intensity', intensity);
+          } catch {
+            // layer pas encore prêt
+          }
+        }
+
+        try {
+          const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
+          m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.10 + 0.20 * glow);
+          m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
+        } catch {
+          // layer pas encore prêt
+        }
+
+        pulseRafRef.current = requestAnimationFrame(tick);
+      };
+
+      pulseRafRef.current = requestAnimationFrame(tick);
+    };
+
+    const ensureEchoLayers = (geojson?: FeatureCollection<Point>) => {
+      const m = mapRef.current;
+      if (!m) return;
+
+      const src = m.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+
+      if (!src) {
+        m.addSource(SOURCE_ID, {
+          type: 'geojson',
+          data: (geojson ?? { type: 'FeatureCollection', features: [] }) as unknown as GeoJSON.FeatureCollection,
+          cluster: true,
+          clusterRadius: 50,
         });
 
-        if (pos) {
-          const lng = pos.coords.longitude;
-          const lat = pos.coords.latitude;
-          bbox = bboxAround(lng, lat, 40);
-          cinemaTo([lng, lat], Math.max(map.getZoom(), 6.5));
-        }
+        // ordre visuel : heat (bas) -> glow -> clusters -> points (haut)
+        m.addLayer(HEAT_LAYER as unknown as AddLayerObject);
+        m.addLayer(createGlowLayer() as unknown as AddLayerObject);
+        m.addLayer(CLUSTER_LAYER as unknown as AddLayerObject);
+        m.addLayer(CLUSTER_COUNT_LAYER as unknown as AddLayerObject);
+        m.addLayer(POINT_LAYER as unknown as AddLayerObject);
+      } else if (geojson) {
+        src.setData(geojson as unknown as GeoJSON.FeatureCollection);
+      }
+    };
+
+    const getActiveBbox = (m: maplibregl.Map): [number, number, number, number] => {
+      if (filters.nearMe) {
+        const cached = nearMeRef.current;
+        if (cached) return bboxAround(cached.lng, cached.lat, NEAR_ME_RADIUS_KM);
       }
 
-      if (!bbox) {
-        const b = map.getBounds();
-        bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const b = m.getBounds();
+      return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    };
+
+    const ensureNearMePosition = async (): Promise<{ lng: number; lat: number } | null> => {
+      if (!filters.nearMe) return null;
+      if (!navigator.geolocation) return null;
+
+      const cached = nearMeRef.current;
+      if (cached && Date.now() - cached.ts < 30_000) return { lng: cached.lng, lat: cached.lat };
+
+      const pos = await new Promise<GeolocationPosition | null>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve(p),
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 }
+        );
+      });
+
+      if (!pos) return null;
+
+      const lng = pos.coords.longitude;
+      const lat = pos.coords.latitude;
+      nearMeRef.current = { lng, lat, ts: Date.now() };
+      return { lng, lat };
+    };
+
+    const fetchGeojson = async () => {
+      const m = mapRef.current;
+      if (!m) return null;
+
+      // si nearMe, on tente d’obtenir position avant bbox
+      const me = await ensureNearMePosition();
+      if (me) {
+        // micro caméra vers user (sans forcer si l’utilisateur bouge déjà)
+        cinemaTo([me.lng, me.lat], Math.max(m.getZoom(), 6.5));
       }
+
+      const bbox = getActiveBbox(m);
 
       const geojson = (await getEchoesForMap({
         bbox,
@@ -317,33 +375,57 @@ export default function EchoMap({
         }
       }
 
-      const src = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+      return geojson;
+    };
 
-      if (src) {
-        src.setData(geojson as unknown as GeoJSON.FeatureCollection);
-      } else {
-        map.addSource(SOURCE_ID, {
-          type: 'geojson',
-          data: geojson as unknown as GeoJSON.FeatureCollection,
-          cluster: true,
-          clusterRadius: 50,
-        });
+    const applyStyleIfNeeded = async () => {
+      const m = mapRef.current;
+      if (!m) return;
 
-        map.addLayer(HEAT_LAYER as unknown as AddLayerObject);
-        map.addLayer(createGlowLayer() as unknown as AddLayerObject);
-        map.addLayer(CLUSTER_LAYER as unknown as AddLayerObject);
-        map.addLayer(CLUSTER_COUNT_LAYER as unknown as AddLayerObject);
-        map.addLayer(POINT_LAYER as unknown as AddLayerObject);
-      }
+      const z = m.getZoom();
+      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
+      if (want === currentStyleRef.current) return;
 
-      if (focusId) {
-        const p = indexRef.current.get(focusId);
-        if (p) cinemaTo([p.lng, p.lat], 9);
-      }
+      // snapshot caméra
+      const center = m.getCenter();
+      const zoom = m.getZoom();
+      const bearing = m.getBearing();
+      const pitch = m.getPitch();
+
+      currentStyleRef.current = want;
+      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
+
+      // Précharge data pour réinjection immédiate
+      const geojson = await fetchGeojson();
+
+      m.setStyle(nextStyle);
+
+      m.once('style.load', () => {
+        ensureEchoLayers(geojson ?? undefined);
+
+        // re-apply projection globe si retour globe
+        if (want === 'globe') {
+          try {
+            const mp = m as MapWithProjection;
+            mp.setProjection?.({ type: 'globe' });
+            mp.setProjection?.('globe');
+          } catch {
+            // ignore
+          }
+        }
+
+        // restore caméra
+        m.jumpTo({ center, zoom, bearing, pitch });
+      });
+    };
+
+    const onZoomEnd = () => {
+      void applyStyleIfNeeded();
     };
 
     const onLoad = async () => {
-      await loadData();
+      const geojson = await fetchGeojson();
+      ensureEchoLayers(geojson ?? undefined);
       startPulse();
 
       map.on('click', 'echo-point', (evt: MapMouseEvent) => {
@@ -363,11 +445,10 @@ export default function EchoMap({
         if (clusterId === null) return;
 
         const src = map.getSource(SOURCE_ID) as GeoJSONSourceClusterCompat;
-
-        src.getClusterExpansionZoom(clusterId, (err: unknown, zoom: number) => {
-          if (err || typeof zoom !== 'number') return;
+        src.getClusterExpansionZoom(clusterId, (err: unknown, zoomExp: number) => {
+          if (err || typeof zoomExp !== 'number') return;
           if (!isPointGeometry(f)) return;
-          cinemaTo(f.geometry.coordinates, zoom);
+          cinemaTo(f.geometry.coordinates, zoomExp);
         });
       });
 
@@ -377,6 +458,14 @@ export default function EchoMap({
       map.on('mouseleave', 'echo-point', () => {
         map.getCanvas().style.cursor = '';
       });
+
+      map.on('zoomend', onZoomEnd);
+
+      // focus initial
+      if (focusId) {
+        const p = indexRef.current.get(focusId);
+        if (p) cinemaTo([p.lng, p.lat], 9);
+      }
     };
 
     map.on('load', onLoad);
@@ -384,27 +473,54 @@ export default function EchoMap({
     return () => {
       stopPulse();
       cancelCamera();
+      map.off('zoomend', onZoomEnd);
       map.off('load', onLoad);
       map.remove();
       mapRef.current = null;
-
       cinemaToRef.current = null;
-      cancelCameraRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload data when filters change
+  // Reload data on filters change
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const reload = async () => {
-      // évite de reload trop tôt si style pas encore prêt
       if (!map.isStyleLoaded()) return;
 
-      const b = map.getBounds();
-      const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      // nearMe : rafraîchit cache (si activé)
+      if (filters.nearMe) {
+        // best-effort, sans bloquer si refus
+        try {
+          await new Promise<void>((resolve) => {
+            if (!navigator.geolocation) return resolve();
+            navigator.geolocation.getCurrentPosition(
+              (p) => {
+                nearMeRef.current = {
+                  lng: p.coords.longitude,
+                  lat: p.coords.latitude,
+                  ts: Date.now(),
+                };
+                resolve();
+              },
+              () => resolve(),
+              { enableHighAccuracy: true, timeout: 4000, maximumAge: 30_000 }
+            );
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      const bbox =
+        filters.nearMe && nearMeRef.current
+          ? bboxAround(nearMeRef.current.lng, nearMeRef.current.lat, NEAR_ME_RADIUS_KM)
+          : (() => {
+              const b = map.getBounds();
+              return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as [number, number, number, number];
+            })();
 
       const geojson = (await getEchoesForMap({
         bbox,
@@ -429,7 +545,7 @@ export default function EchoMap({
     void reload();
   }, [filters.emotion, filters.since, filters.nearMe, sinceDate]);
 
-  // Focus update (réutilise cinemaTo)
+  // Focus update
   useEffect(() => {
     if (!focusId) return;
     const map = mapRef.current;
