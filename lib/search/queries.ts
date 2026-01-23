@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/search/queries.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.0.1 (2026-01-22)
+// Version      : 1.1.0 (2026-01-23)
 // Objet        : Requêtes Supabase (client) pour recherche globale
 // Notes        : SAFE: si table/colonne indispo -> fail soft (retourne [])
 // =============================================================================
@@ -33,43 +33,83 @@ function safePreview(text: string, max = 120): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function normalizeTerm(input: string): string {
+  const t = (input ?? '').trim();
+  if (!t) return '';
+  // Si l'utilisateur tape "@handle", on recherche sur "handle" sans @
+  return t.startsWith('@') ? t.slice(1).trim() : t;
+}
+
 function escapeOrValue(input: string): string {
   // Supabase .or() attend une string ; on évite les virgules/parenthèses accidentelles
   // (on garde simple : trim, pas d’échappement exotique ici).
   return input.trim();
 }
 
+function buildOrIlike(fields: string[], q: string): string {
+  // Construit "a.ilike.%q%,b.ilike.%q%" en limitant les risques de q vide
+  const safe = escapeOrValue(q);
+  return fields.map((f) => `${f}.ilike.%${safe}%`).join(',');
+}
+
 export async function searchUsers(term: string, limit = 5): Promise<SearchUserResult[]> {
-  const q = escapeOrValue(term);
+  const normalized = normalizeTerm(term);
+  const q = escapeOrValue(normalized);
   if (!q) return [];
 
   try {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, handle, display_name, avatar_url, public_profile_enabled')
-      .eq('public_profile_enabled', true)
+      // Inclut TRUE et NULL (valeur non renseignée), exclut uniquement FALSE
+      // -> évite de "perdre" des profils quand public_profile_enabled est NULL
+      .neq('public_profile_enabled', false)
       // OR: handle ILIKE OR display_name ILIKE
-      .or(`handle.ilike.%${q}%,display_name.ilike.%${q}%`)
+      .or(buildOrIlike(['handle', 'display_name'], q))
       .limit(limit);
 
     if (error || !data) return [];
 
     const rows = data as unknown as ProfileSearchRow[];
 
-    return rows.map((r) => ({
-      type: 'user' as const,
-      id: String(r.id),
-      handle: r.handle ?? null,
-      avatar_url: r.avatar_url ?? null,
-      label: (r.display_name ?? r.handle ?? 'User') as string,
-    }));
+    // Tri local de pertinence (sans dépendre de features DB) :
+    // 1) handle exact
+    // 2) display_name exact
+    // 3) handle commence par
+    // 4) display_name commence par
+    // 5) reste
+    const qLower = q.toLowerCase();
+    const score = (r: ProfileSearchRow): number => {
+      const h = (r.handle ?? '').toLowerCase();
+      const d = (r.display_name ?? '').toLowerCase();
+
+      if (h === qLower && qLower) return 100;
+      if (d === qLower && qLower) return 90;
+      if (h.startsWith(qLower) && qLower) return 80;
+      if (d.startsWith(qLower) && qLower) return 70;
+      if (h.includes(qLower) && qLower) return 60;
+      if (d.includes(qLower) && qLower) return 50;
+      return 0;
+    };
+
+    return rows
+      .slice()
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, limit)
+      .map((r) => ({
+        type: 'user' as const,
+        id: String(r.id),
+        handle: r.handle ?? null,
+        avatar_url: r.avatar_url ?? null,
+        label: (r.display_name ?? r.handle ?? 'User') as string,
+      }));
   } catch {
     return [];
   }
 }
 
 export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoResult[]> {
-  const q = escapeOrValue(term);
+  const q = escapeOrValue(normalizeTerm(term));
   if (!q) return [];
 
   // Table/colonnes supposées: echoes(id, title, content, visibility)
@@ -79,7 +119,7 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
       .from('echoes')
       .select('id, title, content, visibility')
       .in('visibility', ['world', 'local'])
-      .or(`title.ilike.%${q}%,content.ilike.%${q}%`)
+      .or(buildOrIlike(['title', 'content'], q))
       .limit(limit);
 
     if (error || !data) return [];
@@ -98,7 +138,7 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
 }
 
 export async function searchTopics(term: string, limit = 5): Promise<SearchTopicResult[]> {
-  const q = escapeOrValue(term);
+  const q = escapeOrValue(normalizeTerm(term));
   if (!q) return [];
 
   // Option A: table "echo_tags" (tag)

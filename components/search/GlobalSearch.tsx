@@ -1,8 +1,12 @@
 // =============================================================================
 // Fichier      : components/search/GlobalSearch.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.0.1 (2026-01-22)
+// Version      : 1.2.0 (2026-01-23)
 // Objet        : Recherche globale dans le header (desktop inline + mobile overlay)
+// ----------------------------------------------------------------------------
+// Notes :
+// - La route profil canonique est /u/[handle] (si handle présent)
+// - Fallback profil : /user/[id] (si handle manquant)
 // =============================================================================
 
 'use client';
@@ -27,6 +31,12 @@ function routeForResult(r: SearchResult): string {
   }
   if (r.type === 'echo') return `/echo/${r.id}`;
   return `/explore?topic=${encodeURIComponent(r.label)}`;
+}
+
+function normalizeQuery(q: string): { raw: string; normalized: string; isHandleHint: boolean } {
+  const raw = (q ?? '').trim();
+  const normalized = raw.startsWith('@') ? raw.slice(1).trim() : raw;
+  return { raw, normalized, isHandleHint: raw.startsWith('@') && normalized.length > 0 };
 }
 
 export default function GlobalSearch({ variant }: Props) {
@@ -55,6 +65,17 @@ export default function GlobalSearch({ variant }: Props) {
     router.push(href);
   };
 
+  const pickOnEnter = () => {
+    // Si l'utilisateur cherche explicitement un handle (@...), on privilégie la section users si possible
+    const { isHandleHint } = normalizeQuery(query);
+    if (isHandleHint && bundle.users.length > 0) {
+      pick(bundle.users[0]);
+      return;
+    }
+    const first = bundle.all[0];
+    if (first) pick(first);
+  };
+
   // Click-outside close (desktop popover)
   useEffect(() => {
     if (!isDesktop || !open) return;
@@ -75,16 +96,13 @@ export default function GlobalSearch({ variant }: Props) {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
-      if (e.key === 'Enter') {
-        const first = bundle.all[0];
-        if (first) pick(first);
-      }
+      if (e.key === 'Enter') pickOnEnter();
     };
 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, bundle.all]);
+  }, [open, bundle.all, bundle.users, query]);
 
   // Focus input on open
   useEffect(() => {
