@@ -112,7 +112,13 @@ function pickEcho(row: EchoRow): PublicEcho {
 }
 
 function normalizeHandle(input: string): string {
-  return (input ?? '').trim().replace(/^@/, '');
+  const raw = (input ?? '').trim().replace(/^@/, '').trim();
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
 }
 
 export async function getProfileById(id: string): Promise<PublicProfile | null> {

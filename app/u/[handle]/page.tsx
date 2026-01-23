@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : app/u/[handle]/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.0 (2026-01-23)
+// Version      : 1.2.1 (2026-01-23)
 // Objet        : Page profil public (par handle) - profil + échos + stats (URL canonique)
 // =============================================================================
 
@@ -13,8 +13,19 @@ type PageProps = {
   params: { handle: string };
 };
 
+// Doit matcher la logique front (GlobalSearch) + la logique serveur (getProfileByHandle)
+function normalizeHandle(input: string): string {
+  const raw = (input ?? '').trim().replace(/^@/, '').trim();
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
+}
+
 export default async function PublicHandleProfilePage({ params }: PageProps) {
-  const handle = (params.handle ?? '').trim().replace(/^@/, '');
+  const handle = normalizeHandle(params.handle);
   if (!handle) notFound();
 
   const { profile, echoes, stats } = await getPublicProfileDataByHandle(handle, 12);
@@ -22,9 +33,10 @@ export default async function PublicHandleProfilePage({ params }: PageProps) {
   if (!profile) notFound();
   if (profile.public_profile_enabled === false) notFound();
 
-  // Redirection URL canonique si besoin
-  if (profile.handle && profile.handle !== handle) {
-    redirect(`/u/${profile.handle}`);
+  // Redirection URL canonique (normalisée) si besoin (évite boucle casing)
+  const canonical = normalizeHandle(profile.handle ?? '');
+  if (canonical && canonical !== handle) {
+    redirect(`/u/${canonical}`);
   }
 
   return <ProfileView profile={profile} echoes={echoes} stats={stats ?? undefined} />;
