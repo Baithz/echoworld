@@ -1,56 +1,59 @@
 // =============================================================================
 // Fichier      : app/u/[handle]/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.3.0 (2026-01-23)
-// Objet        : Page profil public (par handle) - Next.js 15 compatible
+// Version      : 1.4.0 (2026-01-23)
+// Objet        : Page profil public (par handle) - AVEC bannière + actions + isFollowing
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.4.0 (2026-01-23)
+// - [NEW] Passe currentUserId à ProfileView
+// - [NEW] Calcul isFollowing via checkIfFollowing
+// - [NEW] Stats enrichies (followers/following)
 // 1.3.0 (2026-01-23)
-// - [FIX] Next.js 15: params est maintenant async (Promise)
-// - [FIX] Correction erreur syntaxe redirect (backtick → parenthèse)
-// 1.2.2 (2026-01-23)
-// - [FIX] Lookup handle : ne slugifie plus avant requête DB (source of truth = DB)
-// - [IMPROVED] Ajout cleanHandleForLookup + normalizeHandleForUrl (canonique URL)
+// - [FIX] Next.js 15: await params
 // =============================================================================
 
 import { notFound, redirect } from 'next/navigation';
 import ProfileView from '@/components/profile/ProfileView';
-import { getPublicProfileDataByHandle } from '@/lib/profile/getProfile';
+import {
+  getPublicProfileDataByHandle,
+  checkIfFollowing,
+} from '@/lib/profile/getProfile';
+import { getCurrentUserContext } from '@/lib/user/getCurrentUser';
 
 type PageProps = {
-  params: Promise<{ handle: string }>;  // Next.js 15: params est async
+  params: Promise<{ handle: string }>;
 };
 
-// Doit matcher la logique serveur : on ne slugifie PAS pour requêter.
 function cleanHandleForLookup(input: string): string {
   return (input ?? '').trim().replace(/^@/, '').trim();
 }
 
-// Canonical URL (slug) pour redirection uniquement
 function normalizeHandleForUrl(input: string): string {
   const raw = cleanHandleForLookup(input);
   if (!raw) return '';
   return raw
     .toLowerCase()
     .replace(/\s+/g, '_')
-    // IMPORTANT : on garde aussi '.' car beaucoup de handles l'utilisent
     .replace(/[^a-z0-9._-]/g, '')
     .slice(0, 32);
 }
 
 export default async function PublicHandleProfilePage({ params }: PageProps) {
-  // Next.js 15: await params
   const { handle } = await params;
-  
+
   const handleLookup = cleanHandleForLookup(handle);
   if (!handleLookup) notFound();
 
-  const { profile, echoes, stats } = await getPublicProfileDataByHandle(handleLookup, 12);
+  const { profile, echoes, stats } = await getPublicProfileDataByHandle(
+    handleLookup,
+    12
+  );
 
   if (!profile) notFound();
   if (profile.public_profile_enabled === false) notFound();
 
-  // Redirection URL canonique (normalisée) si besoin
+  // Redirection URL canonique
   const canonical = normalizeHandleForUrl(profile.handle ?? '');
   const requestedCanonical = normalizeHandleForUrl(handleLookup);
 
@@ -58,5 +61,21 @@ export default async function PublicHandleProfilePage({ params }: PageProps) {
     redirect(`/u/${canonical}`);
   }
 
-  return <ProfileView profile={profile} echoes={echoes} stats={stats ?? undefined} />;
+  // Récupérer currentUser + vérifier si on suit ce profil
+  const { user } = await getCurrentUserContext();
+  const currentUserId = user?.id ?? null;
+
+  const isFollowing = currentUserId
+    ? await checkIfFollowing(currentUserId, profile.id)
+    : false;
+
+  return (
+    <ProfileView
+      profile={profile}
+      echoes={echoes}
+      stats={stats ?? undefined}
+      currentUserId={currentUserId}
+      isFollowing={isFollowing}
+    />
+  );
 }
