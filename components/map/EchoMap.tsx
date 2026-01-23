@@ -188,7 +188,10 @@ export default function EchoMap({
     onClusterClick?: (evt: MapMouseEvent) => void;
     onEnter?: () => void;
     onLeave?: () => void;
+    // Handlers liés aux layers (rebind à chaque style.load)
     onZoomEnd?: () => void;
+    // Handler global (attach 1 fois, indépendant des styles/layers)
+    onZoomEndGlobal?: () => void;
   }>({});
 
   // Filters "safe" pour SSR / prerender
@@ -231,6 +234,12 @@ export default function EchoMap({
 
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+    const onZoomEndGlobal = () => {
+      void applyStyleIfNeeded();
+    };
+
+    handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
+    map.on('zoomend', onZoomEndGlobal);
 
     // --- Globe apply helper (garde-fou si un style ignore projection)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
@@ -460,7 +469,6 @@ export default function EchoMap({
       if (h.onClusterClick) m.off('click', 'clusters', h.onClusterClick);
       if (h.onEnter) m.off('mouseenter', 'echo-point', h.onEnter);
       if (h.onLeave) m.off('mouseleave', 'echo-point', h.onLeave);
-      if (h.onZoomEnd) m.off('zoomend', h.onZoomEnd);
     };
 
     // --- Style swap (globe <-> detail)
@@ -534,18 +542,14 @@ export default function EchoMap({
         m.getCanvas().style.cursor = '';
       };
 
-      const onZoomEnd = () => {
-        void applyStyleIfNeeded();
-      };
+    handlersRef.current = { onPointClick, onClusterClick, onEnter, onLeave };
 
-      handlersRef.current = { onPointClick, onClusterClick, onEnter, onLeave, onZoomEnd };
 
-      m.on('click', 'echo-point', onPointClick);
-      m.on('click', 'clusters', onClusterClick);
-      m.on('mouseenter', 'echo-point', onEnter);
-      m.on('mouseleave', 'echo-point', onLeave);
-      m.on('zoomend', onZoomEnd);
-    };
+          m.on('click', 'echo-point', onPointClick);
+          m.on('click', 'clusters', onClusterClick);
+          m.on('mouseenter', 'echo-point', onEnter);
+          m.on('mouseleave', 'echo-point', onLeave);
+        };
 
     const onLoad = async () => {
       // garde-fou projection
@@ -573,6 +577,12 @@ export default function EchoMap({
         // ignore
       }
       map.off('load', onLoad);
+      try {
+        const h = handlersRef.current;
+        if (h.onZoomEndGlobal) map.off('zoomend', h.onZoomEndGlobal);
+      } catch {
+        // ignore
+      }     
       map.remove();
       mapRef.current = null;
       cinemaToRef.current = null;
