@@ -2,38 +2,26 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.4 (2026-01-23)
+ * Version      : 2.5.6 (2026-01-23)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
  * - Stabilise la visibilité des échos au dézoom (WORLD_BBOX) pour éviter une Terre "vide"
  * - Unifie la résolution de bbox (nearMe / monde / bounds) pour init + reload filtres + swap style
- * - Corrige un risque runtime (applyStyleIfNeeded appelé avant déclaration)
+ * - Corrige un risque runtime (swap style + handlers) et garantit le retour globe au dézoom
  * - Garantit que les filtres utilisés lors des fetch restent "live" (refs) même après mount
  * - Conserve intégralement : clusters/points/heat/pulse/cinéma/focus + swap globe/détail
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.5.6 (2026-01-23)
+ * - [FIX] Retour globe fiable au dézoom : handler zoomend global + applyStyleIfNeeded sécurisé
+ * - [FIX] Anti-race setStyle/style.load : token + lock (évite swap bloqué si zoom rapide)
+ * - [FIX] handlersRef n’est plus écrasé (préserve onZoomEndGlobal)
+ * - [KEEP] IDs layers/sources/interactions inchangés + zéro régression UX
  * 2.5.4 (2026-01-23)
  * - [FIX] ESLint react-hooks/exhaustive-deps (plus de dépendance sur l’objet safeFilters)
  * - [FIX] Déstructuration emotion/since/nearMe + refs synchro via primitives
- * 2.5.3 (2026-01-23)
- * - [FIX] Prop filters optionnelle + safeFilters par défaut (SSR / prerender robustes)
- * - [FIX] Refs live synchronisées sur safeFilters (évite crash filters.since undefined)
- * 2.5.2 (2026-01-23)
- * - [FIX] Projection globe forcée aussi sur le style "detail" (évite retour mercator = carte plate)
- * - [FIX] transformStyle typé strict (TransformStyleFunction -> StyleSpecification) (corrige TS2322)
- * - [FIX] Garde-fou projection appliqué après chaque style.load (globe + detail)
- * - [KEEP] Aucune modification des IDs de layers / sources / interactions
- * 2.5.1 (2026-01-23)
- * - [FIX] Projection globe persistante via transformStyle (MapLibre) au swap de style
- * - [NEW] Atmosphère/sky sur le style globe pour rendu “vu de l’espace” (spec MapLibre)
- * - [KEEP] Aucune modification des IDs de layers / sources / interactions
- * 2.5.0 (2026-01-23)
- * - [FIX] WORLD_BBOX au dézoom (expérience monde cohérente, pas de vide)
- * - [FIX] nearMe cohérent (même logique init/reload/swap)
- * - [FIX] applyStyleIfNeeded (function hoist) + fetch filtres "live"
- * - [KEEP] Aucun changement d’IDs layers, aucune régression interactions/cinéma/pulse
  * =============================================================================
  */
 
@@ -182,15 +170,16 @@ export default function EchoMap({
   // état courant du style
   const currentStyleRef = useRef<'globe' | 'detail'>('globe');
 
+  // Anti-race swap style (zoom rapide / style.load en retard)
+  const styleSwapTokenRef = useRef<number>(0);
+  const styleSwappingRef = useRef<boolean>(false);
+
   // handlers (pour off/on propres)
   const handlersRef = useRef<{
     onPointClick?: (evt: MapMouseEvent) => void;
     onClusterClick?: (evt: MapMouseEvent) => void;
     onEnter?: () => void;
     onLeave?: () => void;
-    // Handlers liés aux layers (rebind à chaque style.load)
-    onZoomEnd?: () => void;
-    // Handler global (attach 1 fois, indépendant des styles/layers)
     onZoomEndGlobal?: () => void;
   }>({});
 
@@ -207,7 +196,6 @@ export default function EchoMap({
   const sinceDateRef = useRef<Date | null>(sinceDate);
 
   useEffect(() => {
-    // on synchronise la ref avec les primitives courantes
     filtersRef.current = { emotion, since, nearMe };
   }, [emotion, since, nearMe]);
 
@@ -220,7 +208,6 @@ export default function EchoMap({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      // IMPORTANT: setStyle(transformStyle) est appliqué juste après (globe + sky)
       style: STYLE_GLOBE_URL,
       center: [0, 20],
       zoom: 1.8,
@@ -234,12 +221,6 @@ export default function EchoMap({
 
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
-    const onZoomEndGlobal = () => {
-      void applyStyleIfNeeded();
-    };
-
-    handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
-    map.on('zoomend', onZoomEndGlobal);
 
     // --- Globe apply helper (garde-fou si un style ignore projection)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
@@ -255,28 +236,23 @@ export default function EchoMap({
       }
     };
 
-    // --- transformStyle strict : TransformStyleFunction -> StyleSpecification (corrige TS2322)
+    // --- transformStyle strict : TransformStyleFunction -> StyleSpecification
     const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
       return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
-        // ✅ IMPORTANT: projection globe TOUJOURS (sinon retour mercator => carte plate)
+        // IMPORTANT : projection globe maintenue (globe + detail)
         next.projection = { type: 'globe' };
 
         if (mode === 'globe') {
-          // sky/atmosphère: style-spec MapLibre (clé "atmosphere-blend")
           next.sky = {
             'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
           };
 
-          // léger boost light (comme exemple MapLibre)
           next.light = {
             anchor: 'map',
             position: [1.5, 90, 80],
           } as unknown as StyleSpecification['light'];
         } else {
-          // en detail: pas de ciel (optionnel), mais on garde projection globe
-          if ('sky' in next) {
-            delete (next as StyleSpecification).sky;
-          }
+          if ('sky' in next) delete (next as StyleSpecification).sky;
         }
 
         return next;
@@ -425,9 +401,7 @@ export default function EchoMap({
         const props = f.properties as unknown as { id?: unknown } | null;
         const id = typeof props?.id === 'string' ? props.id : undefined;
         const [lng, lat] = f.geometry.coordinates;
-        if (id && Number.isFinite(lng) && Number.isFinite(lat)) {
-          indexRef.current.set(id, { lng, lat });
-        }
+        if (id && Number.isFinite(lng) && Number.isFinite(lat)) indexRef.current.set(id, { lng, lat });
       }
 
       return geojson;
@@ -448,7 +422,6 @@ export default function EchoMap({
           clusterRadius: 50,
         });
 
-        // ordre: heat (bas) -> glow -> clusters -> points (haut)
         m.addLayer(HEAT_LAYER as unknown as AddLayerObject);
         m.addLayer(createGlowLayer() as unknown as AddLayerObject);
         m.addLayer(CLUSTER_LAYER as unknown as AddLayerObject);
@@ -470,40 +443,6 @@ export default function EchoMap({
       if (h.onEnter) m.off('mouseenter', 'echo-point', h.onEnter);
       if (h.onLeave) m.off('mouseleave', 'echo-point', h.onLeave);
     };
-
-    // --- Style swap (globe <-> detail)
-    async function applyStyleIfNeeded() {
-      const m = mapRef.current;
-      if (!m) return;
-
-      const z = m.getZoom();
-      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
-      if (want === currentStyleRef.current) return;
-
-      const center = m.getCenter();
-      const zoom = m.getZoom();
-      const bearing = m.getBearing();
-      const pitch = m.getPitch();
-
-      currentStyleRef.current = want;
-      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
-
-      const geojson = await fetchGeojson();
-
-      // IMPORTANT : setStyle AVEC transform => projection globe maintenue
-      setStyleForMode(m, want, nextStyle);
-
-      m.once('style.load', () => {
-        // ✅ garde-fou après CHAQUE swap (globe + detail)
-        applyGlobeProjection();
-
-        ensureEchoLayers(geojson ?? undefined);
-        bindInteractions();
-
-        // restaure caméra
-        m.jumpTo({ center, zoom, bearing, pitch });
-      });
-    }
 
     const bindInteractions = () => {
       const m = mapRef.current;
@@ -542,17 +481,73 @@ export default function EchoMap({
         m.getCanvas().style.cursor = '';
       };
 
-    handlersRef.current = { onPointClick, onClusterClick, onEnter, onLeave };
+      // IMPORTANT : ne jamais écraser handlersRef.current (préserve onZoomEndGlobal)
+      handlersRef.current.onPointClick = onPointClick;
+      handlersRef.current.onClusterClick = onClusterClick;
+      handlersRef.current.onEnter = onEnter;
+      handlersRef.current.onLeave = onLeave;
 
+      m.on('click', 'echo-point', onPointClick);
+      m.on('click', 'clusters', onClusterClick);
+      m.on('mouseenter', 'echo-point', onEnter);
+      m.on('mouseleave', 'echo-point', onLeave);
+    };
 
-          m.on('click', 'echo-point', onPointClick);
-          m.on('click', 'clusters', onClusterClick);
-          m.on('mouseenter', 'echo-point', onEnter);
-          m.on('mouseleave', 'echo-point', onLeave);
-        };
+    // --- Style swap (globe <-> detail) (ANTI-RACE + retour globe garanti)
+    const applyStyleIfNeeded = async () => {
+      const m = mapRef.current;
+      if (!m) return;
+
+      const z = m.getZoom();
+      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
+      if (want === currentStyleRef.current) return;
+
+      // swap en cours => on attend la fin (évite blocage / race)
+      if (styleSwappingRef.current) return;
+
+      styleSwappingRef.current = true;
+      const token = ++styleSwapTokenRef.current;
+
+      const center = m.getCenter();
+      const zoom = m.getZoom();
+      const bearing = m.getBearing();
+      const pitch = m.getPitch();
+
+      currentStyleRef.current = want;
+      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
+
+      const geojson = await fetchGeojson();
+
+      setStyleForMode(m, want, nextStyle);
+
+      m.once('style.load', () => {
+        if (styleSwapTokenRef.current !== token) return;
+
+        applyGlobeProjection();
+        ensureEchoLayers(geojson ?? undefined);
+        bindInteractions();
+
+        // restaure caméra
+        m.jumpTo({ center, zoom, bearing, pitch });
+
+        styleSwappingRef.current = false;
+      });
+
+      // garde-fou si style.load ne vient pas (rare)
+      window.setTimeout(() => {
+        if (styleSwapTokenRef.current === token) styleSwappingRef.current = false;
+      }, 2500);
+    };
+
+    // Handler global zoomend (attach 1 fois)
+    const onZoomEndGlobal = () => {
+      void applyStyleIfNeeded();
+    };
+    handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
+    map.on('zoomend', onZoomEndGlobal);
+    const zoomEndHandler = onZoomEndGlobal;
 
     const onLoad = async () => {
-      // garde-fou projection
       applyGlobeProjection();
 
       const geojson = await fetchGeojson();
@@ -571,18 +566,21 @@ export default function EchoMap({
     return () => {
       stopPulse();
       cancelCamera();
+
       try {
         unbindInteractions();
       } catch {
         // ignore
       }
+
       map.off('load', onLoad);
+
       try {
-        const h = handlersRef.current;
-        if (h.onZoomEndGlobal) map.off('zoomend', h.onZoomEndGlobal);
+        map.off('zoomend', zoomEndHandler);
       } catch {
         // ignore
-      }     
+      }
+
       map.remove();
       mapRef.current = null;
       cinemaToRef.current = null;
