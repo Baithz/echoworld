@@ -1,10 +1,13 @@
 // =============================================================================
 // Fichier      : app/u/[handle]/page.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.2 (2026-01-23)
-// Objet        : Page profil public (par handle) - profil + échos + stats (URL canonique)
+// Version      : 1.3.0 (2026-01-23)
+// Objet        : Page profil public (par handle) - Next.js 15 compatible
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.3.0 (2026-01-23)
+// - [FIX] Next.js 15: params est maintenant async (Promise)
+// - [FIX] Correction erreur syntaxe redirect (backtick → parenthèse)
 // 1.2.2 (2026-01-23)
 // - [FIX] Lookup handle : ne slugifie plus avant requête DB (source of truth = DB)
 // - [IMPROVED] Ajout cleanHandleForLookup + normalizeHandleForUrl (canonique URL)
@@ -15,7 +18,7 @@ import ProfileView from '@/components/profile/ProfileView';
 import { getPublicProfileDataByHandle } from '@/lib/profile/getProfile';
 
 type PageProps = {
-  params: { handle: string };
+  params: Promise<{ handle: string }>;  // Next.js 15: params est async
 };
 
 // Doit matcher la logique serveur : on ne slugifie PAS pour requêter.
@@ -36,7 +39,10 @@ function normalizeHandleForUrl(input: string): string {
 }
 
 export default async function PublicHandleProfilePage({ params }: PageProps) {
-  const handleLookup = cleanHandleForLookup(params.handle);
+  // Next.js 15: await params
+  const { handle } = await params;
+  
+  const handleLookup = cleanHandleForLookup(handle);
   if (!handleLookup) notFound();
 
   const { profile, echoes, stats } = await getPublicProfileDataByHandle(handleLookup, 12);
