@@ -2,36 +2,36 @@
  * =============================================================================
  * Fichier      : components/map/mapStyle.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-23)
- * Objet        : Styles MapLibre (globe réaliste + détail) + palette émotions
+ * Version      : 1.2.0 (2026-01-23)
+ * Objet        : Styles MapLibre (globe + détail) + palette émotions
  * -----------------------------------------------------------------------------
  * Description  :
- * - STYLE_GLOBE_URL : globe Terre réaliste (satellite + terrain 3D + atmosphère)
- * - STYLE_DETAIL_URL : détail zoom (routes/bâtiments) via MapTiler Hybrid
- * - Priorité : NEXT_PUBLIC_MAP_STYLE_URL override détail si fourni
- * - EMOTION_COLORS : palette pour layers + glow
+ * - STYLE_GLOBE_URL : Satellite pur (rendu Terre réaliste au dézoom)
+ * - STYLE_DETAIL_URL: Hybrid (routes/labels/bâtiments au zoom)
+ * - NEXT_PUBLIC_MAP_STYLE_URL reste prioritaire si défini (override global)
+ * - Clé MapTiler intégrée (temporaire) pour usage non-local
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-23)
- * - [NEW] STYLE_GLOBE_URL = globe réaliste Esri satellite + AWS terrain (gratuit)
- * - [IMPROVED] Meilleur rendu global/dézoom sans cartoon basique
- * - [KEEP] STYLE_DETAIL_URL MapTiler Hybrid + override env
- * - [KEEP] EMOTION_COLORS et compat layers échos
  * 1.2.0 (2026-01-23)
- * - [NEW] STYLE_GLOBE_URL + STYLE_DETAIL_URL (swap auto possible)
- * - [IMPROVED] Clé MapTiler intégrée (Hybrid)
+ * - [NEW] STYLE_GLOBE_URL (MapTiler Satellite)
+ * - [NEW] STYLE_DETAIL_URL (MapTiler Hybrid)
+ * - [KEEP] Override via NEXT_PUBLIC_MAP_STYLE_URL (prioritaire)
  * =============================================================================
  */
+
+// IMPORTANT : à terme, remettre la clé en env (NEXT_PUBLIC_MAPTILER_KEY).
+const MAPTILER_KEY = '8w5FOB1MYt3pBuhiSiVd';
+
+const OVERRIDE_STYLE = process.env.NEXT_PUBLIC_MAP_STYLE_URL;
+
+// Globe réaliste (vue Terre)
 export const STYLE_GLOBE_URL =
-  'https://raw.githubusercontent.com/baithz/echoworld-assets/main/styles/globe-realistic-esri-aws.json';  
-  // Ou héberge ton propre JSON (recommandé en prod). Alternative inline possible si tu préfères.
+  OVERRIDE_STYLE ?? `https://api.maptiler.com/maps/satellite/style.json?key=${MAPTILER_KEY}`;
 
-const MAPTILER_KEY = '8w5FOB1MYt3pBuhiSiVd'; // NOTE: en prod → NEXT_PUBLIC_MAPTILER_KEY
-
+// Détail (routes/labels/bâtiments)
 export const STYLE_DETAIL_URL =
-  process.env.NEXT_PUBLIC_MAP_STYLE_URL ??
-  `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`;
+  OVERRIDE_STYLE ?? `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`;
 
 export const EMOTION_COLORS = {
   joy: '#FFD54F',
