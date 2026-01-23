@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-23)
+ * Version      : 2.3.1 (2026-01-23)
  * Objet        : Carte EchoWorld avancée - Pulse émotionnel + filtres + focus
  * -----------------------------------------------------------------------------
  * Description  :
@@ -17,14 +17,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.3.0 (2026-01-23)
- * - [NEW] Désactivation des world copies (renderWorldCopies:false)
- * - [NEW] Tentative setProjection('globe') avec feature-detect (pas de crash)
+ * 2.3.1 (2026-01-23)
+ * - [IMPROVED] setProjection compat (string OU objet) + try/catch robuste
+ * - [IMPROVED] reload: attend style chargé (évite appels trop tôt)
  * - [KEEP] Comportement existant (pulse, clusters, filtres, focus, nearMe)
- * 2.2.1 (2026-01-23)
- * - [FIX] Focus utilise cinemaTo() via ref (évite logique divergente)
- * - [FIX] Nettoyage timeouts caméra (pas de fuite)
- * - [KEEP] Zéro régression sur heatmap/clusters/points/focus/nearMe
  * =============================================================================
  */
 
@@ -178,9 +174,13 @@ export default function EchoMap({
       maxPitch: 60,
     });
 
+    // Projection globe (si supportée)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
     try {
-      (map as MapWithProjection).setProjection?.({ type: 'globe' });
+      const mp = map as MapWithProjection;
+      // selon versions : objet OU string
+      mp.setProjection?.({ type: 'globe' });
+      mp.setProjection?.('globe');
     } catch {
       // ignore
     }
@@ -394,11 +394,15 @@ export default function EchoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload data when filters change
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const reload = async () => {
+      // évite de reload trop tôt si style pas encore prêt
+      if (!map.isStyleLoaded()) return;
+
       const b = map.getBounds();
       const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
 
@@ -425,6 +429,7 @@ export default function EchoMap({
     void reload();
   }, [filters.emotion, filters.since, filters.nearMe, sinceDate]);
 
+  // Focus update (réutilise cinemaTo)
   useEffect(() => {
     if (!focusId) return;
     const map = mapRef.current;
