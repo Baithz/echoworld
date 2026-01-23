@@ -2,14 +2,13 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.1 (2026-01-22)
+ * Version      : 1.3.1 (2026-01-23)
  * Objet        : Flux d'échos — branche EchoItem (media + resonances + mirror + DM)
  * -----------------------------------------------------------------------------
- * FIX v1.2.1
- * - [FIX] JSX cassé (balises fermantes manquantes)
- * - [FIX] e.titl -> e.title
- * - [FIX] Adaptation actions.ts v1.4.0 (res.data.*)
- * - [SAFE] UI/UX existante conservée
+ * FIX v1.3.1
+ * - [FIX] Typage onResonance compatible EchoItem (AnyReactionType) + mapping NEW->LEGACY
+ * - [FIX] Suppression const unused (LEGACY_TO_NEW)
+ * - [KEEP] Aucune régression: likes, share, mirror, DM, hero, toasts, chargements conservés
  * =============================================================================
  */
 
@@ -60,6 +59,43 @@ function formatDateFR(iso: string): string {
 type ToastKind = 'ok' | 'error';
 type ToastState = { kind: ToastKind; message: string } | null;
 
+// Compat EchoItem: peut envoyer legacy OU new (understand/support/reflect)
+type ReactionKey = 'understand' | 'support' | 'reflect';
+type AnyReactionType = ResonanceType | ReactionKey;
+
+const NEW_TO_LEGACY: Record<ReactionKey, ResonanceType> = {
+  understand: 'i_feel_you',
+  support: 'i_support_you',
+  reflect: 'i_reflect_with_you',
+};
+
+function toLegacyResonanceType(t: AnyReactionType): ResonanceType {
+  if (t === 'understand' || t === 'support' || t === 'reflect') return NEW_TO_LEGACY[t];
+  return t;
+}
+
+function withReactionKeysCounts(base: Record<ResonanceType, number>): Record<ResonanceType | ReactionKey, number> {
+  return {
+    i_feel_you: base.i_feel_you ?? 0,
+    i_support_you: base.i_support_you ?? 0,
+    i_reflect_with_you: base.i_reflect_with_you ?? 0,
+    understand: base.i_feel_you ?? 0,
+    support: base.i_support_you ?? 0,
+    reflect: base.i_reflect_with_you ?? 0,
+  };
+}
+
+function withReactionKeysByMe(base: Record<ResonanceType, boolean>): Record<ResonanceType | ReactionKey, boolean> {
+  return {
+    i_feel_you: base.i_feel_you ?? false,
+    i_support_you: base.i_support_you ?? false,
+    i_reflect_with_you: base.i_reflect_with_you ?? false,
+    understand: base.i_feel_you ?? false,
+    support: base.i_support_you ?? false,
+    reflect: base.i_reflect_with_you ?? false,
+  };
+}
+
 export default function EchoFeed({
   loading,
   echoes,
@@ -82,7 +118,7 @@ export default function EchoFeed({
   // Media meta
   const [mediaById, setMediaById] = useState<Record<string, string[]>>({});
 
-  // Resonance meta
+  // Resonance meta (legacy keys)
   const [resCountsByEcho, setResCountsByEcho] = useState<Record<string, Record<ResonanceType, number>>>({});
   const [resByMeByEcho, setResByMeByEcho] = useState<Record<string, Record<ResonanceType, boolean>>>({});
 
@@ -169,7 +205,7 @@ export default function EchoFeed({
     };
   }, [echoes, hasEchoes]);
 
-  // Load resonance meta
+  // Load resonance meta (legacy)
   useEffect(() => {
     let mounted = true;
 
@@ -237,16 +273,18 @@ export default function EchoFeed({
     showToast('ok', 'Partage prêt.');
   };
 
-  const onResonance = async (echoId: string, type: ResonanceType) => {
+  // NOTE: compatible EchoItem (AnyReactionType), persistence reste legacy via actions.ts
+  const onResonance = async (echoId: string, type: AnyReactionType) => {
     if (!userId) {
       showToast('error', 'Connecte-toi pour réagir.');
       return;
     }
 
-    const key = `${echoId}:${type}`;
+    const legacyType = toLegacyResonanceType(type);
+    const key = `${echoId}:${legacyType}`;
     if (busyResKey) return;
 
-    const was = !!resByMeByEcho[echoId]?.[type];
+    const was = !!resByMeByEcho[echoId]?.[legacyType];
     const next = !was;
 
     // optimistic
@@ -258,7 +296,7 @@ export default function EchoFeed({
         i_feel_you: s[echoId]?.i_feel_you ?? false,
         i_support_you: s[echoId]?.i_support_you ?? false,
         i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
-        [type]: next,
+        [legacyType]: next,
       },
     }));
 
@@ -268,11 +306,11 @@ export default function EchoFeed({
         i_feel_you: s[echoId]?.i_feel_you ?? 0,
         i_support_you: s[echoId]?.i_support_you ?? 0,
         i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
-        [type]: Math.max(0, (s[echoId]?.[type] ?? 0) + (next ? 1 : -1)),
+        [legacyType]: Math.max(0, (s[echoId]?.[legacyType] ?? 0) + (next ? 1 : -1)),
       },
     }));
 
-    const res = await toggleEchoResonance({ echoId, userId, type, nextOn: next });
+    const res = await toggleEchoResonance({ echoId, userId, type: legacyType, nextOn: next });
 
     if (!res.ok) {
       setResByMeByEcho((s) => ({
@@ -281,7 +319,7 @@ export default function EchoFeed({
           i_feel_you: s[echoId]?.i_feel_you ?? false,
           i_support_you: s[echoId]?.i_support_you ?? false,
           i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
-          [type]: was,
+          [legacyType]: was,
         },
       }));
 
@@ -291,7 +329,7 @@ export default function EchoFeed({
           i_feel_you: s[echoId]?.i_feel_you ?? 0,
           i_support_you: s[echoId]?.i_support_you ?? 0,
           i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
-          [type]: Math.max(0, (s[echoId]?.[type] ?? 0) + (was ? 1 : -1)),
+          [legacyType]: Math.max(0, (s[echoId]?.[legacyType] ?? 0) + (was ? 1 : -1)),
         },
       }));
 
@@ -442,29 +480,42 @@ export default function EchoFeed({
           ) : null}
 
           <div className="mt-6 grid gap-4 md:grid-cols-2">
-            {echoes.map((e) => (
-              <EchoItem
-                key={e.id}
-                echo={e}
-                dateLabel={formatDateFR(e.created_at)}
-                expanded={expandedId === e.id}
-                onToggleExpand={onToggleExpand}
-                liked={!!likedByMe[e.id]}
-                likeCount={likeCountById[e.id] ?? 0}
-                onLike={onLike}
-                media={mediaById[e.id] ?? []}
-                resCounts={resCountsByEcho[e.id] ?? { i_feel_you: 0, i_support_you: 0, i_reflect_with_you: 0 }}
-                resByMe={resByMeByEcho[e.id] ?? { i_feel_you: false, i_support_you: false, i_reflect_with_you: false }}
-                onResonance={onResonance}
-                onMirror={onMirror}
-                onMessage={onMessage}
-                onOpenEcho={onOpenEcho}
-                onShare={onShare}
-                copied={copiedId === e.id}
-                busyLike={busyLikeId === e.id}
-                busyResKey={busyResKey}
-              />
-            ))}
+            {echoes.map((e) => {
+              const legacyCounts = resCountsByEcho[e.id] ?? {
+                i_feel_you: 0,
+                i_support_you: 0,
+                i_reflect_with_you: 0,
+              };
+              const legacyByMe = resByMeByEcho[e.id] ?? {
+                i_feel_you: false,
+                i_support_you: false,
+                i_reflect_with_you: false,
+              };
+
+              return (
+                <EchoItem
+                  key={e.id}
+                  echo={e}
+                  dateLabel={formatDateFR(e.created_at)}
+                  expanded={expandedId === e.id}
+                  onToggleExpand={onToggleExpand}
+                  liked={!!likedByMe[e.id]}
+                  likeCount={likeCountById[e.id] ?? 0}
+                  onLike={onLike}
+                  media={mediaById[e.id] ?? []}
+                  resCounts={withReactionKeysCounts(legacyCounts)}
+                  resByMe={withReactionKeysByMe(legacyByMe)}
+                  onResonance={onResonance}
+                  onMirror={onMirror}
+                  onMessage={onMessage}
+                  onOpenEcho={onOpenEcho}
+                  onShare={onShare}
+                  copied={copiedId === e.id}
+                  busyLike={busyLikeId === e.id}
+                  busyResKey={busyResKey}
+                />
+              );
+            })}
           </div>
         </>
       ) : null}

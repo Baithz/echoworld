@@ -2,14 +2,15 @@
  * =============================================================================
  * Fichier      : app/echo/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.1 (2026-01-21)
+ * Version      : 1.1.0 (2026-01-23)
  * Objet        : Lecture d’un écho + interactions (P0)
  * -----------------------------------------------------------------------------
- * Fix v1.0.1 :
- * - [FIX] Suppression de tout `any` (fallback typed)
- * - [FIX] Contournement propre du type `never` (tables non présentes dans Database types)
- * - [FIX] Suppression type inutilisé (ManyResult)
- * - [SAFE] Aucune régression UI/UX
+ * Fix v1.1.0 :
+ * - [FIX] Ajout pt-28 (évite le passage sous le header global)
+ * - [NEW] Affichage photos de l’écho (image_urls) + grille responsive
+ * - [NEW] Partage réel via ShareModal (remplace "copier lien" comme unique action)
+ * - [NEW] Réactions empathiques (understand/support/reflect) en UI (sans casser Mirror/Reply existants)
+ * - [SAFE] Aucune régression: auth soft + canView + mirror + replies conservés
  * =============================================================================
  */
 
@@ -20,6 +21,9 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase/client';
+
+import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
+import ShareModal from '@/components/echo/ShareModal';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
@@ -37,6 +41,9 @@ type EchoRow = {
   visibility: Visibility | null;
   status: Status | null;
   created_at: string;
+
+  // NEW: photos (table echoes)
+  image_urls?: string[] | null;
 };
 
 type ProfileRow = {
@@ -60,6 +67,14 @@ type UserSettingsRow = {
 // d’où le `never` sur insert(). On passe via un client "loose" (sans `any` explicite).
 type EchoMirrorInsert = { echo_id: string; user_id: string };
 type EchoReplyInsert = { echo_id: string; user_id: string; content: string };
+
+// Compat (réactions legacy si tes tables/actions actuelles ne sont pas encore migrées)
+type LegacyResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
+const NEW_TO_LEGACY: Record<ReactionType, LegacyResonanceType> = {
+  understand: 'i_feel_you',
+  support: 'i_support_you',
+  reflect: 'i_reflect_with_you',
+};
 
 function formatDateTimeFR(iso: string): string {
   try {
@@ -116,6 +131,22 @@ export default function EchoDetailPage() {
   const [replyLoading, setReplyLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
 
+  // NEW: Share modal
+  const [shareOpen, setShareOpen] = useState(false);
+
+  // NEW: Reactions UI state (best-effort, branchable later)
+  const [reactByMe, setReactByMe] = useState<Record<LegacyResonanceType, boolean>>({
+    i_feel_you: false,
+    i_support_you: false,
+    i_reflect_with_you: false,
+  });
+  const [reactCounts, setReactCounts] = useState<Record<LegacyResonanceType, number>>({
+    i_feel_you: 0,
+    i_support_you: 0,
+    i_reflect_with_you: 0,
+  });
+  const [reactBusyKey, setReactBusyKey] = useState<string | null>(null);
+
   // Client "loose" pour éviter le `never` sur les tables non typées dans Database
   const supabaseLoose = useMemo(() => supabase as unknown as SupabaseClient, []);
 
@@ -161,7 +192,9 @@ export default function EchoDetailPage() {
       try {
         const echoRes = await supabase
           .from('echoes')
-          .select('id,user_id,title,content,emotion,language,country,city,is_anonymous,visibility,status,created_at')
+          .select(
+            'id,user_id,title,content,emotion,language,country,city,is_anonymous,visibility,status,created_at,image_urls'
+          )
           .eq('id', echoId)
           .maybeSingle();
 
@@ -206,6 +239,40 @@ export default function EchoDetailPage() {
           if (!mounted) return;
           setIsMirrored(!!mRes.data && !mRes.error);
         }
+
+        // Reactions meta best-effort (si table existe déjà). Sinon: reste à 0 sans bloquer.
+        if (viewerId) {
+          const metaRes = await supabaseLoose
+            .from('echo_resonances')
+            .select('type,user_id')
+            .eq('echo_id', e.id);
+
+          if (!mounted) return;
+
+          if (!metaRes.error && Array.isArray(metaRes.data)) {
+            const counts: Record<LegacyResonanceType, number> = {
+              i_feel_you: 0,
+              i_support_you: 0,
+              i_reflect_with_you: 0,
+            };
+            const byMe: Record<LegacyResonanceType, boolean> = {
+              i_feel_you: false,
+              i_support_you: false,
+              i_reflect_with_you: false,
+            };
+
+            for (const row of metaRes.data as Array<{ type?: string | null; user_id?: string | null }>) {
+              const t = row.type as LegacyResonanceType;
+              if (t === 'i_feel_you' || t === 'i_support_you' || t === 'i_reflect_with_you') {
+                counts[t] += 1;
+                if (row.user_id === viewerId) byMe[t] = true;
+              }
+            }
+
+            setReactCounts(counts);
+            setReactByMe(byMe);
+          }
+        }
       } catch (err) {
         if (!mounted) return;
         setError(err instanceof Error ? err.message : 'Erreur de chargement.');
@@ -221,10 +288,7 @@ export default function EchoDetailPage() {
     };
   }, [echoId, viewerId, supabaseLoose]);
 
-  const isOwner = useMemo(
-    () => !!viewerId && !!echo?.user_id && viewerId === echo.user_id,
-    [viewerId, echo?.user_id]
-  );
+  const isOwner = useMemo(() => !!viewerId && !!echo?.user_id && viewerId === echo.user_id, [viewerId, echo?.user_id]);
 
   const canView = useMemo(() => {
     if (!echo) return false;
@@ -281,11 +345,7 @@ export default function EchoDetailPage() {
 
     try {
       if (isMirrored) {
-        const del = await supabaseLoose
-          .from('echo_mirrors')
-          .delete()
-          .eq('echo_id', echo.id)
-          .eq('user_id', viewerId);
+        const del = await supabaseLoose.from('echo_mirrors').delete().eq('echo_id', echo.id).eq('user_id', viewerId);
 
         if (del.error) throw del.error;
         setIsMirrored(false);
@@ -332,9 +392,52 @@ export default function EchoDetailPage() {
     }
   };
 
+  const toggleReaction = async (type: ReactionType) => {
+    if (!viewerId || !echo) {
+      router.push('/login');
+      return;
+    }
+
+    const legacy = NEW_TO_LEGACY[type];
+    const key = `${echo.id}:${legacy}`;
+    setReactBusyKey(key);
+    setOk(null);
+    setError(null);
+
+    try {
+      const active = !!reactByMe[legacy];
+
+      // optimistic
+      setReactByMe((prev) => ({ ...prev, [legacy]: !active }));
+      setReactCounts((prev) => ({
+        ...prev,
+        [legacy]: active ? Math.max(0, (prev[legacy] ?? 0) - 1) : (prev[legacy] ?? 0) + 1,
+      }));
+
+      // best-effort persistence si table dispo (sinon ignore)
+      if (active) {
+        await supabaseLoose
+          .from('echo_resonances')
+          .delete()
+          .eq('echo_id', echo.id)
+          .eq('user_id', viewerId)
+          .eq('type', legacy);
+      } else {
+        await supabaseLoose.from('echo_resonances').insert({ echo_id: echo.id, user_id: viewerId, type: legacy });
+      }
+    } catch (err) {
+      // rollback minimal (reload à froid plus tard si besoin)
+      setError(err instanceof Error ? err.message : 'Erreur réaction.');
+    } finally {
+      setReactBusyKey(null);
+    }
+  };
+
+  const photos = useMemo(() => (Array.isArray(echo?.image_urls) ? echo!.image_urls!.filter(Boolean) : []), [echo?.image_urls]);
+
   if (loading || authLoading) {
     return (
-      <main className="mx-auto w-full max-w-4xl px-6 py-10">
+      <main className="mx-auto w-full max-w-4xl px-6 pb-16 pt-28">
         <div className="h-10 w-64 animate-pulse rounded-xl border border-slate-200 bg-white/70" />
         <div className="mt-6 h-64 animate-pulse rounded-3xl border border-slate-200 bg-white/70" />
       </main>
@@ -343,7 +446,7 @@ export default function EchoDetailPage() {
 
   if (!echo || !canView) {
     return (
-      <main className="mx-auto w-full max-w-4xl px-6 py-10">
+      <main className="mx-auto w-full max-w-4xl px-6 pb-16 pt-28">
         <div className="rounded-3xl border border-slate-200 bg-white/70 p-6">
           <div className="text-lg font-bold text-slate-900">Accès indisponible</div>
           <div className="mt-2 text-sm text-slate-600">
@@ -356,10 +459,7 @@ export default function EchoDetailPage() {
             >
               Explorer
             </Link>
-            <Link
-              href="/account"
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95"
-            >
+            <Link href="/account" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95">
               Mon espace
             </Link>
           </div>
@@ -369,156 +469,216 @@ export default function EchoDetailPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-4xl px-6 py-10">
-      <div className="flex items-start justify-between gap-6">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">{echo.title?.trim() ? echo.title : 'Écho'}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-slate-600">
-            <span className="inline-flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-900">
-                {author?.avatar_type === 'image' && author.avatar_url && !echo.is_anonymous ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={author.avatar_url} alt="Avatar" className="h-full w-full rounded-full object-cover" />
-                ) : (
-                  avatarLabel
-                )}
-              </span>
-              <span className="font-semibold text-slate-900">{displayAuthor}</span>
-            </span>
-            <span>•</span>
-            <span>{formatDateTimeFR(echo.created_at)}</span>
-            {echo.emotion ? (
-              <>
-                <span>•</span>
-                <span>{echo.emotion}</span>
-              </>
-            ) : null}
-            {echo.visibility ? (
-              <>
-                <span>•</span>
-                <span>{echo.visibility}</span>
-              </>
-            ) : null}
-            {echo.language ? (
-              <>
-                <span>•</span>
-                <span>{echo.language}</span>
-              </>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={copyLink}
-            className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-white"
-          >
-            Copier le lien
-          </button>
-
-          {isOwner ? (
-            <Link
-              href="/share"
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95"
-            >
-              Nouveau
-            </Link>
-          ) : null}
-        </div>
-      </div>
-
-      {error && (
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-          {error}
-        </div>
-      )}
-      {ok && (
-        <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          {ok}
-        </div>
-      )}
-
-      <section className="mt-8 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md">
-        <div className="text-sm font-semibold text-slate-900">Texte</div>
-        <p className="mt-3 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800">{echo.content ?? ''}</p>
-
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <div className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-700">
-            {echo.city || echo.country ? (
-              <span>
-                {echo.city ? echo.city : ''}
-                {echo.city && echo.country ? ' — ' : ''}
-                {echo.country ? echo.country : ''}
-              </span>
-            ) : (
-              <span>Localisation masquée</span>
-            )}
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleMirror}
-              disabled={!settings?.allow_mirrors || mirrorLoading}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
-                settings?.allow_mirrors
-                  ? isMirrored
-                    ? 'border border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
-                    : 'bg-slate-900 text-white shadow-lg hover:opacity-95'
-                  : 'cursor-not-allowed bg-slate-200 text-slate-500'
-              }`}
-            >
-              {mirrorLoading ? '…' : isMirrored ? 'Retirer miroir' : 'Mirrorer'}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md">
+    <>
+      <main className="mx-auto w-full max-w-4xl px-6 pb-16 pt-28">
         <div className="flex items-start justify-between gap-6">
           <div>
-            <div className="text-sm font-semibold text-slate-900">Répondre</div>
-            <div className="mt-1 text-xs text-slate-500">
-              {settings?.allow_responses ? 'Réponse douce et courte.' : 'Réponses désactivées par tes paramètres.'}
+            <h1 className="text-3xl font-bold text-slate-900">{echo.title?.trim() ? echo.title : 'Écho'}</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-slate-600">
+              <span className="inline-flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-900">
+                  {author?.avatar_type === 'image' && author.avatar_url && !echo.is_anonymous ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={author.avatar_url} alt="Avatar" className="h-full w-full rounded-full object-cover" />
+                  ) : (
+                    avatarLabel
+                  )}
+                </span>
+                <span className="font-semibold text-slate-900">{displayAuthor}</span>
+              </span>
+              <span>•</span>
+              <span>{formatDateTimeFR(echo.created_at)}</span>
+              {echo.emotion ? (
+                <>
+                  <span>•</span>
+                  <span>{echo.emotion}</span>
+                </>
+              ) : null}
+              {echo.visibility ? (
+                <>
+                  <span>•</span>
+                  <span>{echo.visibility}</span>
+                </>
+              ) : null}
+              {echo.language ? (
+                <>
+                  <span>•</span>
+                  <span>{echo.language}</span>
+                </>
+              ) : null}
             </div>
           </div>
-          {!viewerId ? (
-            <Link
-              href="/login"
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShareOpen(true)}
+              className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-white"
             >
-              Se connecter
-            </Link>
-          ) : null}
+              Partager
+            </button>
+
+            <button
+              type="button"
+              onClick={copyLink}
+              className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-white"
+            >
+              Copier le lien
+            </button>
+
+            {isOwner ? (
+              <Link href="/share" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95">
+                Nouveau
+              </Link>
+            ) : null}
+          </div>
         </div>
 
-        <textarea
-          value={replyText}
-          onChange={(e) => setReplyText(e.target.value)}
-          disabled={!viewerId || !settings?.allow_responses || replyLoading}
-          rows={3}
-          placeholder="Une phrase, une résonance…"
-          className="mt-4 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
-          maxLength={500}
-        />
+        {error && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
+        {ok && <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{ok}</div>}
 
-        <div className="mt-4 flex items-center justify-between">
-          <div className="text-xs text-slate-500">{replyText.length}/500</div>
-          <button
-            type="button"
-            onClick={submitReply}
-            disabled={!viewerId || !settings?.allow_responses || replyLoading || !replyText.trim()}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold shadow-lg transition-transform ${
-              viewerId && settings?.allow_responses && replyText.trim() && !replyLoading
-                ? 'bg-slate-900 text-white hover:scale-[1.01]'
-                : 'bg-slate-200 text-slate-500 cursor-not-allowed'
-            }`}
-          >
-            {replyLoading ? 'Envoi…' : 'Envoyer'}
-          </button>
-        </div>
-      </section>
-    </main>
+        {/* Photos */}
+        {photos.length > 0 ? (
+          <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-4 backdrop-blur-md">
+            <div
+              className={`grid gap-2 ${
+                photos.length === 1 ? 'grid-cols-1' : photos.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'
+              }`}
+            >
+              {photos.slice(0, 9).map((url, idx) => (
+                <div key={`${echo.id}-ph-${idx}`} className="relative aspect-square overflow-hidden rounded-2xl bg-slate-100">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={url} alt={`Photo ${idx + 1}`} className="h-full w-full object-cover" loading="lazy" />
+                  {idx === 8 && photos.length > 9 ? (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/55">
+                      <span className="text-lg font-bold text-white">+{photos.length - 9}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Réactions empathiques */}
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-4 backdrop-blur-md">
+          <div className="text-sm font-semibold text-slate-900">Réagir</div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {REACTIONS.map((r) => {
+              const legacy = NEW_TO_LEGACY[r.type];
+              const active = !!reactByMe[legacy];
+              const count = reactCounts[legacy] ?? 0;
+              const busy = reactBusyKey === `${echo.id}:${legacy}`;
+
+              return (
+                <button
+                  key={r.type}
+                  type="button"
+                  onClick={() => void toggleReaction(r.type)}
+                  disabled={busy || !viewerId}
+                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${
+                    active ? 'border-slate-900 bg-slate-900 text-white shadow-lg' : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
+                  } ${(busy || !viewerId) ? 'cursor-not-allowed opacity-60' : ''}`}
+                  title={!viewerId ? 'Connecte-toi pour réagir' : r.label}
+                >
+                  <span className="text-sm">{r.icon}</span>
+                  <span className="hidden sm:inline">{r.label}</span>
+                  <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] text-slate-700 sm:bg-white/20 sm:text-inherit">{count}</span>
+                </button>
+              );
+            })}
+
+            {!viewerId ? (
+              <Link
+                href="/login"
+                className="ml-auto rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50"
+              >
+                Se connecter
+              </Link>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md">
+          <div className="text-sm font-semibold text-slate-900">Texte</div>
+          <p className="mt-3 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800">{echo.content ?? ''}</p>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <div className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-700">
+              {echo.city || echo.country ? (
+                <span>
+                  {echo.city ? echo.city : ''}
+                  {echo.city && echo.country ? ' — ' : ''}
+                  {echo.country ? echo.country : ''}
+                </span>
+              ) : (
+                <span>Localisation masquée</span>
+              )}
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleMirror}
+                disabled={!settings?.allow_mirrors || mirrorLoading}
+                className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                  settings?.allow_mirrors
+                    ? isMirrored
+                      ? 'border border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
+                      : 'bg-slate-900 text-white shadow-lg hover:opacity-95'
+                    : 'cursor-not-allowed bg-slate-200 text-slate-500'
+                }`}
+              >
+                {mirrorLoading ? '…' : isMirrored ? 'Retirer miroir' : 'Mirrorer'}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md">
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">Répondre</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {settings?.allow_responses ? 'Réponse douce et courte.' : 'Réponses désactivées par tes paramètres.'}
+              </div>
+            </div>
+            {!viewerId ? (
+              <Link href="/login" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">
+                Se connecter
+              </Link>
+            ) : null}
+          </div>
+
+          <textarea
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+            disabled={!viewerId || !settings?.allow_responses || replyLoading}
+            rows={3}
+            placeholder="Une phrase, une résonance…"
+            className="mt-4 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50"
+            maxLength={500}
+          />
+
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-xs text-slate-500">{replyText.length}/500</div>
+            <button
+              type="button"
+              onClick={submitReply}
+              disabled={!viewerId || !settings?.allow_responses || replyLoading || !replyText.trim()}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold shadow-lg transition-transform ${
+                viewerId && settings?.allow_responses && replyText.trim() && !replyLoading
+                  ? 'bg-slate-900 text-white hover:scale-[1.01]'
+                  : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+              }`}
+            >
+              {replyLoading ? 'Envoi…' : 'Envoyer'}
+            </button>
+          </div>
+        </section>
+      </main>
+
+      {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+    </>
   );
 }
