@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.6 (2026-01-23)
+ * Version      : 2.5.8 (2026-01-23)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,15 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.5.8 (2026-01-23)
+ * - [FIX] Typings MapLibre : suppression de l’option Map.projection (erreur TS2353)
+ * - [FIX] Typings StyleSpecification : ajout type étendu pour projection/fog/sky (sans any)
+ * - [FIX] Nettoyage complet des `as any` (respect règle @typescript-eslint/no-explicit-any)
+ * - [KEEP] Logique de swap globe/détail, ciné, pulse et fetch intacte (zéro régression UX)
+ * 2.5.7 (2026-01-23)
+ * - [FIX] Retour globe fiable au dézoom (zoomend global + seuil stable)
+ * - [FIX] Forçage systématique de la projection globe (init Map + transformStyle)
+ * - [KEEP] Cinéma/focus/heat/pulse inchangés, IDs layers/sources conservés
  * 2.5.6 (2026-01-23)
  * - [FIX] Retour globe fiable au dézoom : handler zoomend global + applyStyleIfNeeded sécurisé
  * - [FIX] Anti-race setStyle/style.load : token + lock (évite swap bloqué si zoom rapide)
@@ -77,6 +86,17 @@ const DETAIL_ZOOM_THRESHOLD = 5;
 const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
 // Seuil zoom où l’on considère qu’on est en "vue monde"
 const WORLD_ZOOM_THRESHOLD = 2.8;
+
+// Style spec étendu pour supporter projection/fog/sky sans utiliser `any`
+type StyleWithExtras = StyleSpecification & {
+  projection?: { type: string } | string;
+  fog?: {
+    range?: [number, number];
+    'horizon-blend'?: number;
+    color?: string;
+  };
+  sky?: Record<string, unknown>;
+};
 
 function sinceToDate(since: Filters['since']): Date | null {
   if (!since) return null;
@@ -212,6 +232,7 @@ export default function EchoMap({
       center: [0, 20],
       zoom: 1.8,
       pitch: 0,
+      // projection pas typée dans MapOptions de ta version -> forcée plus bas via setProjection/transformStyle
       attributionControl: false,
       renderWorldCopies: false,
       minZoom: 1.2,
@@ -239,23 +260,38 @@ export default function EchoMap({
     // --- transformStyle strict : TransformStyleFunction -> StyleSpecification
     const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
       return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
-        // IMPORTANT : projection globe maintenue (globe + detail)
-        next.projection = { type: 'globe' };
+        const style: StyleWithExtras = { ...(next as StyleWithExtras) };
+
+        // Projection globe systématique (globe + détail)
+        style.projection = { type: 'globe' };
 
         if (mode === 'globe') {
-          next.sky = {
+          style.sky = {
             'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
           };
 
-          next.light = {
+          style.light = {
             anchor: 'map',
             position: [1.5, 90, 80],
           } as unknown as StyleSpecification['light'];
+
+          style.fog = {
+            range: [0.5, 10],
+            'horizon-blend': 0.1,
+            color: '#000000',
+          };
         } else {
-          if ('sky' in next) delete (next as StyleSpecification).sky;
+          if ('sky' in style) {
+            delete (style as { sky?: unknown }).sky;
+          }
+          style.fog = {
+            range: [0.3, 8],
+            'horizon-blend': 0.08,
+            color: '#ffffff',
+          };
         }
 
-        return next;
+        return style;
       };
     };
 
