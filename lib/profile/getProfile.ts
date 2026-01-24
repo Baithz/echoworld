@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.5.0 (2026-01-24)
+// Version      : 1.6.0 (2026-01-24)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
@@ -11,17 +11,11 @@
 // - isFollowing via table follows (RLS OK)
 // ----------------------------------------------------------------------------
 // CHANGELOG
-// 1.5.0 (2026-01-24)
-// - [FIX] Normalisation handle unique (lower/trim/@ + allow ".") cohérente partout
-// - [IMPROVED] getProfileByHandle: stratégie de lookup plus robuste (exact + normalized + fallback ilike)
+// 1.6.0 (2026-01-24)
+// - [FIX] CRITIQUE: Normalisation handle cohérente avec l'index BDD lower(handle)
+// - [FIX] Stratégie de lookup simplifiée (exact lowercase uniquement)
+// - [IMPROVED] Logs détaillés pour debug production
 // - [KEEP] Zéro régression sur types, stats, echoes, checkIfFollowing
-// 1.4.0 (2026-01-23)
-// - [NEW] Ajout banner_url + banner_pos_y dans PublicProfile
-// - [NEW] Ajout image_urls dans PublicEcho
-// - [NEW] Ajout followersCount + followingCount dans stats
-// - [NEW] Helper checkIfFollowing pour vérifier si on suit un profil
-// 1.3.0 (2026-01-23)
-// - [FIX] Logs diagnostic + normalisation handle cohérente
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -98,28 +92,41 @@ const PROFILE_SELECT =
 const ECHO_SELECT =
   'id, user_id, title, content, emotion, is_anonymous, country, city, language, created_at, status, visibility, emotion_tags, theme_tags, image_urls' as const;
 
-const DEBUG = process.env.NODE_ENV === 'development';
-
 function log(message: string, data?: unknown) {
-  if (DEBUG) console.log(`[getProfile] ${message}`, data ?? '');
+  console.log(`[getProfile] ${message}`, data ?? '');
 }
+
 function logError(message: string, error?: unknown) {
   console.error(`[getProfile] ERROR: ${message}`, error ?? '');
 }
 
-function cleanHandleForLookup(input: string): string {
-  return (input ?? '').trim().replace(/^@/, '').trim();
+/**
+ * CRITICAL: Normalisation STRICTEMENT IDENTIQUE à celle utilisée lors de l'enregistrement
+ * du handle en BDD (via /account ou /settings).
+ * 
+ * Règles :
+ * 1. Suppression du @ initial (si présent)
+ * 2. Trim espaces début/fin
+ * 3. Lowercase (pour matcher l'index unique BDD : lower(handle))
+ * 
+ * Cette fonction doit retourner EXACTEMENT ce qui est stocké en BDD.
+ * PAS de remplacement d'espaces, PAS de filtrage de caractères spéciaux ici.
+ */
+function normalizeHandleForLookup(input: string): string {
+  return (input ?? '')
+    .trim()
+    .replace(/^@/, '')
+    .trim()
+    .toLowerCase(); // ← INDEX BDD : lower(handle)
 }
 
 /**
- * Normalisation "canonique" utilisée pour :
- * - URL /u/[handle]
- * - comparaison cohérente avec l’index unique lower(handle)
- *
- * Note: on autorise "." (john.doe) car ton helper historique le permet déjà.
+ * Normalisation pour URLs (/u/[handle]) - utilisée UNIQUEMENT pour l'affichage/routing.
+ * Cette fonction doit être cohérente avec celle utilisée dans components/auth/*.tsx
+ * lors de la création/modification du handle.
  */
 export function normalizeHandleForUrl(input: string): string {
-  const raw = cleanHandleForLookup(input);
+  const raw = (input ?? '').trim().replace(/^@/, '').trim();
   if (!raw) return '';
   return raw
     .toLowerCase()
@@ -181,7 +188,10 @@ export async function getProfileById(id: string): Promise<PublicProfile | null> 
       logError(`getProfileById: Erreur Supabase pour id=${clean}`, error);
       return null;
     }
-    if (!data) return null;
+    if (!data) {
+      log(`getProfileById: Aucun profil trouvé pour id=${clean}`);
+      return null;
+    }
 
     return pickProfile(data);
   } catch (err) {
@@ -191,67 +201,42 @@ export async function getProfileById(id: string): Promise<PublicProfile | null> 
 }
 
 export async function getProfileByHandle(handle: string): Promise<PublicProfile | null> {
-  const clean = cleanHandleForLookup(handle);
-  if (!clean) {
+  const raw = (handle ?? '').trim();
+  if (!raw) {
     log('getProfileByHandle: Handle vide');
     return null;
   }
 
-  const normalized = normalizeHandleForUrl(clean);
+  // Normalisation STRICTE pour matcher l'index BDD lower(handle)
+  const normalized = normalizeHandleForLookup(raw);
+  
+  log(`getProfileByHandle: lookup pour "${raw}" → normalized="${normalized}"`);
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // 1) tentative exact (si DB stocke déjà normalisé)
-    {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .eq('handle', clean)
-        .maybeSingle<ProfileRow>();
+    // Stratégie simplifiée : lookup UNIQUEMENT sur la version normalisée lowercase
+    // (car l'index BDD est lower(handle))
+    const { data, error } = await supabase
+      .from('profiles')
+      .select(PROFILE_SELECT)
+      .eq('handle', normalized)
+      .maybeSingle<ProfileRow>();
 
-      if (!error && data) return pickProfile(data);
-      if (error) logError(`getProfileByHandle: Erreur exact eq(handle,"${clean}")`, error);
+    if (error) {
+      logError(`getProfileByHandle: Erreur Supabase pour handle="${normalized}"`, error);
+      return null;
     }
 
-    // 2) tentative exact normalized (cas @John.Doe -> john.doe)
-    if (normalized && normalized !== clean) {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .eq('handle', normalized)
-        .maybeSingle<ProfileRow>();
-
-      if (!error && data) return pickProfile(data);
-      if (error) logError(`getProfileByHandle: Erreur eq(handle,"${normalized}")`, error);
+    if (!data) {
+      log(`getProfileByHandle: Aucun profil trouvé pour handle="${normalized}"`);
+      return null;
     }
 
-    // 3) fallback ilike (tolérant, mais moins performant)
-    {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .ilike('handle', clean)
-        .maybeSingle<ProfileRow>();
-
-      if (!error && data) return pickProfile(data);
-      if (error) logError(`getProfileByHandle: Erreur ilike(handle,"${clean}")`, error);
-    }
-
-    if (normalized && normalized !== clean) {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .ilike('handle', normalized)
-        .maybeSingle<ProfileRow>();
-
-      if (!error && data) return pickProfile(data);
-      if (error) logError(`getProfileByHandle: Erreur ilike(handle,"${normalized}")`, error);
-    }
-
-    return null;
+    log(`getProfileByHandle: Profil trouvé → id=${data.id}, handle=${data.handle}`);
+    return pickProfile(data);
   } catch (err) {
-    logError(`getProfileByHandle: Exception pour handle="${clean}"`, err);
+    logError(`getProfileByHandle: Exception pour handle="${normalized}"`, err);
     return null;
   }
 }

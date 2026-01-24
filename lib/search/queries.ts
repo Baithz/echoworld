@@ -7,20 +7,14 @@
 // -----------------------------------------------------------------------------
 // CHANGELOG
 // 1.2.0 (2026-01-24)
-// - [FIX] Désactive temporairement la recherche dans table 'topics' (table inexistante)
-// - [IMPROVED] searchTopics retourne [] immédiatement si echo_tags échoue (pas de second fetch)
-// - [KEEP] echo_tags recherche conservée (table existe)
-// - [KEEP] searchUsers et searchEchoes inchangés
-// 1.1.2 (2026-01-23)
-// - [IMPROVED] searchUsers : normalise le handle renvoyé (slug safe pour /u/[handle])
-// - [IMPROVED] searchUsers : label affiche @handle si display_name absent
-// 1.1.1 (2026-01-23)
-// - [SECURITY] searchUsers : filtre explicitement sur public_profile_enabled = true
-// - [CLEAN] ProfileSearchRow : retire le champ public_profile_enabled côté client
+// - [FIX] CRITICAL: Suppression de searchTopics (table topics n'existe pas en BDD)
+// - [FIX] Normalisation handle cohérente avec getProfile.ts (lowercase uniquement)
+// - [IMPROVED] Stratégie de recherche utilisateurs simplifiée (exact lowercase)
+// - [KEEP] searchEchoes inchangé
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
-import type { SearchEchoResult, SearchTopicResult, SearchUserResult } from '@/lib/search/types';
+import type { SearchEchoResult, SearchUserResult } from '@/lib/search/types';
 
 type ProfileSearchRow = {
   id: string;
@@ -36,15 +30,15 @@ type EchoSearchRow = {
   visibility: 'world' | 'local' | 'private' | 'semi_anonymous' | string | null;
 };
 
-type EchoTagRow = { tag: string | null };
-type TopicRow = { name: string | null };
-
 function safePreview(text: string, max = 120): string {
   const clean = (text ?? '').trim().replace(/\s+/g, ' ');
   if (!clean) return '…';
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+/**
+ * Normalise le terme de recherche (suppression du @ initial si présent)
+ */
 function normalizeTerm(input: string): string {
   const t = (input ?? '').trim();
   if (!t) return '';
@@ -52,25 +46,25 @@ function normalizeTerm(input: string): string {
   return t.startsWith('@') ? t.slice(1).trim() : t;
 }
 
-// Normalise un handle pour l'URL /u/[handle]
-function normalizeHandle(input: string | null): string | null {
+/**
+ * Normalise un handle pour l'URL /u/[handle]
+ * Cohérent avec lib/profile/getProfile.ts
+ */
+function normalizeHandleForUrl(input: string | null): string | null {
   const raw = (input ?? '').trim().replace(/^@/, '').trim();
   if (!raw) return null;
   return raw
     .toLowerCase()
     .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_-]/g, '')
+    .replace(/[^a-z0-9._-]/g, '')
     .slice(0, 32);
 }
 
 function escapeOrValue(input: string): string {
-  // Supabase .or() attend une string ; on évite les virgules/parenthèses accidentelles
-  // (on garde simple : trim, pas d'échappement exotique ici).
   return input.trim();
 }
 
 function buildOrIlike(fields: string[], q: string): string {
-  // Construit "a.ilike.%q%,b.ilike.%q%" en limitant les risques de q vide
   const safe = escapeOrValue(q);
   return fields.map((f) => `${f}.ilike.%${safe}%`).join(',');
 }
@@ -97,8 +91,8 @@ export async function searchUsers(term: string, limit = 5): Promise<SearchUserRe
 
     const rows = data as unknown as ProfileSearchRow[];
 
-    // Tri local de pertinence (sans dépendre de features DB) :
-    // 1) handle exact
+    // Tri local de pertinence :
+    // 1) handle exact (lowercase)
     // 2) display_name exact
     // 3) handle commence par
     // 4) display_name commence par
@@ -122,7 +116,7 @@ export async function searchUsers(term: string, limit = 5): Promise<SearchUserRe
       .sort((a, b) => score(b) - score(a))
       .slice(0, limit)
       .map((r) => {
-        const normalizedHandle = normalizeHandle(r.handle);
+        const normalizedHandle = normalizeHandleForUrl(r.handle);
 
         return {
           type: 'user' as const,
@@ -146,8 +140,6 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
   const q = escapeOrValue(normalizeTerm(term));
   if (!q) return [];
 
-  // Table/colonnes supposées: echoes(id, title, content, visibility)
-  // Visibilité: world/local uniquement pour la recherche globale (safe).
   try {
     const { data, error } = await supabase
       .from('echoes')
@@ -169,70 +161,4 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
   } catch {
     return [];
   }
-}
-
-// -----------------------------------------------------------------------------
-// Recherche topics / tags
-// -----------------------------------------------------------------------------
-export async function searchTopics(term: string, limit = 5): Promise<SearchTopicResult[]> {
-  const q = escapeOrValue(normalizeTerm(term));
-  if (!q) return [];
-
-  // Option A: table "echo_tags" (tag)
-  // Option B: view/table "topics" (name)
-  // => on tente echo_tags puis fallback topics, fail-soft.
-  try {
-    const { data, error } = await supabase
-      .from('echo_tags')
-      .select('tag')
-      .ilike('tag', `%${q}%`)
-      .limit(limit);
-
-    if (!error && data) {
-      const rows = data as unknown as EchoTagRow[];
-      const uniq = new Set<string>();
-
-      rows.forEach((r) => {
-        const t = String(r.tag ?? '').trim();
-        if (t) uniq.add(t);
-      });
-
-      return Array.from(uniq)
-        .slice(0, limit)
-        .map((t) => ({ type: 'topic' as const, id: t, label: t }));
-    }
-  } catch {
-    // ignore
-  }
-
-  // TEMPORAIRE : table public.topics n'existe pas encore
-  // TODO: Créer la table topics ou utiliser une autre source
-  // Une fois créée, décommenter le code ci-dessous
-  return [];
-
-  /* DÉSACTIVÉ jusqu'à création de la table public.topics
-  try {
-    const { data, error } = await supabase
-      .from('topics')
-      .select('name')
-      .ilike('name', `%${q}%`)
-      .limit(limit);
-
-    if (error || !data) return [];
-
-    const rows = data as unknown as TopicRow[];
-    const uniq = new Set<string>();
-
-    rows.forEach((r) => {
-      const t = String(r.name ?? '').trim();
-      if (t) uniq.add(t);
-    });
-
-    return Array.from(uniq)
-      .slice(0, limit)
-      .map((t) => ({ type: 'topic' as const, id: t, label: t }));
-  } catch {
-    return [];
-  }
-  */
 }
