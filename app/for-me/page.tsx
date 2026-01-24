@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/for-me/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-24)
+ * Version      : 1.1.1 (2026-01-24)
  * Description  : Route /for-me — page "Pour moi" (shell)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -11,9 +11,9 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.1.0 (2026-01-24)
- * - [NEW] Ajoute ForMeEchoFeed (adaptateur) pour afficher un vrai EchoFeed à partir d’IDs curated
- * - [KEEP] ForMeView inchangé (UI + fetch existants)
+ * 1.1.1 (2026-01-24)
+ * - [FIX] Supprime le passage de handlers (onOpenEcho) depuis un Server Component
+ * - [KEEP] ForMeView inchangé + ForMeEchoFeed reste optionnel (curatedIds=[])
  * =============================================================================
  */
 
@@ -30,7 +30,7 @@ export default function ForMePage() {
 
       {/* Curated EchoFeed (optionnel, n’affiche rien si curatedIds=[]) */}
       <div className="mx-auto w-full max-w-6xl px-6 pb-16">
-        <ForMeEchoFeed curatedIds={[]} userId={null} onOpenEcho={() => {}} />
+        <ForMeEchoFeed curatedIds={[]} userId={null} />
       </div>
     </>
   );

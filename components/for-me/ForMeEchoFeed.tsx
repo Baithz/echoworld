@@ -2,17 +2,25 @@
  * =============================================================================
  * Fichier      : components/for-me/ForMeEchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-24)
+ * Version      : 1.2.0 (2026-01-24)
  * Objet        : Adaptateur "Pour moi" — réutilise EchoFeed sur une liste d'IDs "curated"
  * -----------------------------------------------------------------------------
  * Description  :
- * - Prend une liste d’IDs (curatedIds) et fetch les échos correspondants
+ * - Prend une liste d'IDs (curatedIds) et fetch les échos correspondants
  * - Aligne la shape EchoRow attendue par components/echo/EchoFeed.tsx (media/reactions/mirror/dm/comments)
  * - FAIL-SOFT : si colonnes absentes côté DB => fallback propre (zéro crash)
  * - KEEP : EchoFeed gère déjà likes/media/reactions/comments/mirror/dm => on ne duplique rien ici
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-24)
+ * - [FIX] Ajout handler onOpenEcho inline (client-side) pour satisfaire EchoFeed
+ * - [FIX] Navigation via Next.js router (useRouter)
+ * - [KEEP] Zéro régression fonctionnelle
+ * 1.1.0 (2026-01-24)
+ * - [FIX] Suppression onOpenEcho/onOpenConversation (props non nécessaires, EchoFeed utilise Link)
+ * - [IMPROVED] Navigation via Link natif Next.js (pas de handler)
+ * - [KEEP] Zéro régression fonctionnelle
  * 1.0.0 (2026-01-24)
  * - [NEW] Adaptateur curatedIds -> EchoFeed (mapping EchoRow)
  * - [SAFE] Best-effort query + normalisation (image_urls[], user_id?, comments_count?)
@@ -22,7 +30,8 @@
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import EchoFeed from '@/components/echo/EchoFeed';
 import type { EchoRow } from '@/components/echo/EchoFeed';
 import { supabase } from '@/lib/supabase/client';
@@ -30,8 +39,6 @@ import { supabase } from '@/lib/supabase/client';
 type Props = {
   curatedIds: string[];
   userId: string | null;
-  onOpenEcho: (id: string) => void;
-  onOpenConversation?: (conversationId: string) => void;
   /**
    * Optionnel : limite de rendu (après fetch) si curatedIds est grand.
    * Default: 30
@@ -115,7 +122,8 @@ function toEchoRow(r: DbEchoRow): EchoRow | null {
   };
 }
 
-export default function ForMeEchoFeed({ curatedIds, userId, onOpenEcho, onOpenConversation, max = 30 }: Props) {
+export default function ForMeEchoFeed({ curatedIds, userId, max = 30 }: Props) {
+  const router = useRouter();
   const ids = useMemo(() => uniq(curatedIds).slice(0, Math.max(1, max)), [curatedIds, max]);
 
   const [loading, setLoading] = useState(false);
@@ -133,7 +141,7 @@ export default function ForMeEchoFeed({ curatedIds, userId, onOpenEcho, onOpenCo
       setLoading(true);
       try {
         // Best-effort query: on demande un superset de colonnes.
-        // Si certaines colonnes n’existent pas dans ton schema, Supabase peut renvoyer error.
+        // Si certaines colonnes n'existent pas dans ton schema, Supabase peut renvoyer error.
         // => FAIL-SOFT: fallback sur une query minimale.
         const columnsFull = [
           'id',
@@ -170,7 +178,7 @@ export default function ForMeEchoFeed({ curatedIds, userId, onOpenEcho, onOpenCo
         const rows = Array.isArray(res.data) ? (res.data as DbEchoRow[]) : [];
         const mapped = rows.map(toEchoRow).filter((x): x is EchoRow => !!x);
 
-        // Conserver l’ordre curatedIds (si possible)
+        // Conserver l'ordre curatedIds (si possible)
         const pos = new Map<string, number>();
         ids.forEach((id, i) => pos.set(id, i));
         mapped.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
@@ -188,13 +196,20 @@ export default function ForMeEchoFeed({ curatedIds, userId, onOpenEcho, onOpenCo
     };
   }, [ids]);
 
+  // Handler client-side pour navigation (satisfait le contrat EchoFeed)
+  const handleOpenEcho = useCallback(
+    (id: string) => {
+      router.push(`/echo/${id}`);
+    },
+    [router]
+  );
+
   return (
     <EchoFeed
       loading={loading}
       echoes={echoes}
       userId={userId}
-      onOpenEcho={onOpenEcho}
-      onOpenConversation={onOpenConversation}
+      onOpenEcho={handleOpenEcho}
     />
   );
 }
