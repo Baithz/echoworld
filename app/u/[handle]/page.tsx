@@ -7,8 +7,9 @@
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * 1.6.3 (2026-01-24)
- * - [DEBUG] Logs SSR gated par EW_DEBUG=1 (handle brut/normalisé + retours Supabase)
- * - [KEEP] Normalisation URL handle (lowercase + underscores + charset safe)
+ * - [FIX] Params hardening Next 16: support params object OU Promise => plus de handle vide sur /u/[handle]
+ * - [DEBUG] Logs SSR via EW_DEBUG=1 : page start + params resolved + handleLookup
+ * - [KEEP] Force-dynamic + revalidate=0 + notFound + isFollowing inchangés
  * - [SAFE] Zéro régression : mêmes exports + même structure de rendu
  * =============================================================================
  */
@@ -22,14 +23,19 @@ import { getCurrentUserContext } from '@/lib/user/getCurrentUser';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+type ParamsShape = { handle?: string };
+
 type PageProps = {
-  params: { handle?: string };
+  // Next peut fournir params comme objet OU Promise selon runtime
+  params: ParamsShape | Promise<ParamsShape>;
 };
 
-const EW_DEBUG = process.env.EW_DEBUG === '1';
+function isDebugEnabled(): boolean {
+  return process.env.EW_DEBUG === '1';
+}
 
-function dlog(message: string, data?: unknown) {
-  if (!EW_DEBUG) return;
+function debugLog(message: string, data?: unknown) {
+  if (!isDebugEnabled()) return;
   try {
     console.log(`[u/[handle]] ${message}`, data ?? '');
   } catch {
@@ -37,10 +43,10 @@ function dlog(message: string, data?: unknown) {
   }
 }
 
-function derror(message: string, error?: unknown) {
-  if (!EW_DEBUG) return;
+function debugError(message: string, data?: unknown) {
+  if (!isDebugEnabled()) return;
   try {
-    console.error(`[u/[handle]] ERROR: ${message}`, error ?? '');
+    console.error(`[u/[handle]] ERROR ${message}`, data ?? '');
   } catch {
     /* noop */
   }
@@ -61,24 +67,31 @@ function safeHandle(input: unknown): string {
     .slice(0, 32);
 }
 
+async function resolveParams(p: PageProps['params']): Promise<ParamsShape> {
+  try {
+    // Si c’est une Promise, on await, sinon on renvoie l’objet
+    const maybePromise = p as unknown as { then?: (fn: (v: ParamsShape) => void) => void };
+    if (maybePromise && typeof maybePromise.then === 'function') {
+      return (await (p as Promise<ParamsShape>)) ?? {};
+    }
+    return (p as ParamsShape) ?? {};
+  } catch (e) {
+    debugError('resolveParams failed', e);
+    return {};
+  }
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
-  const handleRaw = params?.handle ?? '';
+  const resolved = await resolveParams(params);
+  const handleRaw = resolved?.handle ?? '';
   const handleLookup = safeHandle(handleRaw);
 
-  dlog('generateMetadata', { handleRaw, handleLookup });
+  debugLog('generateMetadata', { handleRaw, handleLookup });
 
   if (!handleLookup) return { title: 'Profil introuvable • EchoWorld' };
 
   try {
     const { profile } = await getPublicProfileDataByHandle(handleLookup, 1);
-
-    dlog('generateMetadata result', {
-      found: Boolean(profile),
-      profileId: profile?.id ?? null,
-      profileHandle: profile?.handle ?? null,
-      publicEnabled: profile?.public_profile_enabled ?? null,
-    });
-
     if (!profile) throw new Error('Profile not found');
 
     const displayName = profile.display_name || profile.handle || 'Utilisateur';
@@ -88,39 +101,34 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description: profile.bio || `Profil de ${displayName} sur EchoWorld.`,
     };
   } catch (e) {
-    derror('generateMetadata failed', e);
+    debugError('generateMetadata failed', e);
     return { title: 'Profil introuvable • EchoWorld' };
   }
 }
 
 export default async function PublicHandleProfilePage({ params }: PageProps) {
-  const handleRaw = params?.handle ?? '';
+  debugLog('page start (raw props)', { paramsType: typeof params });
+
+  const resolved = await resolveParams(params);
+  const handleRaw = resolved?.handle ?? '';
   const handleLookup = safeHandle(handleRaw);
 
-  dlog('page start', { handleRaw, handleLookup });
+  debugLog('page resolved params', { handleRaw, handleLookup });
 
   if (!handleLookup) {
-    dlog('page notFound: empty handle');
+    debugLog('page notFound: empty handle');
     notFound();
   }
 
   let data: Awaited<ReturnType<typeof getPublicProfileDataByHandle>>;
-
   try {
+    debugLog('fetch profile start', { handleLookup });
     data = await getPublicProfileDataByHandle(handleLookup, 12);
-
-    dlog('getPublicProfileDataByHandle', {
-      found: Boolean(data?.profile),
-      profileId: data?.profile?.id ?? null,
-      profileHandle: data?.profile?.handle ?? null,
-      publicEnabled: data?.profile?.public_profile_enabled ?? null,
-      echoesCount: Array.isArray(data?.echoes) ? data.echoes.length : null,
-      hasStats: Boolean(data?.stats),
-    });
+    debugLog('fetch profile done', { found: Boolean(data?.profile), id: data?.profile?.id ?? null });
 
     if (!data.profile) throw new Error('Profile not found');
   } catch (e) {
-    derror('page notFound: getPublicProfileDataByHandle failed', e);
+    debugError('page fetch failed', e);
     notFound();
   }
 
@@ -129,11 +137,7 @@ export default async function PublicHandleProfilePage({ params }: PageProps) {
   const { user } = await getCurrentUserContext();
   const currentUserId = user?.id ?? null;
 
-  dlog('current user', { currentUserId });
-
   const isFollowing = currentUserId ? await checkIfFollowing(currentUserId, profile.id) : false;
-
-  dlog('isFollowing', { currentUserId, targetUserId: profile.id, isFollowing });
 
   return (
     <ProfileView
