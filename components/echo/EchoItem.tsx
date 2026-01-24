@@ -2,20 +2,13 @@
  * =============================================================================
  * Fichier      : components/echo/EchoItem.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-23)
+ * Version      : 1.1.1 (2026-01-24)
  * Objet        : EchoItem UI (affichage + réactions + mirror + DM) — SAFE
  * -----------------------------------------------------------------------------
- * Notes
- * - Zéro dépendance à Supabase ici
- * - Contrat props unique, utilisé par EchoFeed (évite régressions “props manquantes”)
- *
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 1.1.0 (2026-01-23)
- * - [NEW] Réactions empathiques alignées (understand/support/reflect) via REACTIONS
- * - [COMPAT] Mapping automatique vers l’ancien système (resonances) pour éviter régressions
- * - [NEW] Partage réel via ShareModal (plus d’actions factices)
- * - [IMPROVED] Preview photos en mode réduit (2-3 images) + affichage complet via EchoPreview en expanded
+ * PHASE 1 — Unifier le “contrat Echo” (types + mapping)
+ * - [FIX] Supprime la dépendance type à EchoFeed (évite couplage / régressions de types)
+ * - [KEEP] Contrat props identique (EchoFeed n’a rien à changer côté props)
+ * - [SAFE] Media: sécurise le calcul preview + badge +N sans supposer longueur brute
  * =============================================================================
  */
 
@@ -24,13 +17,8 @@
 import { useMemo, useState } from 'react';
 import { Heart, MessageCircle, Share2, Sparkles, Send } from 'lucide-react';
 
-import type { EchoRow } from '@/components/echo/EchoFeed';
 import type { ResonanceType } from '@/lib/echo/actions';
-
-import {
-  REACTIONS,
-  type ReactionType,
-} from '@/lib/echo/reactions';
+import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 
 import EchoPreview from '@/lib/echo/EchoPreview';
 import ShareModal from '@/components/echo/ShareModal';
@@ -39,6 +27,35 @@ type AnyReactionType = ReactionType | ResonanceType;
 
 type ResCounts = Record<AnyReactionType, number>;
 type ResByMe = Record<AnyReactionType, boolean>;
+
+/**
+ * PHASE 1 — Contrat echo local (aligné EchoFeed.EchoRow)
+ * - image_urls existe côté DB, mais peut ne pas être sélectionné selon les queries (=> optionnel).
+ * - On ne déduit rien ici : EchoFeed choisit déjà media final via image_urls ou fallback echo_media.
+ */
+export type EchoRow = {
+  id: string;
+  title: string | null;
+  content: string;
+  emotion: string | null;
+  language: string | null;
+  country: string | null;
+  city: string | null;
+  is_anonymous: boolean | null;
+  visibility: 'world' | 'local' | 'private' | 'semi_anonymous' | null;
+  status: 'draft' | 'published' | 'archived' | 'deleted' | null;
+  created_at: string;
+
+  user_id?: string | null;
+
+  // Phase 1 (optionnel selon query, mais stable si présent)
+  image_urls?: string[] | null;
+
+  // Viewer meta optionnelle (Phase 3+)
+  comments_count?: number | null;
+  mirrored?: boolean | null;
+  can_dm?: boolean | null;
+};
 
 type Props = {
   echo: EchoRow;
@@ -51,6 +68,7 @@ type Props = {
   likeCount: number;
   onLike: (id: string) => void;
 
+  // Media final choisi en amont (EchoFeed)
   media: string[];
 
   // Compat: ces props viennent du “système resonance” actuel.
@@ -115,6 +133,11 @@ function getActive(byMe: ResByMe, t: ReactionType): boolean {
   return !!(byMe[t] ?? byMe[legacy]);
 }
 
+function normalizeMedia(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((x) => String(x ?? '').trim()).filter(Boolean);
+}
+
 export default function EchoItem(props: Props) {
   const { echo } = props;
 
@@ -136,10 +159,13 @@ export default function EchoItem(props: Props) {
     setMirrorOpen(false);
   };
 
+  const media = useMemo(() => normalizeMedia(props.media), [props.media]);
+
   const previewPhotos = useMemo(() => {
-    const list = Array.isArray(props.media) ? props.media.filter(Boolean) : [];
-    return list.slice(0, 3);
-  }, [props.media]);
+    return media.slice(0, 3);
+  }, [media]);
+
+  const extraCount = Math.max(0, media.length - 3);
 
   return (
     <>
@@ -177,7 +203,7 @@ export default function EchoItem(props: Props) {
 
         <div className="mt-4">
           {props.expanded ? (
-            <EchoPreview content={echo.content} emotion={emo} photos={props.media} />
+            <EchoPreview content={echo.content} emotion={emo} photos={media} />
           ) : (
             <>
               <div className="line-clamp-4 whitespace-pre-wrap text-sm text-slate-800">{echo.content}</div>
@@ -199,9 +225,9 @@ export default function EchoItem(props: Props) {
                         className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
                         loading="lazy"
                       />
-                      {idx === 2 && props.media.length > 3 ? (
+                      {idx === 2 && extraCount > 0 ? (
                         <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-bold text-white">
-                          +{props.media.length - 3}
+                          +{extraCount}
                         </div>
                       ) : null}
                     </button>
@@ -341,12 +367,7 @@ export default function EchoItem(props: Props) {
         ) : null}
       </article>
 
-      {shareOpen ? (
-        <ShareModal
-          echoId={echo.id}
-          onClose={() => setShareOpen(false)}
-        />
-      ) : null}
+      {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
     </>
   );
 }

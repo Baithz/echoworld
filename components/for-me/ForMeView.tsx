@@ -1,14 +1,20 @@
 // =============================================================================
 // Fichier      : components/for-me/ForMeView.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.0.0 (2026-01-22)
+// Version      : 1.1.0 (2026-01-24)
 // Description  : Vue "Pour moi" (UI + fetch feed)
+// -----------------------------------------------------------------------------
+// CHANGELOG
+// 1.1.0 (2026-01-24)
+// - [NEW] Preview photos sur les cards (2-3 vignettes + overlay +N) si le feed fournit des URLs
+// - [SAFE] Fallbacks robustes (supporte plusieurs noms de champs possibles sans casser le contrat ForMeFeedItem)
+// - [KEEP] Zéro régression : auth, fetch, sections, topics, UI existante
 // =============================================================================
 
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Sparkles, Heart, Flame, Hash, Settings2, Loader2, Lock } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { getForMeFeed } from '@/lib/for-me/feed';
@@ -22,8 +28,40 @@ function safeText(text: string, max = 160) {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+/**
+ * SAFE: le feed "For me" peut évoluer (noms de champs différents selon requêtes).
+ * On récupère une liste d’URLs de photos si elle existe, sans dépendre d’un schéma unique.
+ */
+function getItemPhotos(item: ForMeFeedItem): string[] {
+  const u = item as unknown as {
+    photos?: unknown;
+    media?: unknown;
+    image_urls?: unknown;
+    imageUrls?: unknown;
+    imageUrl?: unknown;
+  };
+
+  const candidates: unknown[] = [u.photos, u.media, u.image_urls, u.imageUrls];
+
+  for (const c of candidates) {
+    if (isStringArray(c)) return c.filter(Boolean);
+  }
+
+  // dernier recours: champ unique (string) => tableau
+  if (typeof u.imageUrl === 'string' && u.imageUrl.trim()) return [u.imageUrl.trim()];
+
+  return [];
+}
+
 function Card({ item }: { item: ForMeFeedItem }) {
   const href = item.echoId ? `/echo/${item.echoId}` : '#';
+
+  const photos = useMemo(() => getItemPhotos(item), [item]);
+  const previewPhotos = useMemo(() => photos.slice(0, 3), [photos]);
 
   return (
     <Link
@@ -41,6 +79,31 @@ function Card({ item }: { item: ForMeFeedItem }) {
             {item.meta}
           </span>
         </div>
+
+        {previewPhotos.length > 0 ? (
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {previewPhotos.map((src, idx) => (
+              <div
+                key={`${item.id}:p:${idx}`}
+                className="group relative aspect-4/3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100"
+                title="Ouvrir l’écho"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt=""
+                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                  loading="lazy"
+                />
+                {idx === 2 && photos.length > 3 ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-bold text-white">
+                    +{photos.length - 3}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </Link>
   );
@@ -55,6 +118,11 @@ function SkeletonCard() {
           <div className="h-3 w-full animate-pulse rounded bg-slate-200/60" />
           <div className="h-3 w-5/6 animate-pulse rounded bg-slate-200/60" />
           <div className="h-3 w-4/6 animate-pulse rounded bg-slate-200/60" />
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <div className="aspect-4/3 animate-pulse rounded-2xl bg-slate-200/50" />
+          <div className="aspect-4/3 animate-pulse rounded-2xl bg-slate-200/50" />
+          <div className="aspect-4/3 animate-pulse rounded-2xl bg-slate-200/50" />
         </div>
       </div>
     </div>
@@ -128,9 +196,7 @@ export default function ForMeView() {
             Pour moi
           </div>
 
-          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-slate-900">
-            Vos échos en résonance
-          </h1>
+          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-slate-900">Vos échos en résonance</h1>
 
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
             Basé sur vos interactions (likes / mirrors) et les sujets associés. Ajustable dans les paramètres.
@@ -193,9 +259,7 @@ export default function ForMeView() {
               </span>
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">En résonance</h2>
-                <p className="text-sm text-slate-600">
-                  Match sur les sujets liés à ce que tu as aimé / mirrorré.
-                </p>
+                <p className="text-sm text-slate-600">Match sur les sujets liés à ce que tu as aimé / mirrorré.</p>
               </div>
             </div>
 
@@ -223,7 +287,7 @@ export default function ForMeView() {
               </span>
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">Nouveaux échos</h2>
-                <p className="text-sm text-slate-600"></p>
+                <p className="text-sm text-slate-600">Du contenu frais qui pourrait te parler.</p>
               </div>
             </div>
 

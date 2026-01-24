@@ -2,13 +2,14 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-23)
+ * Version      : 1.4.0 (2026-01-24)
  * Objet        : Flux d'échos — branche EchoItem (media + resonances + mirror + DM)
  * -----------------------------------------------------------------------------
- * FIX v1.3.1
- * - [FIX] Typage onResonance compatible EchoItem (AnyReactionType) + mapping NEW->LEGACY
- * - [FIX] Suppression const unused (LEGACY_TO_NEW)
- * - [KEEP] Aucune régression: likes, share, mirror, DM, hero, toasts, chargements conservés
+ * PHASE 1 — Unifier le “contrat Echo” (types + mapping)
+ * - [NEW] Ajout image_urls au type EchoRow (normalisé en [] au rendu)
+ * - [NEW] Viewer meta optionnelle (comments_count/mirrored/can_dm) sans casser les queries
+ * - [KEEP] Zéro régression : fallback media via echo_media si image_urls absent
+ * - [KEEP] Likes, share, resonances, mirror, DM, hero, toasts conservés
  * =============================================================================
  */
 
@@ -45,6 +46,14 @@ export type EchoRow = {
 
   // SAFE: si dispo côté query (sinon undefined)
   user_id?: string | null;
+
+  // PHASE 1: images (doit être disponible partout; si absent => normalisé en [])
+  image_urls?: string[] | null;
+
+  // PHASE 1: viewer meta (optionnelle selon query)
+  comments_count?: number | null;
+  mirrored?: boolean | null;
+  can_dm?: boolean | null;
 };
 
 function formatDateFR(iso: string): string {
@@ -96,6 +105,11 @@ function withReactionKeysByMe(base: Record<ResonanceType, boolean>): Record<Reso
   };
 }
 
+function normalizeImageUrls(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((x) => String(x ?? '').trim()).filter(Boolean);
+}
+
 export default function EchoFeed({
   loading,
   echoes,
@@ -115,7 +129,7 @@ export default function EchoFeed({
   const [likeCountById, setLikeCountById] = useState<Record<string, number>>({});
   const [likedByMe, setLikedByMe] = useState<Record<string, boolean>>({});
 
-  // Media meta
+  // Media meta (fallback si image_urls non présent)
   const [mediaById, setMediaById] = useState<Record<string, string[]>>({});
 
   // Resonance meta (legacy keys)
@@ -183,14 +197,24 @@ export default function EchoFeed({
     };
   }, [echoes, hasEchoes, userId]);
 
-  // Load media meta
+  // Load media meta (fallback)
   useEffect(() => {
     let mounted = true;
 
     const loadMedia = async () => {
       if (!hasEchoes) return;
-      const ids = echoes.map((e) => e.id);
 
+      // Si tous les échos ont déjà image_urls, on peut éviter le fetch.
+      // SAFE: on garde le fallback si au moins un écho n’a pas d’images dans la query.
+      const needsFallback = echoes.some((e) => normalizeImageUrls(e.image_urls).length === 0);
+
+      if (!needsFallback) {
+        if (!mounted) return;
+        setMediaById({});
+        return;
+      }
+
+      const ids = echoes.map((e) => e.id);
       const res = await fetchEchoMediaMeta({ echoIds: ids });
       if (!mounted) return;
       if (!res.ok) return;
@@ -492,6 +516,9 @@ export default function EchoFeed({
                 i_reflect_with_you: false,
               };
 
+              const imgs = normalizeImageUrls(e.image_urls);
+              const media = imgs.length > 0 ? imgs : (mediaById[e.id] ?? []);
+
               return (
                 <EchoItem
                   key={e.id}
@@ -502,7 +529,7 @@ export default function EchoFeed({
                   liked={!!likedByMe[e.id]}
                   likeCount={likeCountById[e.id] ?? 0}
                   onLike={onLike}
-                  media={mediaById[e.id] ?? []}
+                  media={media}
                   resCounts={withReactionKeysCounts(legacyCounts)}
                   resByMe={withReactionKeysByMe(legacyByMe)}
                   onResonance={onResonance}

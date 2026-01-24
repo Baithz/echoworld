@@ -1,13 +1,14 @@
 // =============================================================================
 // Fichier      : lib/echo/actions.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.4.1 (2026-01-22)
+// Version      : 1.5.0 (2026-01-24)
 // Objet        : Actions Echo (like, share, media, resonances, mirrors) — SAFE
 // -----------------------------------------------------------------------------
-// FIX v1.4.1
-// - [FIX] Contrat "flat" (pas de { data: ... }) => zéro régression avec EchoFeed
-// - [FIX] 0 any / 0 {} vide / 0 never Supabase
-// - [SAFE] Logique métier inchangée
+// FIX v1.5.0 (PHASE 1)
+// - [PHASE1] Ajout pont "réactions officielles" (understand/support/reflect) vers legacy echo_resonances
+// - [NEW] toggleEchoReaction + fetchReactionMeta (retourne clés REACTIONS + legacy, sans casser EchoFeed)
+// - [KEEP] Contrat flat + 0 any / 0 {} vide / 0 never Supabase
+// - [SAFE] Exports legacy conservés, logique métier inchangée
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -138,9 +139,7 @@ export async function toggleEchoLike({
  * SHARE (lien externe + clipboard)
  * ============================================================================
  */
-export async function shareEcho(
-  { echoId }: { echoId: string }
-): Promise<ResData<{ mode: 'native' | 'clipboard' }>> {
+export async function shareEcho({ echoId }: { echoId: string }): Promise<ResData<{ mode: 'native' | 'clipboard' }>> {
   const url = `${window.location.origin}/explore?focus=${encodeURIComponent(echoId)}`;
 
   try {
@@ -200,10 +199,59 @@ export async function fetchEchoMediaMeta({
 }
 
 /* ============================================================================
- * RESONANCES (echo_resonances)
+ * RESONANCES (echo_resonances) — LEGACY (conservé)
  * ============================================================================
  */
 export type ResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
+
+/**
+ * PHASE 1 — Réactions officielles (UI) mappées vers legacy DB
+ * NB: pas d'import vers '@/lib/echo/reactions' ici => pas de dépendance croisée.
+ */
+export type ReactionType = 'understand' | 'support' | 'reflect';
+export type AnyReactionType = ResonanceType | ReactionType;
+
+const NEW_TO_LEGACY: Record<ReactionType, ResonanceType> = {
+  understand: 'i_feel_you',
+  support: 'i_support_you',
+  reflect: 'i_reflect_with_you',
+};
+
+function isReactionType(v: AnyReactionType): v is ReactionType {
+  return v === 'understand' || v === 'support' || v === 'reflect';
+}
+
+function asLegacyType(t: AnyReactionType): ResonanceType {
+  if (isReactionType(t)) return NEW_TO_LEGACY[t];
+  return t;
+}
+
+function initLegacyCounts(): Record<ResonanceType, number> {
+  return {
+    i_feel_you: 0,
+    i_support_you: 0,
+    i_reflect_with_you: 0,
+  };
+}
+
+function initLegacyByMe(): Record<ResonanceType, boolean> {
+  return {
+    i_feel_you: false,
+    i_support_you: false,
+    i_reflect_with_you: false,
+  };
+}
+
+function withReactionKeys<T extends number | boolean>(
+  obj: Record<ResonanceType, T>
+): Record<ResonanceType | ReactionType, T> {
+  return {
+    ...obj,
+    understand: obj.i_feel_you,
+    support: obj.i_support_you,
+    reflect: obj.i_reflect_with_you,
+  };
+}
 
 export async function fetchResonanceMeta({
   echoIds,
@@ -218,18 +266,6 @@ export async function fetchResonanceMeta({
   }>
 > {
   if (!echoIds.length) return { ok: true, countsByEcho: {}, byMeByEcho: {} };
-
-  const initCounts = (): Record<ResonanceType, number> => ({
-    i_feel_you: 0,
-    i_support_you: 0,
-    i_reflect_with_you: 0,
-  });
-
-  const initByMe = (): Record<ResonanceType, boolean> => ({
-    i_feel_you: false,
-    i_support_you: false,
-    i_reflect_with_you: false,
-  });
 
   try {
     const { data, error } = (await (table('echo_resonances')
@@ -247,8 +283,8 @@ export async function fetchResonanceMeta({
       const echoId = String(r.echo_id);
       const t = r.resonance_type as ResonanceType;
 
-      if (!countsByEcho[echoId]) countsByEcho[echoId] = initCounts();
-      if (!byMeByEcho[echoId]) byMeByEcho[echoId] = initByMe();
+      if (!countsByEcho[echoId]) countsByEcho[echoId] = initLegacyCounts();
+      if (!byMeByEcho[echoId]) byMeByEcho[echoId] = initLegacyByMe();
 
       if (t === 'i_feel_you' || t === 'i_support_you' || t === 'i_reflect_with_you') {
         countsByEcho[echoId][t] = (countsByEcho[echoId][t] ?? 0) + 1;
@@ -260,6 +296,39 @@ export async function fetchResonanceMeta({
   } catch (e) {
     return { ok: false, error: errMsg(e, 'Erreur resonances.') };
   }
+}
+
+/**
+ * PHASE 1 — Meta “réactions” (officielles) : renvoie les clés legacy + les clés REACTIONS
+ * Pour brancher une UI unique (EchoItem / ProfileEchoList / EchoFeed) sans casser l’existant.
+ */
+export async function fetchReactionMeta({
+  echoIds,
+  userId,
+}: {
+  echoIds: string[];
+  userId: string | null;
+}): Promise<
+  ResData<{
+    countsByEcho: Record<string, Record<ResonanceType | ReactionType, number>>;
+    byMeByEcho: Record<string, Record<ResonanceType | ReactionType, boolean>>;
+  }>
+> {
+  const base = await fetchResonanceMeta({ echoIds, userId });
+  if (!base.ok) return base;
+
+  const countsByEcho: Record<string, Record<ResonanceType | ReactionType, number>> = {};
+  const byMeByEcho: Record<string, Record<ResonanceType | ReactionType, boolean>> = {};
+
+  Object.keys(base.countsByEcho).forEach((echoId) => {
+    const c = base.countsByEcho[echoId];
+    const m = base.byMeByEcho[echoId];
+
+    countsByEcho[echoId] = withReactionKeys<number>(c);
+    byMeByEcho[echoId] = withReactionKeys<boolean>(m);
+  });
+
+  return { ok: true, countsByEcho, byMeByEcho };
 }
 
 export async function toggleEchoResonance({
@@ -295,6 +364,25 @@ export async function toggleEchoResonance({
   } catch (e) {
     return { ok: false, error: errMsg(e, 'Erreur resonance.') };
   }
+}
+
+/**
+ * PHASE 1 — Toggle “réaction” (officielle) : map vers legacy DB
+ * (permet à l’UI d’appeler avec understand/support/reflect sans casser echo_resonances)
+ */
+export async function toggleEchoReaction({
+  echoId,
+  userId,
+  type,
+  nextOn,
+}: {
+  echoId: string;
+  userId: string;
+  type: AnyReactionType;
+  nextOn: boolean;
+}): Promise<ResVoid> {
+  const legacy = asLegacyType(type);
+  return toggleEchoResonance({ echoId, userId, type: legacy, nextOn });
 }
 
 /* ============================================================================

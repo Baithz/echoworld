@@ -2,25 +2,13 @@
  * =============================================================================
  * Fichier      : components/explore/StoryDrawer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-23)
+ * Version      : 1.4.0 (2026-01-24)
  * Objet        : Drawer latéral d’écho - Lecture rapide depuis la carte (cinéma)
  * -----------------------------------------------------------------------------
- * Description  :
- * - Drawer latéral animé (slide + fade + blur) + a11y robuste
- * - Backdrop cliquable + fermeture Esc
- * - Focus trap + restore focus
- * - Scroll lock body
- * - États: loading skeleton / aucun écho / contenu écho
- * - Métadonnées: émotion, date humaine, ville/pays
- * - Lien vers la page dédiée /echo/[id] + copie lien
- *
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-23)
- * - [IMPROVED] Formatter date memoïsé (évite new Intl.DateTimeFormat à chaque rendu)
- * - [FIX] Date invalide: fallback safe (pas de "Invalid Date" visible)
- * - [IMPROVED] Badge émotion coloré via EMOTION_COLORS (layout inchangé)
- * - [KEEP] Focus trap / scroll lock / a11y / copy link / animations
+ * PHASE 1 — Unifier le “contrat Echo” (types + mapping)
+ * - [NEW] Ajout image_urls au type Story (optionnel, sans casser les queries)
+ * - [NEW] Rendu média unifié : preview grid (même logique que EchoItem)
+ * - [KEEP] Focus trap / scroll lock / a11y / copy link / animations / layout
  * =============================================================================
  */
 
@@ -37,6 +25,14 @@ type Story = {
   created_at: string;
   city: string | null;
   country: string | null;
+
+  // PHASE 1: images (optionnel selon query; si absent => aucun rendu photo, pas de déduction)
+  image_urls?: string[] | null;
+
+  // PHASE 1: viewer meta optionnelle (non utilisée ici, mais stable si présente)
+  comments_count?: number | null;
+  can_dm?: boolean | null;
+  mirrored?: boolean | null;
 };
 
 function safeDate(iso: string): Date | null {
@@ -155,6 +151,11 @@ function emotionColor(emotion: string | null | undefined): string {
   return EMOTION_COLORS[key] ?? EMOTION_COLORS.default;
 }
 
+function normalizeImageUrls(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((x) => String(x ?? '').trim()).filter(Boolean);
+}
+
 export default function StoryDrawer({
   open,
   loading,
@@ -205,6 +206,11 @@ export default function StoryDrawer({
   }, [story, dateFormatter]);
 
   const emotionBadgeColor = useMemo(() => emotionColor(story?.emotion), [story?.emotion]);
+
+  // PHASE 1 — media (optionnel)
+  const media = useMemo(() => normalizeImageUrls(story?.image_urls), [story?.image_urls]);
+  const previewPhotos = useMemo(() => media.slice(0, 3), [media]);
+  const extraCount = Math.max(0, media.length - 3);
 
   // Lock scroll + store last focus + autofocus close
   useEffect(() => {
@@ -377,6 +383,33 @@ export default function StoryDrawer({
                     </span>
                   )}
                 </div>
+
+                {/* PHASE 1 — Media preview grid (même logique “preview” que EchoItem) */}
+                {previewPhotos.length > 0 ? (
+                  <div className="grid grid-cols-3 gap-2">
+                    {previewPhotos.map((src, idx) => (
+                      <a
+                        key={`${story.id}:p:${idx}`}
+                        href={`/echo/${story.id}`}
+                        className="group relative aspect-4/3 overflow-hidden rounded-2xl border border-white/10 bg-white/5"
+                        title="Ouvrir l’écho"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={src}
+                          alt=""
+                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                          loading="lazy"
+                        />
+                        {idx === 2 && extraCount > 0 ? (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-sm font-bold text-white">
+                            +{extraCount}
+                          </div>
+                        ) : null}
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="text-white/90 leading-relaxed whitespace-pre-wrap">
                   {story.content ? clampText(story.content, 2000) : '—'}

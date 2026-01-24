@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : lib/echo/getEchoesForMap.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-23)
+ * Version      : 1.3.1 (2026-01-24)
  * Objet        : Service GeoJSON pour carte EchoMap (RPC bbox + fallback monde)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -13,6 +13,10 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.3.1 (2026-01-24)
+ * - [FIX] Aligne réellement l'appel RPC sur la signature (bbox, emotion, since, lim)
+ * - [SAFE] Fallback compat si la RPC attend encore (emotion_filter, since_ts)
+ * - [KEEP] Limite + split antiméridien + dédup + filtres emotion/since + fallback monde
  * 1.3.0 (2026-01-23)
  * - [FIX] Aligne l'appel RPC sur la signature réelle (bbox jsonb) => échos visibles
  * - [IMPROVED] Fallback robuste via RPC monde (plus de select geography non-GeoJSON)
@@ -138,6 +142,10 @@ type RpcCall = (
 /**
  * Appel RPC aligné sur ta signature SQL:
  *   get_echoes_in_bbox(bbox jsonb, emotion text, since timestamptz, lim int)
+ *
+ * SAFE:
+ * - tente d'abord (bbox, emotion, since, lim)
+ * - fallback compat si la RPC attend encore (emotion_filter, since_ts)
  */
 async function fetchViaRpc(params: {
   bbox: [number, number, number, number];
@@ -147,15 +155,27 @@ async function fetchViaRpc(params: {
 }): Promise<RpcEchoRow[]> {
   const rpc = (supabase.rpc as unknown) as RpcCall;
 
-  const { data, error } = await rpc('get_echoes_in_bbox', {
-    bbox: params.bbox, // <= IMPORTANT: jsonb bbox
+  const argsOfficial = {
+    bbox: params.bbox, // jsonb bbox
+    emotion: params.emotion ?? null,
+    since: params.since?.toISOString() ?? null,
+    lim: params.limit ?? LIMIT,
+  };
+
+  const first = await rpc('get_echoes_in_bbox', argsOfficial);
+  if (!first.error) return (first.data ?? []) as RpcEchoRow[];
+
+  const argsCompat = {
+    bbox: params.bbox, // jsonb bbox
     emotion_filter: params.emotion ?? null,
     since_ts: params.since?.toISOString() ?? null,
     lim: params.limit ?? LIMIT,
-  });
+  };
 
-  if (error) throw asError(error);
-  return (data ?? []) as RpcEchoRow[];
+  const second = await rpc('get_echoes_in_bbox', argsCompat);
+  if (second.error) throw asError(second.error);
+
+  return (second.data ?? []) as RpcEchoRow[];
 }
 
 async function fetchWorldFallback(params: { emotion?: string; since?: Date }): Promise<EchoMapFeatureCollection> {
