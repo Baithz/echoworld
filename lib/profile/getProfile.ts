@@ -126,19 +126,6 @@ export function normalizeHandleForUrl(input: string): string {
     .slice(0, 32);
 }
 
-/**
- * Fallback utile quand la BDD contient un handle "sans accents"
- * mais l’input ou l’URL a été générée depuis un handle accentué (ou inversement).
- */
-function foldDiacritics(input: string): string {
-  try {
-    return (input ?? '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
-  } catch {
-    return input ?? '';
-  }
-}
 
 function pickProfile(row: ProfileRow): PublicProfile {
   return {
@@ -212,80 +199,83 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
     return null;
   }
 
-  const noAt = raw.replace(/^@/, '').trim();
-  const normalized = normalizeHandleForLookup(noAt);
-  const urlNorm = normalizeHandleForUrl(noAt);
-  const folded = foldDiacritics(normalized);
-  const foldedUrlNorm = foldDiacritics(urlNorm);
+  const normalized = normalizeHandleForLookup(raw);
+  const urlNorm = normalizeHandleForUrl(raw);
 
-  // Ordre IMPORTANT : on tente d’abord les valeurs les plus probables / cohérentes.
-  const candidates = Array.from(
-    new Set(
-      [normalized, noAt, urlNorm, folded, foldedUrlNorm]
-        .map((s) => String(s ?? '').trim())
-        .filter(Boolean)
-    )
-  );
-
-  log('getProfileByHandle: candidates', { raw: noAt, candidates });
+  log(`getProfileByHandle: lookup raw="${raw}" normalized="${normalized}" urlNorm="${urlNorm}"`);
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // Helper: essai exact (eq)
-    const tryEq = async (value: string) => {
-      const { data, error } = await supabase
+    // 1) EQ (rapide si handle stocké déjà en lowercase)
+    const r1 = await supabase
+      .from('profiles')
+      .select(PROFILE_SELECT)
+      .eq('handle', normalized)
+      .maybeSingle<ProfileRow>();
+
+    if (r1.error) {
+      logError(`getProfileByHandle: Erreur Supabase (eq) handle="${normalized}"`, r1.error);
+      return null;
+    }
+    if (r1.data) {
+      log(`getProfileByHandle: Profil trouvé (eq) → id=${r1.data.id}, handle=${r1.data.handle}`);
+      return pickProfile(r1.data);
+    }
+
+    // 2) ILIKE exact (case-insensitive, sans wildcard)
+    const r2 = await supabase
+      .from('profiles')
+      .select(PROFILE_SELECT)
+      .ilike('handle', normalized)
+      .maybeSingle<ProfileRow>();
+
+    if (r2.error) {
+      logError(`getProfileByHandle: Erreur Supabase (ilike) handle="${normalized}"`, r2.error);
+      return null;
+    }
+    if (r2.data) {
+      log(`getProfileByHandle: Profil trouvé (ilike) → id=${r2.data.id}, handle=${r2.data.handle}`);
+      return pickProfile(r2.data);
+    }
+
+    // 3) Fallback URL-normalized (si le handle stocké a été "nettoyé" style URL)
+    if (urlNorm && urlNorm !== normalized) {
+      const r3 = await supabase
         .from('profiles')
         .select(PROFILE_SELECT)
-        .eq('handle', value)
+        .eq('handle', urlNorm)
         .maybeSingle<ProfileRow>();
 
-      if (error) {
-        logError(`getProfileByHandle: Erreur Supabase eq(handle,"${value}")`, error);
-        return { ok: false as const, data: null as ProfileRow | null };
+      if (r3.error) {
+        logError(`getProfileByHandle: Erreur Supabase (eq urlNorm) handle="${urlNorm}"`, r3.error);
+        return null;
       }
-      return { ok: true as const, data: data ?? null };
-    };
+      if (r3.data) {
+        log(`getProfileByHandle: Profil trouvé (eq urlNorm) → id=${r3.data.id}, handle=${r3.data.handle}`);
+        return pickProfile(r3.data);
+      }
 
-    // Helper: essai case-insensitive (ilike exact)
-    const tryIlikeExact = async (value: string) => {
-      const { data, error } = await supabase
+      const r4 = await supabase
         .from('profiles')
         .select(PROFILE_SELECT)
-        .ilike('handle', value)
+        .ilike('handle', urlNorm)
         .maybeSingle<ProfileRow>();
 
-      if (error) {
-        logError(`getProfileByHandle: Erreur Supabase ilike(handle,"${value}")`, error);
-        return { ok: false as const, data: null as ProfileRow | null };
+      if (r4.error) {
+        logError(`getProfileByHandle: Erreur Supabase (ilike urlNorm) handle="${urlNorm}"`, r4.error);
+        return null;
       }
-      return { ok: true as const, data: data ?? null };
-    };
-
-    // 1) EQ exact sur candidats
-    for (const c of candidates) {
-      const r = await tryEq(c);
-      if (!r.ok) return null; // erreur supabase => stop (évite bruit)
-      if (r.data) {
-        log('getProfileByHandle: match eq', { c, id: r.data.id, handle: r.data.handle });
-        return pickProfile(r.data);
+      if (r4.data) {
+        log(`getProfileByHandle: Profil trouvé (ilike urlNorm) → id=${r4.data.id}, handle=${r4.data.handle}`);
+        return pickProfile(r4.data);
       }
     }
 
-    // 2) ILIKE exact sur candidats (rattrape handles historiques avec casse différente)
-    for (const c of candidates) {
-      const r = await tryIlikeExact(c);
-      if (!r.ok) return null;
-      if (r.data) {
-        log('getProfileByHandle: match ilike', { c, id: r.data.id, handle: r.data.handle });
-        return pickProfile(r.data);
-      }
-    }
-
-    log('getProfileByHandle: Aucun profil trouvé', { raw: noAt, candidates });
+    log(`getProfileByHandle: Aucun profil trouvé (raw="${raw}", normalized="${normalized}", urlNorm="${urlNorm}")`);
     return null;
   } catch (err) {
-    logError(`getProfileByHandle: Exception pour handle="${raw}"`, err);
+    logError(`getProfileByHandle: Exception pour handle="${normalized}"`, err);
     return null;
   }
 }
