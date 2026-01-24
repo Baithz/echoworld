@@ -2,23 +2,23 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.7.1 (2026-01-24)
- * Objet        : Flux d'échos — branche EchoItem (media + reactions + mirror + DM + commentaires)
+ * Version      : 1.8.0 (2026-01-24)
+ * Objet        : Flux d'échos — branche EchoItem (media + reactions + mirror + DM + commentaires) — PHASE 5
  * -----------------------------------------------------------------------------
- * PHASE 3 — Activer les commentaires partout (lecture + ajout)
- * - [PHASE3] Ajoute le calcul/agrégation comments_count (echo_responses) si absent des queries
- * - [PHASE3] Alimente EchoItem.comments_count pour badge + ouverture CommentsModal (via EchoItem)
- * - [KEEP] Zéro régression: likes, share, mirror, DM, hero, toasts, media fallback inchangés
- * - [KEEP] Réactions PHASE2 (echo_reactions.reaction_type) + compat keys legacy conservées
- *
- * PHASE 3bis — Realtime comments_count (incrément local uniquement)
- * - [PHASE3bis] Feed = source centrale du compteur (state commentsCountById)
- * - [PHASE3bis] Ajoute onCommentInserted(echoId) => +1 local (jamais de décrément)
- * - [PHASE3bis] Seed initial du compteur via query/fallback, sans écraser les incréments (max)
- * - [PHASE3bis] Passe currentUserId/canPost à EchoItem pour activer l’ajout en modale (sinon lecture seule)
+ * PHASE 5 — Mirror & DM (alignés sur la BDD réelle)
+ * - [PHASE5] DM: startDirectConversation(userId, otherUserId, echoId) pour lier la conv à l’écho (echo_id)
+ * - [PHASE5] DM: compat retour startDirectConversation (flat + data) => zéro régression
+ * - [PHASE5] DM: respect echo.can_dm (bloque DM si false)
+ * - [KEEP] Comments PHASE3/3bis inchangés (source centrale commentsCountById + incrément local only)
+ * - [KEEP] Likes / Share / Mirror / Réactions + compat NEW→LEGACY inchangés
+ * - [SAFE] Aucun `any` explicite, best-effort + toasts, pas de crash si colonnes absentes
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.8.0 (2026-01-24)
+ * - [PHASE5] DM aligné conversations/echo_id + compat contract startDirectConversation
+ * - [PHASE5] DM respecte can_dm (si false => toast)
+ * - [KEEP] Zéro régression sur le reste
  * 1.7.1 (2026-01-24)
  * - [PHASE3bis] Passe currentUserId/canPost à EchoItem => commentaires postables quand connecté
  * - [KEEP] API publique EchoFeed inchangée
@@ -114,7 +114,9 @@ function toOfficialReactionType(t: AnyReactionKey): ReactionKey {
   return LEGACY_TO_NEW[t];
 }
 
-function withCompatKeysCounts(base: Record<ReactionKey, number>): Record<ReactionKey | LegacyResonanceType, number> {
+function withCompatKeysCounts(
+  base: Record<ReactionKey, number>
+): Record<ReactionKey | LegacyResonanceType, number> {
   return {
     understand: base.understand ?? 0,
     support: base.support ?? 0,
@@ -125,7 +127,9 @@ function withCompatKeysCounts(base: Record<ReactionKey, number>): Record<Reactio
   };
 }
 
-function withCompatKeysByMe(base: Record<ReactionKey, boolean>): Record<ReactionKey | LegacyResonanceType, boolean> {
+function withCompatKeysByMe(
+  base: Record<ReactionKey, boolean>
+): Record<ReactionKey | LegacyResonanceType, boolean> {
   return {
     understand: base.understand ?? false,
     support: base.support ?? false,
@@ -562,19 +566,47 @@ export default function EchoFeed({
     showToast('ok', 'Mirror envoyé.');
   };
 
-  const onMessage = async (toUserId: string) => {
+  /**
+   * PHASE 5 — DM aligné BDD réelle
+   * - lie la conv à l’écho via echoId (echo_id côté conversations)
+   * - compat: startDirectConversation peut renvoyer flat OU data (suivant version)
+   * - respecte echo.can_dm si fourni
+   */
+  const onMessage = async (toUserId: string, echoId?: string, canDm?: boolean | null) => {
     if (!userId) {
       showToast('error', 'Connecte-toi pour envoyer un message.');
       return;
     }
+    if (!toUserId) {
+      showToast('error', 'Auteur indisponible.');
+      return;
+    }
+    if (canDm === false) {
+      showToast('error', 'Messages désactivés pour cet écho.');
+      return;
+    }
 
-    const res = await startDirectConversation({ userId, otherUserId: toUserId });
+    const res = await startDirectConversation({
+      userId,
+      otherUserId: toUserId,
+      echoId: echoId ?? null,
+    });
+
     if (!res.ok) {
       showToast('error', res.error ?? 'Impossible de démarrer la conversation.');
       return;
     }
 
-    const conversationId = res.data.conversationId;
+    // compat: flat ou data
+    const conversationId =
+      typeof (res as unknown as { conversationId?: unknown }).conversationId === 'string'
+        ? String((res as unknown as { conversationId: string }).conversationId)
+        : String((res as unknown as { data?: { conversationId?: unknown } }).data?.conversationId ?? '');
+
+    if (!conversationId) {
+      showToast('error', 'Conversation créée mais id introuvable.');
+      return;
+    }
 
     if (onOpenConversation) {
       onOpenConversation(conversationId);
@@ -692,6 +724,8 @@ export default function EchoFeed({
               // PHASE 3bis — Source centrale: state (seeded + incréments)
               const count = Math.max(0, safeNumber(commentsCountById[e.id] ?? 0, 0));
 
+              const authorId = (e.user_id ?? '').trim();
+
               return (
                 <EchoItem
                   key={e.id}
@@ -711,7 +745,8 @@ export default function EchoFeed({
                   resByMe={withCompatKeysByMe(byMe)}
                   onResonance={onResonance}
                   onMirror={onMirror}
-                  onMessage={onMessage}
+                  // ✅ PHASE 5: on lie DM à l’écho (echo_id) + respecte can_dm
+                  onMessage={() => void onMessage(authorId, e.id, e.can_dm)}
                   onOpenEcho={onOpenEcho}
                   onShare={onShare}
                   copied={copiedId === e.id}

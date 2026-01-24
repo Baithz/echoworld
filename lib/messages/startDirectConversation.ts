@@ -1,17 +1,27 @@
 // =============================================================================
 // Fichier      : lib/messages/startDirectConversation.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.0.1 (2026-01-22)
-// Objet        : Démarrer/ouvrir une conversation DIRECTE (2 membres) — client
+// Version      : 1.1.1 (2026-01-24)
+// Objet        : Démarrer/ouvrir une conversation DIRECTE (2 membres) — aligné BDD réelle
 // -----------------------------------------------------------------------------
-// FIX v1.0.1
-// - [FIX] TS "never" sur insert/select (tables non présentes dans Database types)
-// - [SAFE] Logique métier inchangée (recherche conv existante + création + membres)
+// FIX v1.1.1
+// - [FIX] Backward-compat : conserve res.data.conversationId (anciens callers)
+// - [KEEP] Conserve aussi le retour flat { ok, conversationId, created } (nouveaux callers)
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
 
-type Res<T> = { ok: true; data: T } | { ok: false; error?: string };
+type Ko = { ok: false; error?: string };
+
+// ✅ OK: flat + data (compat)
+type Ok = {
+  ok: true;
+  conversationId: string;
+  created: boolean;
+  data: { conversationId: string; created: boolean };
+};
+
+type Res = Ok | Ko;
 
 function errMsg(e: unknown, fallback: string): string {
   if (!e) return fallback;
@@ -22,108 +32,133 @@ function errMsg(e: unknown, fallback: string): string {
   return fallback;
 }
 
-/* ============================================================================
- * HELPERS — neutralise le "never" des generics Supabase
- * (quand Database n'inclut pas les tables)
- * ============================================================================
- */
-type PostgrestErrorLike = { message?: string } | null;
-type PostgrestResultLike<T> = { data: T | null; error: PostgrestErrorLike };
+type PgErr = { message?: string } | null;
+type PgRes<T> = { data: T | null; error: PgErr };
 
-// Builder minimal : chain + await (thenable)
-type AnyQuery = PromiseLike<PostgrestResultLike<unknown>> & {
-  select: (columns: string) => AnyQuery;
-  eq: (column: string, value: unknown) => AnyQuery;
-  in: (column: string, values: readonly unknown[]) => AnyQuery;
-  order: (column: string, opts?: { ascending?: boolean }) => AnyQuery;
-  insert: (values: unknown) => AnyQuery;
-  delete: () => AnyQuery;
-  update: (values: unknown) => AnyQuery;
-  single: () => Promise<PostgrestResultLike<unknown>>;
-  maybeSingle: () => Promise<PostgrestResultLike<unknown>>;
+type Chain = {
+  select: (...args: unknown[]) => Chain;
+  insert: (values: unknown) => Promise<PgRes<unknown>>;
+  eq: (...args: unknown[]) => Chain;
+  in: (...args: unknown[]) => Chain;
+  order: (...args: unknown[]) => Chain;
+  limit: (n: number) => Chain;
+  maybeSingle: () => Promise<PgRes<unknown>>;
 };
 
-function table(name: string): AnyQuery {
-  return supabase.from(name) as unknown as AnyQuery;
+function table(name: string): Chain {
+  return (supabase.from(name) as unknown) as Chain;
+}
+
+type ConvRow = { id: string; type: string; echo_id: string | null };
+type MemberRow = { conversation_id: string };
+
+function uniq(arr: string[]): string[] {
+  return Array.from(new Set(arr.filter(Boolean)));
 }
 
 export async function startDirectConversation({
   userId,
   otherUserId,
+  echoId = null,
 }: {
   userId: string;
   otherUserId: string;
-}): Promise<Res<{ conversationId: string }>> {
-  if (userId === otherUserId) return { ok: false, error: 'Conversation invalide.' };
+  echoId?: string | null;
+}): Promise<Res> {
+  const me = (userId ?? '').trim();
+  const other = (otherUserId ?? '').trim();
+
+  if (!me || !other) return { ok: false, error: 'Conversation invalide.' };
+  if (me === other) return { ok: false, error: 'Conversation invalide.' };
 
   try {
-    // 1) conv ids du user
-    const qMine = table('conversation_members')
+    // 1) mes conv ids
+    const mineRes = (await (table('conversation_members')
       .select('conversation_id')
-      .eq('user_id', userId);
+      .eq('user_id', me) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
 
-    const { data: mine, error: e1 } = await qMine;
-    if (e1) return { ok: false, error: e1.message };
+    if (mineRes.error) return { ok: false, error: mineRes.error.message };
 
-    const mineIds = ((mine ?? []) as unknown as { conversation_id: string }[]).map(
-      (r) => r.conversation_id
-    );
+    const mineIds = Array.isArray(mineRes.data)
+      ? uniq((mineRes.data as MemberRow[]).map((r) => String(r.conversation_id)))
+      : [];
 
-    if (mineIds.length) {
-      // 2) intersection avec otherUserId
-      const qCommon = table('conversation_members')
+    if (mineIds.length > 0) {
+      // 2) intersection avec other
+      const commonRes = (await (table('conversation_members')
         .select('conversation_id')
-        .eq('user_id', otherUserId)
-        .in('conversation_id', mineIds);
+        .eq('user_id', other)
+        .in('conversation_id', mineIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
 
-      const { data: common, error: e2 } = await qCommon;
+      if (!commonRes.error && Array.isArray(commonRes.data) && commonRes.data.length > 0) {
+        const commonIds = uniq((commonRes.data as MemberRow[]).map((r) => String(r.conversation_id)));
 
-      if (!e2 && common && (common as unknown[]).length) {
-        const convId = String((common as unknown as { conversation_id: string }[])[0].conversation_id);
+        // 3) vérifier conv direct + echo_id aligné
+        const q = table('conversations')
+          .select('id,type,echo_id,updated_at')
+          .in('id', commonIds)
+          .eq('type', 'direct')
+          .eq('echo_id', echoId)
+          .order('updated_at', { ascending: false })
+          .limit(1);
 
-        // 3) vérifier "direct" si possible (fail-soft)
-        const { data: conv, error: e3 } = await table('conversations')
-          .select('id,type')
-          .eq('id', convId)
-          .maybeSingle();
-
-        if (!e3 && conv) {
-          const t = (conv as unknown as { type?: unknown }).type;
-          if (t === 'direct') {
-            return { ok: true, data: { conversationId: convId } };
-          }
+        const qRes = await q.maybeSingle();
+        if (!qRes.error && qRes.data) {
+          const c = qRes.data as ConvRow;
+          const conversationId = String(c.id);
+          return {
+            ok: true,
+            conversationId,
+            created: false,
+            data: { conversationId, created: false },
+          };
         }
 
-        // Si colonne absente / non vérifiable : on renvoie quand même la conv trouvée
-        return { ok: true, data: { conversationId: convId } };
+        // fail-soft: renvoyer quand même une conv commune
+        const fallbackId = commonIds[0];
+        if (fallbackId) {
+          return {
+            ok: true,
+            conversationId: fallbackId,
+            created: false,
+            data: { conversationId: fallbackId, created: false },
+          };
+        }
       }
     }
 
     // 4) créer conversation
-    const { data: created, error: e4 } = await table('conversations')
-      .insert({
-        type: 'direct',
-        title: null,
-        created_by: userId,
-      })
-      .select('id')
-      .single();
+    const createdRes = await table('conversations').insert({
+      type: 'direct',
+      title: null,
+      created_by: me,
+      echo_id: echoId,
+    });
 
-    if (e4 || !created) {
-      return { ok: false, error: e4?.message ?? 'Création conversation impossible.' };
+    if (createdRes.error) {
+      return { ok: false, error: createdRes.error.message ?? 'Création conversation impossible.' };
     }
 
-    const conversationId = String((created as unknown as { id: string }).id);
+    const createdRow = (createdRes.data as { id?: unknown } | null) ?? null;
+    const conversationId = String(createdRow?.id ?? '').trim();
+    if (!conversationId) return { ok: false, error: 'Conversation créée mais id introuvable.' };
 
-    // 5) créer membres
-    const { error: e5 } = await table('conversation_members').insert([
-      { conversation_id: conversationId, user_id: userId, role: 'member' },
-      { conversation_id: conversationId, user_id: otherUserId, role: 'member' },
+    // 5) membres
+    const membersRes = await table('conversation_members').insert([
+      { conversation_id: conversationId, user_id: me, role: 'member' },
+      { conversation_id: conversationId, user_id: other, role: 'member' },
     ]);
 
-    if (e5) return { ok: false, error: e5.message };
+    if (membersRes.error) {
+      return { ok: false, error: membersRes.error.message ?? 'Ajout des membres impossible.' };
+    }
 
-    return { ok: true, data: { conversationId } };
+    return {
+      ok: true,
+      conversationId,
+      created: true,
+      data: { conversationId, created: true },
+    };
   } catch (e) {
     return { ok: false, error: errMsg(e, 'Erreur conversation.') };
   }

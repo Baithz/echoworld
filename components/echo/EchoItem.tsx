@@ -2,9 +2,17 @@
  * =============================================================================
  * Fichier      : components/echo/EchoItem.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.0 (2026-01-24)
+ * Version      : 1.5.0 (2026-01-24)
  * Objet        : EchoItem UI (affichage + réactions + mirror + DM + commentaires + partage) — SAFE
  * -----------------------------------------------------------------------------
+ * PHASE 5 — DM (aligné EchoDetailPage v1.5.0)
+ * - [PHASE5] Respecte echo.can_dm (si false => bouton Message désactivé + tooltip)
+ * - [PHASE5] Respecte currentUserId (si null => bouton Message désactivé + tooltip)
+ * - [PHASE5] Empêche DM vers soi-même (currentUserId === authorId)
+ * - [KEEP] Contract props inchangé (onMessage(toUserId) conservé)
+ * - [KEEP] Mirror, Share, CommentsModal, Reactions compat inchangés
+ * - [SAFE] Aucun `any`, zéro régression
+ *
  * PHASE 4 — Partage (UI + DB)
  * - [PHASE4] Passe userId optionnel à ShareModal (log echo_shares côté modal, best-effort)
  * - [KEEP] UI ShareModal inchangée (ouverture identique)
@@ -63,6 +71,8 @@ export type EchoRow = {
 
   comments_count?: number | null;
   mirrored?: boolean | null;
+
+  // viewer meta (optionnel selon query)
   can_dm?: boolean | null;
 };
 
@@ -98,7 +108,7 @@ type Props = {
   // PHASE 3bis — signal parent (incrément local uniquement)
   onCommentInserted?: () => void;
 
-  // PHASE 3bis — optionnel: si fourni => modale commentable
+  // PHASE 3bis / 5 — identité viewer (pour activer post + DM)
   currentUserId?: string | null;
   canPost?: boolean;
 };
@@ -159,7 +169,27 @@ export default function EchoItem(props: Props) {
   const emo = useMemo(() => emotionLabel(echo.emotion), [echo.emotion]);
 
   const authorId = echo.user_id ?? '';
-  const canMessage = !!authorId;
+
+  // PHASE 3bis — mode posting optionnel, sans casser les anciens callers
+  const currentUserId = props.currentUserId ?? null;
+  const canPost = typeof props.canPost === 'boolean' ? props.canPost : !!currentUserId;
+
+  // PHASE 5 — DM gating (no regression: n'influence pas onMessage signature)
+  const canMessage = useMemo(() => {
+    if (!authorId) return false;
+    if (!currentUserId) return false;
+    if (currentUserId === authorId) return false;
+    if (echo.can_dm === false) return false;
+    return true;
+  }, [authorId, currentUserId, echo.can_dm]);
+
+  const messageTitle = useMemo(() => {
+    if (!authorId) return 'Auteur indisponible';
+    if (!currentUserId) return 'Connecte-toi pour envoyer un message';
+    if (currentUserId === authorId) return 'Impossible de te DM toi-même';
+    if (echo.can_dm === false) return 'Messages désactivés pour cet écho';
+    return 'Envoyer un message';
+  }, [authorId, currentUserId, echo.can_dm]);
 
   const commentsCount = useMemo(() => {
     const n = typeof echo.comments_count === 'number' ? echo.comments_count : 0;
@@ -178,10 +208,6 @@ export default function EchoItem(props: Props) {
   const media = useMemo(() => normalizeMedia(props.media), [props.media]);
   const previewPhotos = useMemo(() => media.slice(0, 3), [media]);
   const extraCount = Math.max(0, media.length - 3);
-
-  // PHASE 3bis — mode posting optionnel, sans casser les anciens callers
-  const currentUserId = props.currentUserId ?? null;
-  const canPost = typeof props.canPost === 'boolean' ? props.canPost : !!currentUserId;
 
   return (
     <>
@@ -275,12 +301,7 @@ export default function EchoItem(props: Props) {
               <MessageCircle className="h-4 w-4" />
               Commentaires
               {commentsCount > 0 ? (
-                <span
-                  key={commentsCount}
-                  className="ml-1 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white animate-pulse-once"
-                >
-                  {commentsCount}
-                </span>
+                <span className="ml-1 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{commentsCount}</span>
               ) : null}
             </button>
 
@@ -316,6 +337,7 @@ export default function EchoItem(props: Props) {
               type="button"
               onClick={() => (canMessage ? props.onMessage(authorId) : null)}
               disabled={!canMessage}
+              title={messageTitle}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <MessageCircle className="h-4 w-4" />

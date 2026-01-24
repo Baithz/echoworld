@@ -2,9 +2,20 @@
  * =============================================================================
  * Fichier      : app/echo/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.0 (2026-01-24)
- * Objet        : Lecture d’un écho + interactions (P0)
+ * Version      : 1.5.0 (2026-01-24)
+ * Objet        : Lecture d’un écho + interactions (P0) — PHASE 5
  * -----------------------------------------------------------------------------
+ * PHASE 5 — Mirror & DM (alignés sur la BDD réelle)
+ * - [PHASE5] Ajoute bouton “Message” (DM) sur la page détail
+ * - [PHASE5] Démarre/ouvre une conv directe via startDirectConversation({ userId, otherUserId, echoId })
+ * - [PHASE5] Lie la conversation à l’écho via conversations.echo_id (echoId passé au starter)
+ * - [PHASE5] Respecte echo.can_dm (si false => action bloquée + message)
+ * - [PHASE5] Compat retour startDirectConversation (flat + data) + navigation fallback
+ * - [KEEP] Partage PHASE4 (viewerId) inchangé
+ * - [KEEP] Comments PHASE3/3bis inchangés (badge + incrément local)
+ * - [KEEP] Réactions PHASE2, Mirror/Photos/UI conservés
+ * - [SAFE] Best-effort, zéro régression runtime
+ *
  * PHASE 4 — Partage (UI + DB)
  * - [PHASE4] Passe viewerId à ShareModal pour permettre le log DB (echo_shares) côté modal
  * - [KEEP] UI ShareModal inchangée, ouverture identique
@@ -32,6 +43,7 @@ import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 import ShareModal from '@/components/echo/ShareModal';
 import CommentsModal from '@/components/echo/CommentsModal';
 import { fetchCommentsCountMeta } from '@/lib/echo/comments';
+import { startDirectConversation } from '@/lib/messages/startDirectConversation';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
@@ -52,6 +64,9 @@ type EchoRow = {
 
   // photos (table echoes)
   image_urls?: string[] | null;
+
+  // viewer meta (optionnel selon query / fallback)
+  can_dm?: boolean | null;
 };
 
 type ProfileRow = {
@@ -159,6 +174,9 @@ export default function EchoDetailPage() {
   const [reactCounts, setReactCounts] = useState<Record<ReactionType, number>>(initReactCounts());
   const [reactBusyKey, setReactBusyKey] = useState<string | null>(null);
 
+  // PHASE 5: DM state
+  const [dmLoading, setDmLoading] = useState(false);
+
   // Client "loose" pour éviter le `never` sur les tables non typées dans Database
   const supabaseLoose = useMemo(() => supabase as unknown as SupabaseClient, []);
 
@@ -205,7 +223,7 @@ export default function EchoDetailPage() {
         const echoRes = await supabase
           .from('echoes')
           .select(
-            'id,user_id,title,content,emotion,language,country,city,is_anonymous,visibility,status,created_at,image_urls'
+            'id,user_id,title,content,emotion,language,country,city,is_anonymous,visibility,status,created_at,image_urls,can_dm'
           )
           .eq('id', echoId)
           .maybeSingle();
@@ -384,6 +402,65 @@ export default function EchoDetailPage() {
       setError(err instanceof Error ? err.message : 'Erreur mirror.');
     } finally {
       setMirrorLoading(false);
+    }
+  };
+
+  /**
+   * PHASE 5 — Démarrer une conversation directe liée à l’écho
+   * - conversations.echo_id = echo.id
+   * - respecte echo.can_dm (si false => stop)
+   * - compat retour startDirectConversation (flat + data)
+   */
+  const startDm = async () => {
+    if (!echo) return;
+
+    setOk(null);
+    setError(null);
+
+    if (!viewerId) {
+      router.push('/login');
+      return;
+    }
+    if (viewerId === echo.user_id) {
+      setError('Impossible de te DM toi-même.');
+      return;
+    }
+    if (echo.can_dm === false) {
+      setError('Messages désactivés pour cet écho.');
+      return;
+    }
+    if (dmLoading) return;
+
+    setDmLoading(true);
+    try {
+      const res = await startDirectConversation({
+        userId: viewerId,
+        otherUserId: echo.user_id,
+        echoId: echo.id,
+      });
+
+      if (!res.ok) {
+        setError(res.error ?? 'Impossible de démarrer la conversation.');
+        return;
+      }
+
+      const conversationId =
+        typeof (res as unknown as { conversationId?: unknown }).conversationId === 'string'
+          ? String((res as unknown as { conversationId: string }).conversationId)
+          : String((res as unknown as { data?: { conversationId?: unknown } }).data?.conversationId ?? '');
+
+      if (!conversationId) {
+        setError('Conversation créée mais id introuvable.');
+        return;
+      }
+
+      // ✅ Fallback universel: route "conversation" (si tu as un dock, il pourra intercepter ailleurs)
+      router.push(`/messages?c=${encodeURIComponent(conversationId)}`);
+      setOk('Conversation ouverte.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erreur DM.');
+    } finally {
+      setDmLoading(false);
     }
   };
 
@@ -577,6 +654,29 @@ export default function EchoDetailPage() {
               {commentsCount > 0 ? (
                 <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{commentsCount}</span>
               ) : null}
+            </button>
+
+            {/* PHASE 5 — DM */}
+            <button
+              type="button"
+              onClick={() => void startDm()}
+              disabled={!viewerId || dmLoading || viewerId === echo.user_id || echo.can_dm === false}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                viewerId && viewerId !== echo.user_id && echo.can_dm !== false
+                  ? 'bg-slate-900 text-white shadow-lg hover:opacity-95'
+                  : 'cursor-not-allowed bg-slate-200 text-slate-500'
+              }`}
+              title={
+                !viewerId
+                  ? 'Connecte-toi pour envoyer un message'
+                  : viewerId === echo.user_id
+                    ? 'Impossible de te DM toi-même'
+                    : echo.can_dm === false
+                      ? 'Messages désactivés pour cet écho'
+                      : 'Envoyer un message'
+              }
+            >
+              {dmLoading ? '…' : 'Message'}
             </button>
 
             <button
