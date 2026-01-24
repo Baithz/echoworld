@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.6.0 (2026-01-24)
+// Version      : 1.6.1 (2026-01-24)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
@@ -11,6 +11,10 @@
 // - isFollowing via table follows (RLS OK)
 // ----------------------------------------------------------------------------
 // CHANGELOG
+// 1.6.1 (2026-01-24)
+// - [FIX] getProfileByHandle: lookup tolérant sans casser le contrat (eq + ilike + fallbacks)
+// - [FIX] Zéro bruit ESLint : pas de destructuring mutable (prefer-const)
+// - [KEEP] Types/export/API inchangés + logs conservés
 // 1.6.0 (2026-01-24)
 // - [FIX] CRITIQUE: Normalisation handle cohérente avec l'index BDD lower(handle)
 // - [FIX] Stratégie de lookup simplifiée (exact lowercase uniquement)
@@ -103,12 +107,12 @@ function logError(message: string, error?: unknown) {
 /**
  * CRITICAL: Normalisation STRICTEMENT IDENTIQUE à celle utilisée lors de l'enregistrement
  * du handle en BDD (via /account ou /settings).
- * 
+ *
  * Règles :
  * 1. Suppression du @ initial (si présent)
  * 2. Trim espaces début/fin
  * 3. Lowercase (pour matcher l'index unique BDD : lower(handle))
- * 
+ *
  * Cette fonction doit retourner EXACTEMENT ce qui est stocké en BDD.
  * PAS de remplacement d'espaces, PAS de filtrage de caractères spéciaux ici.
  */
@@ -209,32 +213,87 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
 
   // Normalisation STRICTE pour matcher l'index BDD lower(handle)
   const normalized = normalizeHandleForLookup(raw);
-  
-  log(`getProfileByHandle: lookup pour "${raw}" → normalized="${normalized}"`);
+
+  // Version "telle que saisie" (sans @) pour compat handles historiques stockés avec casse
+  const rawNoAt = raw.replace(/^@/, '').trim();
+
+  log(`getProfileByHandle: lookup raw="${raw}" → normalized="${normalized}"`);
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // Stratégie simplifiée : lookup UNIQUEMENT sur la version normalisée lowercase
-    // (car l'index BDD est lower(handle))
-    const { data, error } = await supabase
-      .from('profiles')
-      .select(PROFILE_SELECT)
-      .eq('handle', normalized)
-      .maybeSingle<ProfileRow>();
+    async function tryEq(value: string): Promise<ProfileRow | null> {
+      const v = (value ?? '').trim();
+      if (!v) return null;
 
-    if (error) {
-      logError(`getProfileByHandle: Erreur Supabase pour handle="${normalized}"`, error);
+      const r = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .eq('handle', v)
+        .maybeSingle<ProfileRow>();
+
+      if (r.error) {
+        logError(`getProfileByHandle: Erreur Supabase (eq) handle="${v}"`, r.error);
+        return null;
+      }
+      return r.data ?? null;
+    }
+
+    async function tryIlike(value: string): Promise<ProfileRow | null> {
+      const v = (value ?? '').trim();
+      if (!v) return null;
+
+      // ilike sans wildcard => égalité case-insensitive
+      const r = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .ilike('handle', v)
+        .maybeSingle<ProfileRow>();
+
+      if (r.error) {
+        logError(`getProfileByHandle: Erreur Supabase (ilike) handle="${v}"`, r.error);
+        return null;
+      }
+      return r.data ?? null;
+    }
+
+    let found: ProfileRow | null = null;
+
+    // 1) eq(normalized) => idéal si handle stocké en lowercase (cas attendu)
+    found = await tryEq(normalized);
+
+    // 2) eq(rawNoAt) => si handle stocké avec casse (ex: "Pouete")
+    if (!found && rawNoAt && rawNoAt !== normalized) {
+      found = await tryEq(rawNoAt);
+    }
+
+    // 3) ilike(normalized) => match case-insensitive (handles historiques)
+    if (!found) {
+      found = await tryIlike(normalized);
+    }
+
+    // 4) ilike(rawNoAt) => secours
+    if (!found && rawNoAt && rawNoAt !== normalized) {
+      found = await tryIlike(rawNoAt);
+    }
+
+    // 5) fallback url-normalisé (underscores / filtrage) si jamais la BDD stocke ce format
+    if (!found) {
+      const urlNorm = normalizeHandleForUrl(rawNoAt);
+      if (urlNorm && urlNorm !== normalized && urlNorm !== rawNoAt) {
+        log(`getProfileByHandle: fallback urlNorm="${urlNorm}" (depuis rawNoAt="${rawNoAt}")`);
+        found = await tryEq(urlNorm);
+        if (!found) found = await tryIlike(urlNorm);
+      }
+    }
+
+    if (!found) {
+      log(`getProfileByHandle: Aucun profil trouvé (raw="${rawNoAt}", normalized="${normalized}")`);
       return null;
     }
 
-    if (!data) {
-      log(`getProfileByHandle: Aucun profil trouvé pour handle="${normalized}"`);
-      return null;
-    }
-
-    log(`getProfileByHandle: Profil trouvé → id=${data.id}, handle=${data.handle}`);
-    return pickProfile(data);
+    log(`getProfileByHandle: Profil trouvé → id=${found.id}, handle=${found.handle}`);
+    return pickProfile(found);
   } catch (err) {
     logError(`getProfileByHandle: Exception pour handle="${normalized}"`, err);
     return null;
