@@ -433,7 +433,7 @@ export default function EchoDetailPage() {
     }
   };
 
-  const photos = useMemo(() => (Array.isArray(echo?.image_urls) ? echo!.image_urls!.filter(Boolean) : []), [echo?.image_urls]);
+  const photos = Array.isArray(echo?.image_urls) ? echo.image_urls.filter(Boolean) : [];
 
   if (loading || authLoading) {
     return (
