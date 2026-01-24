@@ -1,10 +1,15 @@
 // =============================================================================
 // Fichier      : components/for-me/ForMeView.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.0 (2026-01-24)
+// Version      : 1.2.0 (2026-01-24)
 // Description  : Vue "Pour moi" (UI + fetch feed)
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.2.0 (2026-01-24)
+// - [ALIGN] Exploite le contrat Phase 1 quand dispo : image_urls + viewer meta (likes/reactions/comments/can_dm)
+// - [UX] Ajoute badges "signaux" sur les cards (likes + réactions + commentaires) sans changer la navigation
+// - [SAFE] Garde le mode fail-soft: si viewer/media absents => UI inchangée, aucun crash
+// - [KEEP] Zéro régression : auth, fetch, sections, topics, UI existante
 // 1.1.0 (2026-01-24)
 // - [NEW] Preview photos sur les cards (2-3 vignettes + overlay +N) si le feed fournit des URLs
 // - [SAFE] Fallbacks robustes (supporte plusieurs noms de champs possibles sans casser le contrat ForMeFeedItem)
@@ -15,7 +20,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { Sparkles, Heart, Flame, Hash, Settings2, Loader2, Lock } from 'lucide-react';
+import { Sparkles, Heart, Flame, Hash, Settings2, Loader2, Lock, MessageCircle, ThumbsUp, Dot } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { getForMeFeed } from '@/lib/for-me/feed';
 import type { ForMeFeed, ForMeFeedItem } from '@/lib/for-me/types';
@@ -32,11 +37,28 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
+function safeNum(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+}
+
+function sumReactions(item: ForMeFeedItem): number {
+  const rc = item.viewer?.reactions_count;
+  if (!rc) return 0;
+  return safeNum(rc.understand) + safeNum(rc.support) + safeNum(rc.reflect);
+}
+
 /**
  * SAFE: le feed "For me" peut évoluer (noms de champs différents selon requêtes).
  * On récupère une liste d’URLs de photos si elle existe, sans dépendre d’un schéma unique.
  */
 function getItemPhotos(item: ForMeFeedItem): string[] {
+  // Contrat Phase 1 (prioritaire)
+  if (Array.isArray(item.image_urls) && item.image_urls.length > 0) {
+    return item.image_urls.map((x) => String(x ?? '').trim()).filter(Boolean);
+  }
+
+  // Fallback compat (anciens noms)
   const u = item as unknown as {
     photos?: unknown;
     media?: unknown;
@@ -48,7 +70,7 @@ function getItemPhotos(item: ForMeFeedItem): string[] {
   const candidates: unknown[] = [u.photos, u.media, u.image_urls, u.imageUrls];
 
   for (const c of candidates) {
-    if (isStringArray(c)) return c.filter(Boolean);
+    if (isStringArray(c)) return c.map((x) => String(x ?? '').trim()).filter(Boolean);
   }
 
   // dernier recours: champ unique (string) => tableau
@@ -57,8 +79,47 @@ function getItemPhotos(item: ForMeFeedItem): string[] {
   return [];
 }
 
+function SignalsBadges({ item }: { item: ForMeFeedItem }) {
+  const likeCount = safeNum(item.viewer?.like_count);
+  const reactionsTotal = sumReactions(item);
+  const commentsCount = safeNum(item.viewer?.comments_count);
+
+  const hasAny = likeCount > 0 || reactionsTotal > 0 || commentsCount > 0;
+
+  if (!hasAny) return null;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-700">
+      {likeCount > 0 ? (
+        <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/70 px-2.5 py-1">
+          <ThumbsUp className="h-3.5 w-3.5 opacity-70" />
+          {likeCount}
+          <span className="sr-only">likes</span>
+        </span>
+      ) : null}
+
+      {reactionsTotal > 0 ? (
+        <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/70 px-2.5 py-1">
+          <Dot className="h-4 w-4 opacity-60" />
+          {reactionsTotal}
+          <span className="sr-only">réactions</span>
+        </span>
+      ) : null}
+
+      {commentsCount > 0 ? (
+        <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/70 px-2.5 py-1">
+          <MessageCircle className="h-3.5 w-3.5 opacity-70" />
+          {commentsCount}
+          <span className="sr-only">commentaires</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function Card({ item }: { item: ForMeFeedItem }) {
-  const href = item.echoId ? `/echo/${item.echoId}` : '#';
+  const hasEcho = !!item.echoId;
+  const href = hasEcho ? `/echo/${item.echoId}` : '#';
 
   const photos = useMemo(() => getItemPhotos(item), [item]);
   const previewPhotos = useMemo(() => photos.slice(0, 3), [photos]);
@@ -66,15 +127,25 @@ function Card({ item }: { item: ForMeFeedItem }) {
   return (
     <Link
       href={href}
-      className="group block overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur transition hover:bg-white"
       aria-label={item.title}
+      aria-disabled={!hasEcho}
+      onClick={(e) => {
+        if (!hasEcho) e.preventDefault();
+      }}
+      className={`group block overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur transition hover:bg-white ${
+        !hasEcho ? 'cursor-not-allowed opacity-70 hover:bg-white/75' : ''
+      }`}
     >
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="truncate text-base font-extrabold text-slate-900">{item.title}</h3>
             <p className="mt-1 line-clamp-3 text-sm text-slate-600">{safeText(item.excerpt, 190)}</p>
+
+            {/* PHASE 1 — viewer meta (si dispo) */}
+            <SignalsBadges item={item} />
           </div>
+
           <span className="inline-flex items-center rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-[11px] font-semibold text-slate-700">
             {item.meta}
           </span>
@@ -85,8 +156,8 @@ function Card({ item }: { item: ForMeFeedItem }) {
             {previewPhotos.map((src, idx) => (
               <div
                 key={`${item.id}:p:${idx}`}
-                className="group relative aspect-4/3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100"
-                title="Ouvrir l’écho"
+                className="relative aspect-4/3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100"
+                title={hasEcho ? 'Ouvrir l’écho' : 'Écho indisponible'}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img

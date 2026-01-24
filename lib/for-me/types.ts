@@ -1,10 +1,13 @@
 // =============================================================================
 // Fichier      : lib/for-me/types.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.0 (2026-01-24)
+// Version      : 1.1.1 (2026-01-24)
 // Description  : Types "Pour moi" (feed + items)
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.1.1 (2026-01-24)
+// - [ALIGN] Clarifie le contrat "post écho" (image_urls toujours tableau si fourni) sans casser ForMeView
+// - [KEEP] Aucune régression: types existants conservés, champs optionnels inchangés
 // 1.1.0 (2026-01-24)
 // - [PHASE1] Ajout champs optionnels pour aligner le contrat Echo (media + viewer meta) sans régression
 // - [KEEP] Contrat existant inchangé : title/excerpt/meta/echoId/... restent identiques
@@ -16,7 +19,7 @@ export type ForMeViewerMeta = {
   like_count?: number;
   liked_by_me?: boolean;
 
-  // Réactions officielles (future source: echo_reactions)
+  // Réactions officielles (source: echo_reactions)
   reactions_count?: Partial<Record<'understand' | 'support' | 'reflect', number>>;
   reactions_by_me?: Partial<Record<'understand' | 'support' | 'reflect', boolean>>;
 
@@ -30,25 +33,35 @@ export type ForMeViewerMeta = {
 export type ForMeFeedItem = {
   id: string;
   kind: ForMeFeedItemKind;
+
+  // UI shell (inchangé)
   title: string;
   excerpt: string;
   meta: string;
+
+  // ranking / routing
   score?: number;
   echoId?: string;
   topic?: string;
 
   /**
    * Champs optionnels (Phase 1) — alignement “post écho”
-   * NOTE: non utilisés par ForMeView v1.0.0 => zéro régression
+   * NOTE: utilisés progressivement (ForMeView peut rester fail-soft)
    */
   created_at?: string | null;
   city?: string | null;
   country?: string | null;
 
-  // Médias (même logique que partout: toujours tableau, même si vide)
+  /**
+   * Médias
+   * - Toujours un tableau si présent
+   * - Peut être omis si feed ne remonte rien (fail-soft)
+   */
   image_urls?: string[];
 
-  // Métas viewer (likes / reactions / comments / mirror / canDM)
+  /**
+   * Métas viewer (likes / reactions / comments / mirror / canDM)
+   */
   viewer?: ForMeViewerMeta;
 };
 
