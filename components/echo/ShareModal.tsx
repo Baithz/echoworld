@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/echo/ShareModal.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-23)
+ * Version      : 1.1.1 (2026-01-24)
  * Objet        : Modal de partage écho (lien, réseaux sociaux, fil)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,8 +12,21 @@
  * - Partager sur son fil (à venir)
  * - Design premium cohérent
  *
+ * PHASE 4 — DB echo_shares
+ * - Log en DB à chaque action de partage (best-effort, non bloquant)
+ * - URL SSR-safe (évite crash build / prerender)
+ * - (v1.1.1) Accepte userId optionnel (page/feed) pour log côté DB sans régression
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.1.1 (2026-01-24)
+ * - [PHASE4] Ajoute prop optionnelle userId?: string | null pour lier le partage à l’utilisateur
+ * - [KEEP] UI / comportements existants inchangés
+ * - [SAFE] Best-effort : si userId absent => log anonyme/partiel (selon impl recordEchoShare)
+ * 1.1.0 (2026-01-24)
+ * - [PHASE4] Enregistrement DB echo_shares sur chaque action de partage
+ * - [SAFE] URL SSR-safe (window guard) + log non bloquant
+ * - [KEEP] UI / comportements existants inchangés
  * 1.0.0 (2026-01-23)
  * - [NEW] Modal de partage complet
  * =============================================================================
@@ -21,22 +34,40 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { X, Link as LinkIcon, Share2, Check } from 'lucide-react';
+import { recordEchoShare } from '@/lib/echo/actions';
 
 type Props = {
   echoId: string;
+  userId?: string | null; // PHASE 4: optionnel (page/feed/profil)
   onClose: () => void;
 };
 
-export default function ShareModal({ echoId, onClose }: Props) {
+type ShareMethod = 'copy' | 'twitter' | 'facebook' | 'whatsapp' | 'feed';
+
+export default function ShareModal({ echoId, userId = null, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
-  const url = `${window.location.origin}/echo/${echoId}`;
+  // SSR-safe (Next peut prerender un composant client)
+  const url = useMemo(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return origin ? `${origin}/echo/${echoId}` : `/echo/${echoId}`;
+  }, [echoId]);
+
+  const logShare = async (method: ShareMethod) => {
+    // best-effort: ne bloque jamais l’UX du partage
+    try {
+      await recordEchoShare({ echoId, userId, method, url });
+    } catch {
+      /* noop */
+    }
+  };
 
   const handleCopyLink = async () => {
     try {
       await navigator.clipboard.writeText(url);
+      void logShare('copy');
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -45,26 +76,24 @@ export default function ShareModal({ echoId, onClose }: Props) {
   };
 
   const handleShareTwitter = () => {
-    const text = encodeURIComponent("Découvre cet écho sur EchoWorld");
-    window.open(
-      `https://twitter.com/intent/tweet?text=${text}&url=${encodeURIComponent(url)}`,
-      '_blank'
-    );
+    void logShare('twitter');
+    const text = encodeURIComponent('Découvre cet écho sur EchoWorld');
+    window.open(`https://twitter.com/intent/tweet?text=${text}&url=${encodeURIComponent(url)}`, '_blank');
   };
 
   const handleShareFacebook = () => {
-    window.open(
-      `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
-      '_blank'
-    );
+    void logShare('facebook');
+    window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, '_blank');
   };
 
   const handleShareWhatsApp = () => {
+    void logShare('whatsapp');
     const text = encodeURIComponent(`Découvre cet écho sur EchoWorld: ${url}`);
     window.open(`https://wa.me/?text=${text}`, '_blank');
   };
 
   const handleShareToFeed = () => {
+    void logShare('feed');
     // TODO: Implémenter partage sur fil
     alert('Partage sur ton fil à venir !');
   };
@@ -72,10 +101,7 @@ export default function ShareModal({ echoId, onClose }: Props) {
   return (
     <>
       {/* Overlay */}
-      <div
-        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
       <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
@@ -100,19 +126,11 @@ export default function ShareModal({ echoId, onClose }: Props) {
             className="flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition-all hover:border-slate-300 hover:bg-slate-50"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50">
-              {copied ? (
-                <Check className="h-5 w-5 text-emerald-600" />
-              ) : (
-                <LinkIcon className="h-5 w-5 text-slate-700" />
-              )}
+              {copied ? <Check className="h-5 w-5 text-emerald-600" /> : <LinkIcon className="h-5 w-5 text-slate-700" />}
             </div>
             <div className="flex-1">
-              <div className="font-semibold text-slate-900">
-                {copied ? 'Lien copié !' : 'Copier le lien'}
-              </div>
-              <div className="text-xs text-slate-500">
-                Partage ce lien où tu veux
-              </div>
+              <div className="font-semibold text-slate-900">{copied ? 'Lien copié !' : 'Copier le lien'}</div>
+              <div className="text-xs text-slate-500">Partage ce lien où tu veux</div>
             </div>
           </button>
 
@@ -126,12 +144,8 @@ export default function ShareModal({ echoId, onClose }: Props) {
               <Share2 className="h-5 w-5 text-violet-600" />
             </div>
             <div className="flex-1">
-              <div className="font-semibold text-slate-900">
-                Partager sur ton fil
-              </div>
-              <div className="text-xs text-slate-500">
-                Partage avec ta communauté EchoWorld
-              </div>
+              <div className="font-semibold text-slate-900">Partager sur ton fil</div>
+              <div className="text-xs text-slate-500">Partage avec ta communauté EchoWorld</div>
             </div>
           </button>
 
@@ -141,9 +155,7 @@ export default function ShareModal({ echoId, onClose }: Props) {
               <div className="w-full border-t border-slate-200" />
             </div>
             <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-2 text-slate-500">
-                Ou partage sur
-              </span>
+              <span className="bg-white px-2 text-slate-500">Ou partage sur</span>
             </div>
           </div>
 

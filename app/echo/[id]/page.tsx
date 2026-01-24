@@ -2,9 +2,16 @@
  * =============================================================================
  * Fichier      : app/echo/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-24)
+ * Version      : 1.4.0 (2026-01-24)
  * Objet        : Lecture d’un écho + interactions (P0)
  * -----------------------------------------------------------------------------
+ * PHASE 4 — Partage (UI + DB)
+ * - [PHASE4] Passe viewerId à ShareModal pour permettre le log DB (echo_shares) côté modal
+ * - [KEEP] UI ShareModal inchangée, ouverture identique
+ * - [KEEP] PHASE 3/3bis (CommentsModal + badge incrément local) inchangés
+ * - [KEEP] Réactions PHASE 2, Mirror/Photos/UI conservés
+ * - [SAFE] Zéro régression runtime : prop ajoutée optionnelle côté modal
+ *
  * Fix v1.3.1 (PHASE 3bis) :
  * - [FIX] Remplace prop obsolète onCountChange -> onCommentInserted (CommentsModal v1.2.0)
  * - [PHASE3bis] Compteur comments_count géré localement par la page (incrément local uniquement)
@@ -749,7 +756,8 @@ export default function EchoDetailPage() {
         </section>
       </main>
 
-      {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+      {/* PHASE 4: on passe viewerId (optionnel) au modal de partage pour log DB */}
+      {shareOpen ? <ShareModal echoId={echo.id} userId={viewerId} onClose={() => setShareOpen(false)} /> : null}
 
       {commentsOpen ? (
         <CommentsModal

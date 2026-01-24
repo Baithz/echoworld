@@ -2,14 +2,21 @@
  * =============================================================================
  * Fichier      : components/echo/EchoItem.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-24)
- * Objet        : EchoItem UI (affichage + réactions + mirror + DM + commentaires) — SAFE
+ * Version      : 1.4.0 (2026-01-24)
+ * Objet        : EchoItem UI (affichage + réactions + mirror + DM + commentaires + partage) — SAFE
  * -----------------------------------------------------------------------------
+ * PHASE 4 — Partage (UI + DB)
+ * - [PHASE4] Passe userId optionnel à ShareModal (log echo_shares côté modal, best-effort)
+ * - [KEEP] UI ShareModal inchangée (ouverture identique)
+ * - [KEEP] Commentaires PHASE 3/3bis inchangés
+ * - [KEEP] Réactions officielles + compat NEW→LEGACY inchangées
+ * - [SAFE] Aucun `any`, props inchangées, zéro régression
+ *
  * PHASE 3 — Activer les commentaires partout (lecture + ajout)
  * - [PHASE3] Ajoute bouton “Commentaires” + badge (echo.comments_count) sans casser le contrat props
  * - [PHASE3] Ouvre CommentsModal depuis EchoItem (feed/profil/etc.)
  * - [KEEP] Réactions (officielles) + compat mapping NEW→LEGACY inchangés
- * - [KEEP] ShareModal, Mirror, Message, Media preview, expand/collapse inchangés
+ * - [KEEP] Mirror, Message, Media preview, expand/collapse inchangés
  * - [SAFE] Aucun `any`, best-effort si comments_count absent => 0 (pas de crash)
  *
  * PHASE 3bis — Realtime comments_count (incrément local uniquement)
@@ -81,9 +88,10 @@ type Props = {
 
   onOpenEcho: (id: string) => void;
 
+  // conservé (legacy callers)
   onShare: (id: string) => void;
-
   copied: boolean;
+
   busyLike: boolean;
   busyResKey: string | null;
 
@@ -146,7 +154,6 @@ export default function EchoItem(props: Props) {
   const [mirrorText, setMirrorText] = useState('');
 
   const [shareOpen, setShareOpen] = useState(false);
-
   const [commentsOpen, setCommentsOpen] = useState(false);
 
   const emo = useMemo(() => emotionLabel(echo.emotion), [echo.emotion]);
@@ -162,6 +169,7 @@ export default function EchoItem(props: Props) {
   const onSendMirror = () => {
     const msg = mirrorText.trim();
     if (!msg) return;
+    if (!authorId) return;
     props.onMirror(echo.id, authorId, msg);
     setMirrorText('');
     setMirrorOpen(false);
@@ -282,7 +290,7 @@ export default function EchoItem(props: Props) {
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
             >
               <Share2 className="h-4 w-4" />
-              {props.copied ? 'Copié' : 'Partager'}
+              Partager
             </button>
 
             <button
@@ -390,7 +398,14 @@ export default function EchoItem(props: Props) {
         ) : null}
       </article>
 
-      {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+      {shareOpen ? (
+        <ShareModal
+          echoId={echo.id}
+          onClose={() => setShareOpen(false)}
+          // PHASE 4: utilisé pour log echo_shares (optionnel, best-effort)
+          userId={currentUserId}
+        />
+      ) : null}
 
       {commentsOpen ? (
         <CommentsModal

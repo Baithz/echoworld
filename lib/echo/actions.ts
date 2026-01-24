@@ -1,9 +1,15 @@
 // =============================================================================
 // Fichier      : lib/echo/actions.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.6.1 (2026-01-24)
+// Version      : 1.7.0 (2026-01-24)
 // Objet        : Actions Echo (like, share, media, resonances, mirrors) — SAFE
 // -----------------------------------------------------------------------------
+// PHASE 4 — Partage (DB echo_shares)
+// - [PHASE4] Ajoute recordEchoShare() => insert dans echo_shares (best-effort)
+// - [PHASE4] shareEcho() log automatiquement (method: 'native'|'clipboard') sans bloquer l’UX
+// - [SAFE] URL SSR-safe (guard window) pour éviter crash/prerender
+// - [KEEP] Zéro régression: API existantes conservées, logique PHASE 2 inchangée
+//
 // FIX v1.6.1 (PHASE 2)
 // - [FIX] ESLint no-unused-vars: supprime helpers non utilisés (asLegacyType + isReactionType)
 // - [KEEP] Aucune régression: logique PHASE 2 inchangée, exports legacy conservés
@@ -141,25 +147,74 @@ export async function toggleEchoLike({
 }
 
 /* ============================================================================
- * SHARE (lien externe + clipboard)
+ * SHARE (lien externe + clipboard) + PHASE 4 DB echo_shares
  * ============================================================================
  */
+export type EchoShareMethod = 'native' | 'clipboard' | 'copy' | 'twitter' | 'facebook' | 'whatsapp' | 'feed';
+
+export async function recordEchoShare({
+  echoId,
+  method,
+  url,
+  userId,
+}: {
+  echoId: string;
+  method: EchoShareMethod;
+  url?: string;
+  userId?: string | null;
+}): Promise<ResVoid> {
+  if (!echoId || !method) return { ok: false, error: 'Paramètres invalides.' };
+
+  try {
+    // best-effort: user_id optionnel (selon schéma DB)
+    const payload: Record<string, unknown> = {
+      echo_id: echoId,
+      method,
+    };
+    const cleanUrl = String(url ?? '').trim();
+    if (cleanUrl) payload.url = cleanUrl;
+    if (typeof userId === 'string' && userId.trim()) payload.user_id = userId.trim();
+
+    const { error } = await table('echo_shares').insert(payload);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur enregistrement partage.') };
+  }
+}
+
 export async function shareEcho({ echoId }: { echoId: string }): Promise<ResData<{ mode: 'native' | 'clipboard' }>> {
-  const url = `${window.location.origin}/explore?focus=${encodeURIComponent(echoId)}`;
+  // SSR-safe
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const url = origin
+    ? `${origin}/explore?focus=${encodeURIComponent(echoId)}`
+    : `/explore?focus=${encodeURIComponent(echoId)}`;
 
   try {
     const nav = navigator as unknown as { share?: (payload: unknown) => Promise<void> };
 
     if (typeof nav.share === 'function') {
       await nav.share({ title: 'EchoWorld', text: 'Je partage un écho sur EchoWorld.', url });
+
+      // PHASE 4: best-effort log (non bloquant)
+      void recordEchoShare({ echoId, method: 'native', url });
+
       return { ok: true, mode: 'native' };
     }
 
     await navigator.clipboard.writeText(url);
+
+    // PHASE 4: best-effort log (non bloquant)
+    void recordEchoShare({ echoId, method: 'clipboard', url });
+
     return { ok: true, mode: 'clipboard' };
   } catch (e) {
     try {
       await navigator.clipboard.writeText(url);
+
+      // PHASE 4: best-effort log (non bloquant)
+      void recordEchoShare({ echoId, method: 'clipboard', url });
+
       return { ok: true, mode: 'clipboard' };
     } catch {
       return { ok: false, error: errMsg(e, 'Partage impossible.') };
