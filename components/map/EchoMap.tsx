@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.8 (2026-01-23)
+ * Version      : 2.6.0 (2026-01-24)
  * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,23 +14,17 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.6.0 (2026-01-24)
+ * - [FIX] CRITIQUE : Projection adaptée selon mode (globe='globe', detail='mercator')
+ * - [FIX] Bug ligne 266 : projection était forcée 'globe' même en mode detail
+ * - [IMPROVED] Retour globe au dézoom maintenant fonctionnel (projection + style sync)
+ * - [KEEP] Anti-race, handlers, pulse, cinéma, fetch inchangés
+ * 
  * 2.5.8 (2026-01-23)
- * - [FIX] Typings MapLibre : suppression de l’option Map.projection (erreur TS2353)
+ * - [FIX] Typings MapLibre : suppression de l'option Map.projection (erreur TS2353)
  * - [FIX] Typings StyleSpecification : ajout type étendu pour projection/fog/sky (sans any)
  * - [FIX] Nettoyage complet des `as any` (respect règle @typescript-eslint/no-explicit-any)
  * - [KEEP] Logique de swap globe/détail, ciné, pulse et fetch intacte (zéro régression UX)
- * 2.5.7 (2026-01-23)
- * - [FIX] Retour globe fiable au dézoom (zoomend global + seuil stable)
- * - [FIX] Forçage systématique de la projection globe (init Map + transformStyle)
- * - [KEEP] Cinéma/focus/heat/pulse inchangés, IDs layers/sources conservés
- * 2.5.6 (2026-01-23)
- * - [FIX] Retour globe fiable au dézoom : handler zoomend global + applyStyleIfNeeded sécurisé
- * - [FIX] Anti-race setStyle/style.load : token + lock (évite swap bloqué si zoom rapide)
- * - [FIX] handlersRef n’est plus écrasé (préserve onZoomEndGlobal)
- * - [KEEP] IDs layers/sources/interactions inchangés + zéro régression UX
- * 2.5.4 (2026-01-23)
- * - [FIX] ESLint react-hooks/exhaustive-deps (plus de dépendance sur l’objet safeFilters)
- * - [FIX] Déstructuration emotion/since/nearMe + refs synchro via primitives
  * =============================================================================
  */
 
@@ -84,7 +78,7 @@ const DETAIL_ZOOM_THRESHOLD = 5;
 // "Vue monde" : bbox globale pour éviter une Terre vide au dézoom.
 // (bornes lat réduites pour éviter singularités / antimeridian extrêmes)
 const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
-// Seuil zoom où l’on considère qu’on est en "vue monde"
+// Seuil zoom où l'on considère qu'on est en "vue monde"
 const WORLD_ZOOM_THRESHOLD = 2.8;
 
 // Style spec étendu pour supporter projection/fog/sky sans utiliser `any`
@@ -206,7 +200,7 @@ export default function EchoMap({
   // Filters "safe" pour SSR / prerender
   const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
 
-  // Déstructuration pour que les hooks ne dépendent pas de l’objet complet (ESLint friendly)
+  // Déstructuration pour que les hooks ne dépendent pas de l'objet complet (ESLint friendly)
   const { emotion, since, nearMe } = safeFilters;
 
   const sinceDate = useMemo(() => sinceToDate(since), [since]);
@@ -245,13 +239,18 @@ export default function EchoMap({
 
     // --- Globe apply helper (garde-fou si un style ignore projection)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
-    const applyGlobeProjection = () => {
+    const applyProjectionForMode = (mode: 'globe' | 'detail') => {
       const m = mapRef.current;
       if (!m) return;
       try {
         const mp = m as MapWithProjection;
-        mp.setProjection?.({ type: 'globe' });
-        mp.setProjection?.('globe');
+        if (mode === 'globe') {
+          mp.setProjection?.({ type: 'globe' });
+          mp.setProjection?.('globe');
+        } else {
+          mp.setProjection?.({ type: 'mercator' });
+          mp.setProjection?.('mercator');
+        }
       } catch {
         // ignore
       }
@@ -262,8 +261,10 @@ export default function EchoMap({
       return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
         const style: StyleWithExtras = { ...(next as StyleWithExtras) };
 
-        // Projection globe systématique (globe + détail)
-        style.projection = { type: 'globe' };
+        // FIX CRITIQUE v2.6.0 : Projection adaptée selon le mode
+        // - Mode globe → projection 'globe' (vue 3D sphérique)
+        // - Mode detail → projection 'mercator' (carte plate)
+        style.projection = { type: mode === 'globe' ? 'globe' : 'mercator' };
 
         if (mode === 'globe') {
           style.sky = {
@@ -536,6 +537,8 @@ export default function EchoMap({
 
       const z = m.getZoom();
       const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
+      
+      // Si déjà dans le bon mode, rien à faire
       if (want === currentStyleRef.current) return;
 
       // swap en cours => on attend la fin (évite blocage / race)
@@ -559,7 +562,9 @@ export default function EchoMap({
       m.once('style.load', () => {
         if (styleSwapTokenRef.current !== token) return;
 
-        applyGlobeProjection();
+        // FIX v2.6.0 : Force la bonne projection après le chargement du style
+        applyProjectionForMode(want);
+        
         ensureEchoLayers(geojson ?? undefined);
         bindInteractions();
 
@@ -584,7 +589,7 @@ export default function EchoMap({
     const zoomEndHandler = onZoomEndGlobal;
 
     const onLoad = async () => {
-      applyGlobeProjection();
+      applyProjectionForMode('globe');
 
       const geojson = await fetchGeojson();
       ensureEchoLayers(geojson ?? undefined);
