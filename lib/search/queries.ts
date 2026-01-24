@@ -1,11 +1,16 @@
 // =============================================================================
 // Fichier      : lib/search/queries.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.2 (2026-01-23)
+// Version      : 1.2.0 (2026-01-24)
 // Objet        : Requêtes Supabase (client) pour recherche globale
 // Notes        : SAFE: si table/colonne indispo -> fail soft (retourne [])
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.2.0 (2026-01-24)
+// - [FIX] Désactive temporairement la recherche dans table 'topics' (table inexistante)
+// - [IMPROVED] searchTopics retourne [] immédiatement si echo_tags échoue (pas de second fetch)
+// - [KEEP] echo_tags recherche conservée (table existe)
+// - [KEEP] searchUsers et searchEchoes inchangés
 // 1.1.2 (2026-01-23)
 // - [IMPROVED] searchUsers : normalise le handle renvoyé (slug safe pour /u/[handle])
 // - [IMPROVED] searchUsers : label affiche @handle si display_name absent
@@ -60,7 +65,7 @@ function normalizeHandle(input: string | null): string | null {
 
 function escapeOrValue(input: string): string {
   // Supabase .or() attend une string ; on évite les virgules/parenthèses accidentelles
-  // (on garde simple : trim, pas d’échappement exotique ici).
+  // (on garde simple : trim, pas d'échappement exotique ici).
   return input.trim();
 }
 
@@ -200,6 +205,12 @@ export async function searchTopics(term: string, limit = 5): Promise<SearchTopic
     // ignore
   }
 
+  // TEMPORAIRE : table public.topics n'existe pas encore
+  // TODO: Créer la table topics ou utiliser une autre source
+  // Une fois créée, décommenter le code ci-dessous
+  return [];
+
+  /* DÉSACTIVÉ jusqu'à création de la table public.topics
   try {
     const { data, error } = await supabase
       .from('topics')
@@ -223,4 +234,5 @@ export async function searchTopics(term: string, limit = 5): Promise<SearchTopic
   } catch {
     return [];
   }
+  */
 }
