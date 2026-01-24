@@ -2,13 +2,14 @@
  * =============================================================================
  * Fichier      : app/u/[handle]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.6.1 (2026-01-24)
+ * Version      : 1.6.2 (2026-01-24)
  * Objet        : Page profil public par handle (/u/baithz)
  * -----------------------------------------------------------------------------
  * CHANGELOG
- * 1.6.1 (2026-01-24)
- * - [FIX] SSR hardening: params.handle peut être undefined => safe string + guard
+ * 1.6.2 (2026-01-24)
+ * - [FIX] Normalisation URL handle (cohérente partout) : lowercase + underscores + charset safe
  * - [KEEP] Force-dynamic + revalidate=0 + notFound + isFollowing inchangés
+ * - [SAFE] Zéro régression : mêmes exports + même structure de rendu
  * =============================================================================
  */
 
@@ -25,11 +26,19 @@ type PageProps = {
   params: { handle?: string };
 };
 
+/**
+ * Handle safe + normalisé pour lookup.
+ * Doit rester cohérent avec la règle utilisée côté UI lors de la création/modif du handle.
+ */
 function safeHandle(input: unknown): string {
   const raw = typeof input === 'string' ? input : '';
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-  return trimmed.startsWith('@') ? trimmed.slice(1) : trimmed;
+  const cleaned = raw.trim().replace(/^@/, '').trim();
+  if (!cleaned) return '';
+  return cleaned
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 32);
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {

@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.7.1 (2026-01-24)
+// Version      : 1.7.2 (2026-01-24)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
@@ -11,10 +11,10 @@
 // - isFollowing via table follows (RLS OK)
 // ----------------------------------------------------------------------------
 // CHANGELOG
-// 1.7.1 (2026-01-24)
-// - [FIX] Lookup handle ultra-robuste (casse les 404 /u/[handle] même si handle en BDD diffère: casse/accents/url)
-// - [SAFE] Aucun changement de contrat sur types / fonctions publiques
-// - [KEEP] Logs best-effort + picks + stats inchangés
+// 1.7.2 (2026-01-24)
+// - [FIX] Lookup handle robuste + sans bruit: eq(normalized) + ilike(normalized) + fallback urlNorm
+// - [FIX] Plus de variables inutiles (ESLint prefer-const / unused) + pas de helpers morts (foldDiacritics)
+// - [SAFE] Contrat inchangé: mêmes exports/types/signatures, picks/stats/echoes inchangés
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -92,11 +92,20 @@ const ECHO_SELECT =
   'id, user_id, title, content, emotion, is_anonymous, country, city, language, created_at, status, visibility, emotion_tags, theme_tags, image_urls' as const;
 
 function log(message: string, data?: unknown) {
-  console.log(`[getProfile] ${message}`, data ?? '');
+  // Best-effort: pas d’exception si console indispo
+  try {
+    console.log(`[getProfile] ${message}`, data ?? '');
+  } catch {
+    /* noop */
+  }
 }
 
 function logError(message: string, error?: unknown) {
-  console.error(`[getProfile] ERROR: ${message}`, error ?? '');
+  try {
+    console.error(`[getProfile] ERROR: ${message}`, error ?? '');
+  } catch {
+    /* noop */
+  }
 }
 
 /**
@@ -125,7 +134,6 @@ export function normalizeHandleForUrl(input: string): string {
     .replace(/[^a-z0-9._-]/g, '')
     .slice(0, 32);
 }
-
 
 function pickProfile(row: ProfileRow): PublicProfile {
   return {
