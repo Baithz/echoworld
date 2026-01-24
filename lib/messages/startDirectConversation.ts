@@ -159,7 +159,6 @@ export async function startDirectConversation({
       .insert({
         type: 'direct',
         title: null,
-        created_by: me,
         echo_id: echo,
       })
       .select('id')
