@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.6.1 (2026-01-24)
+// Version      : 1.7.1 (2026-01-24)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
@@ -11,15 +11,10 @@
 // - isFollowing via table follows (RLS OK)
 // ----------------------------------------------------------------------------
 // CHANGELOG
-// 1.6.1 (2026-01-24)
-// - [FIX] getProfileByHandle: lookup tolérant sans casser le contrat (eq + ilike + fallbacks)
-// - [FIX] Zéro bruit ESLint : pas de destructuring mutable (prefer-const)
-// - [KEEP] Types/export/API inchangés + logs conservés
-// 1.6.0 (2026-01-24)
-// - [FIX] CRITIQUE: Normalisation handle cohérente avec l'index BDD lower(handle)
-// - [FIX] Stratégie de lookup simplifiée (exact lowercase uniquement)
-// - [IMPROVED] Logs détaillés pour debug production
-// - [KEEP] Zéro régression sur types, stats, echoes, checkIfFollowing
+// 1.7.1 (2026-01-24)
+// - [FIX] Lookup handle ultra-robuste (casse les 404 /u/[handle] même si handle en BDD diffère: casse/accents/url)
+// - [SAFE] Aucun changement de contrat sur types / fonctions publiques
+// - [KEEP] Logs best-effort + picks + stats inchangés
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -105,29 +100,21 @@ function logError(message: string, error?: unknown) {
 }
 
 /**
- * CRITICAL: Normalisation STRICTEMENT IDENTIQUE à celle utilisée lors de l'enregistrement
- * du handle en BDD (via /account ou /settings).
- *
- * Règles :
- * 1. Suppression du @ initial (si présent)
- * 2. Trim espaces début/fin
- * 3. Lowercase (pour matcher l'index unique BDD : lower(handle))
- *
- * Cette fonction doit retourner EXACTEMENT ce qui est stocké en BDD.
- * PAS de remplacement d'espaces, PAS de filtrage de caractères spéciaux ici.
+ * Normalisation STRICTE "lookup" (index lower(handle)):
+ * - remove @
+ * - trim
+ * - lowercase
+ * - NE PAS filtrer d’autres caractères ici (évite mismatch si handle stocké avec ponctuation/accents)
  */
 function normalizeHandleForLookup(input: string): string {
-  return (input ?? '')
-    .trim()
-    .replace(/^@/, '')
-    .trim()
-    .toLowerCase(); // ← INDEX BDD : lower(handle)
+  return (input ?? '').trim().replace(/^@/, '').trim().toLowerCase();
 }
 
 /**
- * Normalisation pour URLs (/u/[handle]) - utilisée UNIQUEMENT pour l'affichage/routing.
- * Cette fonction doit être cohérente avec celle utilisée dans components/auth/*.tsx
- * lors de la création/modification du handle.
+ * Normalisation pour URLs (/u/[handle]) :
+ * - convertit espaces en _
+ * - supprime tout hors [a-z0-9._-]
+ * - coupe à 32
  */
 export function normalizeHandleForUrl(input: string): string {
   const raw = (input ?? '').trim().replace(/^@/, '').trim();
@@ -137,6 +124,20 @@ export function normalizeHandleForUrl(input: string): string {
     .replace(/\s+/g, '_')
     .replace(/[^a-z0-9._-]/g, '')
     .slice(0, 32);
+}
+
+/**
+ * Fallback utile quand la BDD contient un handle "sans accents"
+ * mais l’input ou l’URL a été générée depuis un handle accentué (ou inversement).
+ */
+function foldDiacritics(input: string): string {
+  try {
+    return (input ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  } catch {
+    return input ?? '';
+  }
 }
 
 function pickProfile(row: ProfileRow): PublicProfile {
@@ -211,91 +212,80 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
     return null;
   }
 
-  // Normalisation STRICTE pour matcher l'index BDD lower(handle)
-  const normalized = normalizeHandleForLookup(raw);
+  const noAt = raw.replace(/^@/, '').trim();
+  const normalized = normalizeHandleForLookup(noAt);
+  const urlNorm = normalizeHandleForUrl(noAt);
+  const folded = foldDiacritics(normalized);
+  const foldedUrlNorm = foldDiacritics(urlNorm);
 
-  // Version "telle que saisie" (sans @) pour compat handles historiques stockés avec casse
-  const rawNoAt = raw.replace(/^@/, '').trim();
+  // Ordre IMPORTANT : on tente d’abord les valeurs les plus probables / cohérentes.
+  const candidates = Array.from(
+    new Set(
+      [normalized, noAt, urlNorm, folded, foldedUrlNorm]
+        .map((s) => String(s ?? '').trim())
+        .filter(Boolean)
+    )
+  );
 
-  log(`getProfileByHandle: lookup raw="${raw}" → normalized="${normalized}"`);
+  log('getProfileByHandle: candidates', { raw: noAt, candidates });
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    async function tryEq(value: string): Promise<ProfileRow | null> {
-      const v = (value ?? '').trim();
-      if (!v) return null;
-
-      const r = await supabase
+    // Helper: essai exact (eq)
+    const tryEq = async (value: string) => {
+      const { data, error } = await supabase
         .from('profiles')
         .select(PROFILE_SELECT)
-        .eq('handle', v)
+        .eq('handle', value)
         .maybeSingle<ProfileRow>();
 
-      if (r.error) {
-        logError(`getProfileByHandle: Erreur Supabase (eq) handle="${v}"`, r.error);
-        return null;
+      if (error) {
+        logError(`getProfileByHandle: Erreur Supabase eq(handle,"${value}")`, error);
+        return { ok: false as const, data: null as ProfileRow | null };
       }
-      return r.data ?? null;
-    }
+      return { ok: true as const, data: data ?? null };
+    };
 
-    async function tryIlike(value: string): Promise<ProfileRow | null> {
-      const v = (value ?? '').trim();
-      if (!v) return null;
-
-      // ilike sans wildcard => égalité case-insensitive
-      const r = await supabase
+    // Helper: essai case-insensitive (ilike exact)
+    const tryIlikeExact = async (value: string) => {
+      const { data, error } = await supabase
         .from('profiles')
         .select(PROFILE_SELECT)
-        .ilike('handle', v)
+        .ilike('handle', value)
         .maybeSingle<ProfileRow>();
 
-      if (r.error) {
-        logError(`getProfileByHandle: Erreur Supabase (ilike) handle="${v}"`, r.error);
-        return null;
+      if (error) {
+        logError(`getProfileByHandle: Erreur Supabase ilike(handle,"${value}")`, error);
+        return { ok: false as const, data: null as ProfileRow | null };
       }
-      return r.data ?? null;
-    }
+      return { ok: true as const, data: data ?? null };
+    };
 
-    let found: ProfileRow | null = null;
-
-    // 1) eq(normalized) => idéal si handle stocké en lowercase (cas attendu)
-    found = await tryEq(normalized);
-
-    // 2) eq(rawNoAt) => si handle stocké avec casse (ex: "Pouete")
-    if (!found && rawNoAt && rawNoAt !== normalized) {
-      found = await tryEq(rawNoAt);
-    }
-
-    // 3) ilike(normalized) => match case-insensitive (handles historiques)
-    if (!found) {
-      found = await tryIlike(normalized);
-    }
-
-    // 4) ilike(rawNoAt) => secours
-    if (!found && rawNoAt && rawNoAt !== normalized) {
-      found = await tryIlike(rawNoAt);
-    }
-
-    // 5) fallback url-normalisé (underscores / filtrage) si jamais la BDD stocke ce format
-    if (!found) {
-      const urlNorm = normalizeHandleForUrl(rawNoAt);
-      if (urlNorm && urlNorm !== normalized && urlNorm !== rawNoAt) {
-        log(`getProfileByHandle: fallback urlNorm="${urlNorm}" (depuis rawNoAt="${rawNoAt}")`);
-        found = await tryEq(urlNorm);
-        if (!found) found = await tryIlike(urlNorm);
+    // 1) EQ exact sur candidats
+    for (const c of candidates) {
+      const r = await tryEq(c);
+      if (!r.ok) return null; // erreur supabase => stop (évite bruit)
+      if (r.data) {
+        log('getProfileByHandle: match eq', { c, id: r.data.id, handle: r.data.handle });
+        return pickProfile(r.data);
       }
     }
 
-    if (!found) {
-      log(`getProfileByHandle: Aucun profil trouvé (raw="${rawNoAt}", normalized="${normalized}")`);
-      return null;
+    // 2) ILIKE exact sur candidats (rattrape handles historiques avec casse différente)
+    for (const c of candidates) {
+      const r = await tryIlikeExact(c);
+      if (!r.ok) return null;
+      if (r.data) {
+        log('getProfileByHandle: match ilike', { c, id: r.data.id, handle: r.data.handle });
+        return pickProfile(r.data);
+      }
     }
 
-    log(`getProfileByHandle: Profil trouvé → id=${found.id}, handle=${found.handle}`);
-    return pickProfile(found);
+    log('getProfileByHandle: Aucun profil trouvé', { raw: noAt, candidates });
+    return null;
   } catch (err) {
-    logError(`getProfileByHandle: Exception pour handle="${normalized}"`, err);
+    logError(`getProfileByHandle: Exception pour handle="${raw}"`, err);
     return null;
   }
 }
