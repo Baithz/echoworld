@@ -73,15 +73,18 @@ function uniq(arr: string[]): string[] {
 }
 
 export async function startDirectConversation({
-  userId,
   otherUserId,
   echoId = null,
 }: {
-  userId: string;
+  userId: string; // compat callers (ignoré volontairement, on utilise auth.uid())
   otherUserId: string;
   echoId?: string | null;
 }): Promise<Res> {
-  const me = (userId ?? '').trim();
+  // IMPORTANT: ne jamais faire confiance au userId passé en param (peut être stale)
+  const { data: authData, error: authErr } = await supabase.auth.getUser();
+  if (authErr) return { ok: false, error: authErr.message ?? 'Not authenticated.' };
+
+  const me = (authData.user?.id ?? '').trim();
   const other = (otherUserId ?? '').trim();
   const echo = (echoId ?? null) as string | null;
 
@@ -165,7 +168,9 @@ export async function startDirectConversation({
       .single();
 
     if (createdRes.error) {
-      return { ok: false, error: createdRes.error.message ?? 'Création conversation impossible.' };
+      const msg = createdRes.error.message ?? 'Création conversation impossible.';
+      // Aide debug: si RLS, on sait que created_by != auth.uid() ou session absente
+      return { ok: false, error: msg.includes('row-level security') ? `RLS: ${msg}` : msg };
     }
 
     const createdRow = (createdRes.data as { id?: unknown } | null) ?? null;
