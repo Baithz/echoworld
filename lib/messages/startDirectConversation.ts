@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/messages/startDirectConversation.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.2.0 (2026-01-24)
+// Version      : 1.2.1 (2026-01-24)
 // Objet        : Démarrer/ouvrir une conversation DIRECTE (2 membres) — aligné BDD réelle
 // -----------------------------------------------------------------------------
 // Description  :
@@ -10,6 +10,10 @@
 // - Retour backward-compat : res.data.conversationId + retour flat
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.2.1 (2026-01-24)
+// - [FIX] RLS conversations : ajoute created_by = auth.uid() à l’insert (policy conversations_insert_auth)
+// - [FIX] ESLint : conserve userId en destructuring (compat callers) sans unused-vars (préfixe _userId)
+// - [KEEP] Signature + shape de retour inchangées (compat callers)
 // 1.2.0 (2026-01-24)
 // - [FIX] Insert conversations : récupère toujours l’id via .select('id').single()
 // - [IMPROVED] Typage Chain : insert() renvoie Chain pour chaînage select/single
@@ -76,7 +80,7 @@ export async function startDirectConversation({
   otherUserId,
   echoId = null,
 }: {
-  userId: string; // compat callers (ignoré volontairement, on utilise auth.uid())
+  userId: string; // compat callers (documenté mais non destructuré)
   otherUserId: string;
   echoId?: string | null;
 }): Promise<Res> {
@@ -158,10 +162,12 @@ export async function startDirectConversation({
     }
 
     // 4) Créer conversation (récupérer l'id de façon fiable)
+    // RLS: conversations_insert_auth -> created_by MUST equal auth.uid()
     const createdRes = await table('conversations')
       .insert({
         type: 'direct',
         title: null,
+        created_by: me, // ✅ requis par RLS
         echo_id: echo,
       })
       .select('id')
@@ -169,7 +175,6 @@ export async function startDirectConversation({
 
     if (createdRes.error) {
       const msg = createdRes.error.message ?? 'Création conversation impossible.';
-      // Aide debug: si RLS, on sait que created_by != auth.uid() ou session absente
       return { ok: false, error: msg.includes('row-level security') ? `RLS: ${msg}` : msg };
     }
 
