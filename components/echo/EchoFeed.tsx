@@ -2,26 +2,33 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.5.1 (2026-01-24)
- * Objet        : Flux d'échos — branche EchoItem (media + reactions + mirror + DM)
+ * Version      : 1.7.1 (2026-01-24)
+ * Objet        : Flux d'échos — branche EchoItem (media + reactions + mirror + DM + commentaires)
  * -----------------------------------------------------------------------------
- * PHASE 2 — Brancher correctement les réactions sur la BDD réelle
- * - [PHASE2] Remplace la lecture/écriture legacy echo_resonances par echo_reactions (reaction_type)
- * - [FIX] ESLint no-unused-vars: supprime NEW_TO_LEGACY (non utilisé)
- * - [KEEP] Compat EchoItem : resCounts/resByMe exposent les clés officielles + legacy (même valeurs)
- * - [KEEP] Zéro régression : fallback media via echo_media si image_urls absent
- * - [KEEP] Likes, share, mirror, DM, hero, toasts conservés
+ * PHASE 3 — Activer les commentaires partout (lecture + ajout)
+ * - [PHASE3] Ajoute le calcul/agrégation comments_count (echo_responses) si absent des queries
+ * - [PHASE3] Alimente EchoItem.comments_count pour badge + ouverture CommentsModal (via EchoItem)
+ * - [KEEP] Zéro régression: likes, share, mirror, DM, hero, toasts, media fallback inchangés
+ * - [KEEP] Réactions PHASE2 (echo_reactions.reaction_type) + compat keys legacy conservées
+ *
+ * PHASE 3bis — Realtime comments_count (incrément local uniquement)
+ * - [PHASE3bis] Feed = source centrale du compteur (state commentsCountById)
+ * - [PHASE3bis] Ajoute onCommentInserted(echoId) => +1 local (jamais de décrément)
+ * - [PHASE3bis] Seed initial du compteur via query/fallback, sans écraser les incréments (max)
+ * - [PHASE3bis] Passe currentUserId/canPost à EchoItem pour activer l’ajout en modale (sinon lecture seule)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.5.1 (2026-01-24)
- * - [FIX] Supprime NEW_TO_LEGACY inutilisé (ESLint)
- * - [SAFE] Aucune régression fonctionnelle
- * 1.5.0 (2026-01-24)
- * - [PHASE2] fetchReactionMeta + toggleEchoReaction (source de vérité: echo_reactions)
- * - [KEEP] UI inchangée, compat keys (understand/support/reflect + i_feel_you/i_support_you/i_reflect_with_you)
- * 1.4.0 (2026-01-24)
- * - PHASE 1 — contrat Echo (image_urls + viewer meta)
+ * 1.7.1 (2026-01-24)
+ * - [PHASE3bis] Passe currentUserId/canPost à EchoItem => commentaires postables quand connecté
+ * - [KEEP] API publique EchoFeed inchangée
+ * 1.7.0 (2026-01-24)
+ * - [PHASE3bis] Ajout handler onCommentInserted + passage à EchoItem
+ * - [PHASE3bis] Initialisation commentsCountById sans régression (max / pas d’écrasement)
+ * - [KEEP] UI / API publiques EchoFeed inchangées
+ * 1.6.0 (2026-01-24)
+ * - [PHASE3] comments_count branché sur echo_responses (fallback agrégé si non fourni)
+ * - [KEEP] Aucun changement d’API publique EchoFeed (props identiques)
  * =============================================================================
  */
 
@@ -62,8 +69,10 @@ export type EchoRow = {
   // PHASE 1: images (doit être disponible partout; si absent => normalisé en [])
   image_urls?: string[] | null;
 
-  // PHASE 1: viewer meta (optionnelle selon query)
+  // PHASE 3: comments (optionnel selon query)
   comments_count?: number | null;
+
+  // PHASE 1: viewer meta (optionnelle selon query)
   mirrored?: boolean | null;
   can_dm?: boolean | null;
 };
@@ -140,6 +149,50 @@ function initReactionByMe(): Record<ReactionKey, boolean> {
   return { understand: false, support: false, reflect: false };
 }
 
+function safeNumber(input: unknown, fallback = 0): number {
+  const n = typeof input === 'number' ? input : Number(input);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * PHASE 3 — Fallback agrégé comments_count (source: echo_responses)
+ * Table: public.echo_responses (remplace echo_replies)
+ * Colonnes attendues: echo_id (uuid), ...
+ * Objectif: compter par echo_id pour afficher badge partout même si la query n’inclut pas comments_count.
+ */
+async function fetchCommentsCountByEchoId({
+  echoIds,
+}: {
+  echoIds: string[];
+}): Promise<{ ok: true; countById: Record<string, number> } | { ok: false; error?: string }> {
+  try {
+    if (!echoIds.length) return { ok: true, countById: {} };
+
+    // Best-effort: on lit uniquement echo_id et on agrège côté client.
+    // (évite N requêtes count exact par echoId)
+    const { supabase } = await import('@/lib/supabase/client');
+
+    const { data, error } = await supabase.from('echo_responses').select('echo_id').in('echo_id', echoIds);
+    if (error) return { ok: false, error: error.message };
+
+    const countById: Record<string, number> = {};
+    for (const id of echoIds) countById[String(id)] = 0;
+
+    if (Array.isArray(data)) {
+      for (const row of data as Array<{ echo_id?: unknown }>) {
+        const id = String(row.echo_id ?? '');
+        if (!id) continue;
+        countById[id] = (countById[id] ?? 0) + 1;
+      }
+    }
+
+    return { ok: true, countById };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+    return { ok: false, error: msg };
+  }
+}
+
 export default function EchoFeed({
   loading,
   echoes,
@@ -165,6 +218,9 @@ export default function EchoFeed({
   // Reactions meta (OFFICIAL)
   const [rxCountsByEcho, setRxCountsByEcho] = useState<Record<string, Record<ReactionKey, number>>>({});
   const [rxByMeByEcho, setRxByMeByEcho] = useState<Record<string, Record<ReactionKey, boolean>>>({});
+
+  // PHASE 3 / 3bis — Comments count (source centrale + seed best-effort)
+  const [commentsCountById, setCommentsCountById] = useState<Record<string, number>>({});
 
   // UI states
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -204,6 +260,15 @@ export default function EchoFeed({
     setExpandedId((cur) => (cur === id ? null : id));
   };
 
+  // PHASE 3bis — handler imposé: incrément local uniquement
+  const onCommentInserted = (echoId: string) => {
+    if (!echoId) return;
+    setCommentsCountById((s) => ({
+      ...s,
+      [echoId]: (s[echoId] ?? 0) + 1,
+    }));
+  };
+
   // Load like meta
   useEffect(() => {
     let mounted = true;
@@ -220,7 +285,7 @@ export default function EchoFeed({
       setLikedByMe(res.likedByMeById);
     };
 
-    loadMeta();
+    void loadMeta();
 
     return () => {
       mounted = false;
@@ -252,7 +317,7 @@ export default function EchoFeed({
       setMediaById(res.mediaById);
     };
 
-    loadMedia();
+    void loadMedia();
 
     return () => {
       mounted = false;
@@ -295,12 +360,80 @@ export default function EchoFeed({
       setRxByMeByEcho(nextByMe);
     };
 
-    loadReactions();
+    void loadReactions();
 
     return () => {
       mounted = false;
     };
   }, [echoes, hasEchoes, userId]);
+
+  // PHASE 3 — Seed comments_count (query si dispo, sinon fallback agrégé)
+  // PHASE 3bis — Ne JAMAIS écraser un compteur déjà incrémenté localement (max / no-decrement)
+  useEffect(() => {
+    let mounted = true;
+
+    const seedFromQuery = () => {
+      const ids = echoes.map((e) => e.id);
+      const nextFromQuery: Record<string, number> = {};
+
+      let any = false;
+      for (const e of echoes) {
+        if (typeof e.comments_count === 'number' && Number.isFinite(e.comments_count)) {
+          any = true;
+          nextFromQuery[e.id] = Math.max(0, safeNumber(e.comments_count, 0));
+        }
+      }
+
+      if (!any) return { ok: false as const, ids };
+
+      setCommentsCountById((prev) => {
+        const next = { ...prev };
+        for (const id of ids) {
+          const incoming = nextFromQuery[id];
+          if (typeof incoming !== 'number') continue;
+          const cur = next[id];
+          next[id] = typeof cur === 'number' ? Math.max(cur, incoming) : incoming;
+        }
+        return next;
+      });
+
+      return { ok: true as const, ids };
+    };
+
+    const loadCommentsCount = async () => {
+      if (!hasEchoes) return;
+
+      const seeded = seedFromQuery();
+      const ids = seeded.ids;
+
+      // Si on a un comments_count pour tous les échos, on s’arrête là.
+      const allHave = echoes.every(
+        (e) => typeof e.comments_count === 'number' && Number.isFinite(e.comments_count as number)
+      );
+      if (allHave) return;
+
+      // Sinon fallback agrégé best-effort
+      const res = await fetchCommentsCountByEchoId({ echoIds: ids });
+      if (!mounted) return;
+      if (!res.ok) return;
+
+      setCommentsCountById((prev) => {
+        const next = { ...prev };
+        for (const id of ids) {
+          const incoming = Math.max(0, safeNumber(res.countById[id] ?? 0, 0));
+          const cur = next[id];
+          next[id] = typeof cur === 'number' ? Math.max(cur, incoming) : incoming;
+        }
+        return next;
+      });
+    };
+
+    void loadCommentsCount();
+
+    return () => {
+      mounted = false;
+    };
+  }, [echoes, hasEchoes]);
 
   const onLike = async (echoId: string) => {
     if (!userId) {
@@ -554,12 +687,18 @@ export default function EchoFeed({
               const byMe = rxByMeByEcho[e.id] ?? initReactionByMe();
 
               const imgs = normalizeImageUrls(e.image_urls);
-              const media = imgs.length > 0 ? imgs : (mediaById[e.id] ?? []);
+              const media = imgs.length > 0 ? imgs : mediaById[e.id] ?? [];
+
+              // PHASE 3bis — Source centrale: state (seeded + incréments)
+              const count = Math.max(0, safeNumber(commentsCountById[e.id] ?? 0, 0));
 
               return (
                 <EchoItem
                   key={e.id}
-                  echo={e}
+                  echo={{
+                    ...e,
+                    comments_count: count,
+                  }}
                   dateLabel={formatDateFR(e.created_at)}
                   expanded={expandedId === e.id}
                   onToggleExpand={onToggleExpand}
@@ -578,6 +717,11 @@ export default function EchoFeed({
                   copied={copiedId === e.id}
                   busyLike={busyLikeId === e.id}
                   busyResKey={busyReactionKey}
+                  // PHASE 3bis — signal unique
+                  onCommentInserted={() => onCommentInserted(e.id)}
+                  // PHASE 3bis — permet de poster dans CommentsModal
+                  currentUserId={userId}
+                  canPost={!!userId}
                 />
               );
             })}

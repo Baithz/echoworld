@@ -1,27 +1,14 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileEchoList.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.1.1 (2026-01-24)
+// Version      : 2.3.1 (2026-01-24)
 // Objet        : Liste UI des échos d'un profil (public) avec images et interactions
 // -----------------------------------------------------------------------------
 // CHANGELOG
-// 2.1.1 (2026-01-24)
-// - [PHASE1] Rendu média aligné “post écho” : preview grid (réduit) + EchoPreview (expanded)
-// - [PHASE1] Logique expanded unifiée (toggle Lire/Réduire + clic preview images)
-// - [KEEP] Design cards premium + ShareModal + réactions empathiques (compat legacy) + guards auth
-// 2.1.0 (2026-01-23)
-// - [NEW] Réactions empathiques officielles (understand/support/reflect) + UI cohérente
-// - [NEW] Partage réel via ShareModal (suppression des actions factices)
-// - [COMPAT] Mapping vers l’ancien système (resonances) sans casser le contrat actuel
-// - [IMPROVED] Boutons actions: désactivation si non connecté + UX plus claire
-// 2.0.0 (2026-01-23)
-// - [NEW] Affichage des images (image_urls)
-// - [NEW] Interactions : like, commentaire, partage
-// - [NEW] Prop currentUserId pour gérer l'auth
-// - [IMPROVED] Design cards premium en grid 2 colonnes
-// - [IMPROVED] Preview images en grid responsive
-// 1.0.0 (2026-01-23)
-// - Version initiale basique
+// 2.3.1 (2026-01-24)
+// - [FIX] ESLint react-hooks/set-state-in-effect : suppression du setState sync dans useEffect
+// - [SAFE] Resync best-effort via “merge non destructif” lors du rendu (pas de cascade renders)
+// - [KEEP] PHASE3bis : state parent + incrément local uniquement + CommentsModal + badge animé
 // =============================================================================
 
 'use client';
@@ -34,6 +21,7 @@ import type { PublicEcho } from '@/lib/profile/getProfile';
 import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 import EchoPreview from '@/lib/echo/EchoPreview';
 import ShareModal from '@/components/echo/ShareModal';
+import CommentsModal from '@/components/echo/CommentsModal';
 
 type Props = {
   echoes: PublicEcho[];
@@ -55,6 +43,11 @@ function formatDate(iso: string | null): string {
     month: 'short',
     day: '2-digit',
   });
+}
+
+function safeCount(input: unknown): number {
+  const n = typeof input === 'number' ? input : Number(input);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
 }
 
 /**
@@ -84,12 +77,49 @@ function emotionLabel(emotion: string | null): { emoji: string; label: string } 
   return map[emotion] ?? { emoji: '✨', label: emotion };
 }
 
+function buildInitialCommentsCountById(echoes: PublicEcho[]): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const e of echoes ?? []) {
+    const raw = (e as unknown as { comments_count?: number | null }).comments_count;
+    next[e.id] = safeCount(raw);
+  }
+  return next;
+}
+
+/**
+ * PHASE 3bis — Resync SAFE sans useEffect/setState:
+ * - On “merge” les ids présents dans echoes dans le state existant
+ * - On ne décrémente jamais, on ne remplace pas une valeur déjà incrémentée
+ * - Si un écho disparaît, on le garde en cache (inoffensif) : pas de cleanup en render.
+ */
+function mergeCommentsCounts(
+  prev: Record<string, number>,
+  echoes: PublicEcho[]
+): Record<string, number> {
+  const next = { ...prev };
+  for (const e of echoes ?? []) {
+    const fromProps = safeCount((e as unknown as { comments_count?: number | null }).comments_count);
+    const cur = next[e.id];
+    if (typeof cur !== 'number') {
+      next[e.id] = fromProps;
+    } else {
+      // jamais de décrément / overwrite à la baisse
+      next[e.id] = Math.max(cur, fromProps);
+    }
+  }
+  return next;
+}
+
 function EchoCard({
   echo,
   currentUserId,
+  commentsCount,
+  onCommentInserted,
 }: {
   echo: PublicEcho;
   currentUserId?: string | null;
+  commentsCount: number;
+  onCommentInserted?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -97,6 +127,9 @@ function EchoCard({
   const [likesCount, setLikesCount] = useState(0); // TODO: fetch from DB
 
   const [shareOpen, setShareOpen] = useState(false);
+
+  // PHASE 3bis — CommentsModal (lecture + ajout) + signal parent
+  const [commentsOpen, setCommentsOpen] = useState(false);
 
   // UI-only (à brancher plus tard sur un meta fetch)
   const [reactByMe, setReactByMe] = useState<Record<LegacyResonanceType, boolean>>({
@@ -132,14 +165,16 @@ function EchoCard({
     if (!requireAuth('Connecte-toi pour aimer cet écho')) return;
 
     // TODO: Implémenter like API
-    setLiked((v) => !v);
-    setLikesCount((prev) => (liked ? Math.max(0, prev - 1) : prev + 1));
+    setLiked((prevLiked) => {
+      const nextLiked = !prevLiked;
+      setLikesCount((prev) => (nextLiked ? prev + 1 : Math.max(0, prev - 1)));
+      return nextLiked;
+    });
   };
 
   const handleComment = () => {
     if (!requireAuth('Connecte-toi pour commenter')) return;
-    // TODO: Ouvrir modal commentaires (Phase 3)
-    alert('Commentaires à venir !');
+    setCommentsOpen(true);
   };
 
   const handleReaction = async (type: ReactionType) => {
@@ -150,16 +185,16 @@ function EchoCard({
     setBusyKey(key);
 
     // TODO: Brancher toggleReaction + fetchReactionsMeta sur la même logique que EchoFeed
-    // Pour l’instant: UI optimistic, sans dépendance réseau.
+    // Pour l’instant: UI optimistic, sans dépendance réseau, sans stale state.
     setReactByMe((prev) => {
-      const next = !prev[legacy];
-      return { ...prev, [legacy]: next };
-    });
+      const nextActive = !prev[legacy];
 
-    setReactCounts((prev) => {
-      const active = reactByMe[legacy];
-      const nextCount = active ? Math.max(0, (prev[legacy] ?? 0) - 1) : (prev[legacy] ?? 0) + 1;
-      return { ...prev, [legacy]: nextCount };
+      setReactCounts((prevCounts) => {
+        const cur = prevCounts[legacy] ?? 0;
+        return { ...prevCounts, [legacy]: nextActive ? cur + 1 : Math.max(0, cur - 1) };
+      });
+
+      return { ...prev, [legacy]: nextActive };
     });
 
     setBusyKey(null);
@@ -176,17 +211,28 @@ function EchoCard({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="truncate text-base font-bold text-slate-900">{echo.title ?? 'Écho'}</div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                 <span>{formatDate(echo.created_at)}</span>
+
                 {location && (
                   <>
                     <span>•</span>
-                    <div className="flex items-center gap-1">
-                      <MapPin className="h-3 w-3" />
+                    <div className="flex items-center gap-1 min-w-0">
+                      <MapPin className="h-3 w-3 shrink-0" />
                       <span className="truncate">{location}</span>
                     </div>
                   </>
                 )}
+
+                {/* PHASE 3/3bis: badge commentaires (state parent) */}
+                <span>•</span>
+                <span
+                  key={commentsCount}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700 animate-pulse-once"
+                >
+                  {commentsCount} com{commentsCount > 1 ? 's' : ''}
+                </span>
               </div>
             </div>
 
@@ -210,11 +256,7 @@ function EchoCard({
           {/* Body : alignement EchoPreview / preview grid */}
           <div className="mt-4">
             {expanded ? (
-              <EchoPreview
-                content={echo.content}
-                emotion={emo}
-                photos={media}
-              />
+              <EchoPreview content={echo.content} emotion={emo} photos={media} />
             ) : (
               <>
                 <div className="text-sm leading-relaxed text-slate-700">{safePreview(echo.content, 200)}</div>
@@ -324,16 +366,16 @@ function EchoCard({
               <span className="text-xs font-semibold">{likesCount > 0 ? likesCount : ''}</span>
             </button>
 
-            {/* Comment */}
+            {/* Comment (PHASE 3/3bis) */}
             <button
               type="button"
               onClick={handleComment}
               disabled={!currentUserId}
               className="group flex items-center gap-2 transition-colors hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60"
-              title={currentUserId ? 'Commenter' : 'Connecte-toi pour commenter'}
+              title={currentUserId ? 'Voir / répondre' : 'Connecte-toi pour commenter'}
             >
               <MessageCircle className="h-4 w-4 transition-all group-hover:scale-110" />
-              <span className="text-xs font-semibold">{/* TODO: comments count Phase 3 */}</span>
+              <span className="text-xs font-semibold">{commentsCount > 0 ? commentsCount : ''}</span>
             </button>
 
             {/* Share */}
@@ -350,11 +392,42 @@ function EchoCard({
       </div>
 
       {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+
+      {commentsOpen ? (
+        <CommentsModal
+          open={commentsOpen}
+          echoId={echo.id}
+          userId={currentUserId ?? null}
+          canPost={!!currentUserId}
+          initialCount={commentsCount}
+          onCommentInserted={onCommentInserted}
+          onClose={() => setCommentsOpen(false)}
+        />
+      ) : null}
     </>
   );
 }
 
 export default function ProfileEchoList({ echoes, currentUserId }: Props) {
+  // PHASE 3bis — state parent du compteur (incrément local uniquement)
+  // Init depuis props une seule fois (pas d’effet).
+  const [commentsCountById, setCommentsCountById] = useState<Record<string, number>>(() =>
+    buildInitialCommentsCountById(echoes ?? [])
+  );
+
+  // PHASE 3bis — resync “best-effort” sans setState en effect :
+  // on calcule une vue merged pour l’affichage, et on ne touche pas l’état.
+  const mergedCountById = useMemo(() => {
+    return mergeCommentsCounts(commentsCountById, echoes ?? []);
+  }, [commentsCountById, echoes]);
+
+  const onCommentInserted = (echoId: string) => {
+    setCommentsCountById((s) => ({
+      ...s,
+      [echoId]: (s[echoId] ?? 0) + 1,
+    }));
+  };
+
   if (!echoes || echoes.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
@@ -366,7 +439,13 @@ export default function ProfileEchoList({ echoes, currentUserId }: Props) {
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {echoes.map((e) => (
-        <EchoCard key={e.id} echo={e} currentUserId={currentUserId} />
+        <EchoCard
+          key={e.id}
+          echo={e}
+          currentUserId={currentUserId}
+          commentsCount={mergedCountById[e.id] ?? 0}
+          onCommentInserted={() => onCommentInserted(e.id)}
+        />
       ))}
     </div>
   );

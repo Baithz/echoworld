@@ -2,13 +2,21 @@
  * =============================================================================
  * Fichier      : components/echo/EchoItem.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-24)
- * Objet        : EchoItem UI (affichage + réactions + mirror + DM) — SAFE
+ * Version      : 1.3.1 (2026-01-24)
+ * Objet        : EchoItem UI (affichage + réactions + mirror + DM + commentaires) — SAFE
  * -----------------------------------------------------------------------------
- * PHASE 1 — Unifier le “contrat Echo” (types + mapping)
- * - [FIX] Supprime la dépendance type à EchoFeed (évite couplage / régressions de types)
- * - [KEEP] Contrat props identique (EchoFeed n’a rien à changer côté props)
- * - [SAFE] Media: sécurise le calcul preview + badge +N sans supposer longueur brute
+ * PHASE 3 — Activer les commentaires partout (lecture + ajout)
+ * - [PHASE3] Ajoute bouton “Commentaires” + badge (echo.comments_count) sans casser le contrat props
+ * - [PHASE3] Ouvre CommentsModal depuis EchoItem (feed/profil/etc.)
+ * - [KEEP] Réactions (officielles) + compat mapping NEW→LEGACY inchangés
+ * - [KEEP] ShareModal, Mirror, Message, Media preview, expand/collapse inchangés
+ * - [SAFE] Aucun `any`, best-effort si comments_count absent => 0 (pas de crash)
+ *
+ * PHASE 3bis — Realtime comments_count (incrément local uniquement)
+ * - [PHASE3bis] Ajoute prop optionnelle onCommentInserted (signal parent)
+ * - [PHASE3bis] Passe onCommentInserted à CommentsModal
+ * - [PHASE3bis] Ajoute props optionnelles currentUserId/canPost pour ouvrir la modale en mode post
+ * - [KEEP] Si non fourni: lecture seule, aucun impact (zéro régression)
  * =============================================================================
  */
 
@@ -22,17 +30,13 @@ import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 
 import EchoPreview from '@/lib/echo/EchoPreview';
 import ShareModal from '@/components/echo/ShareModal';
+import CommentsModal from '@/components/echo/CommentsModal';
 
 type AnyReactionType = ReactionType | ResonanceType;
 
 type ResCounts = Record<AnyReactionType, number>;
 type ResByMe = Record<AnyReactionType, boolean>;
 
-/**
- * PHASE 1 — Contrat echo local (aligné EchoFeed.EchoRow)
- * - image_urls existe côté DB, mais peut ne pas être sélectionné selon les queries (=> optionnel).
- * - On ne déduit rien ici : EchoFeed choisit déjà media final via image_urls ou fallback echo_media.
- */
 export type EchoRow = {
   id: string;
   title: string | null;
@@ -48,10 +52,8 @@ export type EchoRow = {
 
   user_id?: string | null;
 
-  // Phase 1 (optionnel selon query, mais stable si présent)
   image_urls?: string[] | null;
 
-  // Viewer meta optionnelle (Phase 3+)
   comments_count?: number | null;
   mirrored?: boolean | null;
   can_dm?: boolean | null;
@@ -68,11 +70,8 @@ type Props = {
   likeCount: number;
   onLike: (id: string) => void;
 
-  // Media final choisi en amont (EchoFeed)
   media: string[];
 
-  // Compat: ces props viennent du “système resonance” actuel.
-  // On garde le contrat, mais on affiche les 3 réactions officielles (REACTIONS) et on map vers les clés legacy.
   resCounts: ResCounts;
   resByMe: ResByMe;
   onResonance: (echoId: string, type: AnyReactionType) => void;
@@ -82,13 +81,18 @@ type Props = {
 
   onOpenEcho: (id: string) => void;
 
-  // Gardé pour compat (ancien bouton “Partager” pouvait déclencher un copy).
-  // Désormais, ShareModal gère le partage ; EchoFeed pourra être ajusté ensuite.
   onShare: (id: string) => void;
 
   copied: boolean;
   busyLike: boolean;
   busyResKey: string | null;
+
+  // PHASE 3bis — signal parent (incrément local uniquement)
+  onCommentInserted?: () => void;
+
+  // PHASE 3bis — optionnel: si fourni => modale commentable
+  currentUserId?: string | null;
+  canPost?: boolean;
 };
 
 function emotionLabel(emotion: string | null): { emoji: string; label: string } | null {
@@ -113,10 +117,6 @@ function emotionLabel(emotion: string | null): { emoji: string; label: string } 
   return map[emotion] ?? { emoji: '✨', label: emotion };
 }
 
-/**
- * Mapping “nouvelles réactions” -> “anciennes resonances”
- * (pour conserver le contrat EchoFeed actuel sans casser TypeScript / runtime)
- */
 const NEW_TO_LEGACY: Record<ReactionType, ResonanceType> = {
   understand: 'i_feel_you',
   support: 'i_support_you',
@@ -125,7 +125,8 @@ const NEW_TO_LEGACY: Record<ReactionType, ResonanceType> = {
 
 function getCount(counts: ResCounts, t: ReactionType): number {
   const legacy = NEW_TO_LEGACY[t];
-  return (counts[t] ?? counts[legacy] ?? 0) as number;
+  const v = counts[t] ?? counts[legacy] ?? 0;
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
 function getActive(byMe: ResByMe, t: ReactionType): boolean {
@@ -146,10 +147,17 @@ export default function EchoItem(props: Props) {
 
   const [shareOpen, setShareOpen] = useState(false);
 
+  const [commentsOpen, setCommentsOpen] = useState(false);
+
   const emo = useMemo(() => emotionLabel(echo.emotion), [echo.emotion]);
 
   const authorId = echo.user_id ?? '';
   const canMessage = !!authorId;
+
+  const commentsCount = useMemo(() => {
+    const n = typeof echo.comments_count === 'number' ? echo.comments_count : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [echo.comments_count]);
 
   const onSendMirror = () => {
     const msg = mirrorText.trim();
@@ -160,12 +168,12 @@ export default function EchoItem(props: Props) {
   };
 
   const media = useMemo(() => normalizeMedia(props.media), [props.media]);
-
-  const previewPhotos = useMemo(() => {
-    return media.slice(0, 3);
-  }, [media]);
-
+  const previewPhotos = useMemo(() => media.slice(0, 3), [media]);
   const extraCount = Math.max(0, media.length - 3);
+
+  // PHASE 3bis — mode posting optionnel, sans casser les anciens callers
+  const currentUserId = props.currentUserId ?? null;
+  const canPost = typeof props.canPost === 'boolean' ? props.canPost : !!currentUserId;
 
   return (
     <>
@@ -252,6 +260,24 @@ export default function EchoItem(props: Props) {
 
             <button
               type="button"
+              onClick={() => setCommentsOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+              title="Voir et ajouter des commentaires"
+            >
+              <MessageCircle className="h-4 w-4" />
+              Commentaires
+              {commentsCount > 0 ? (
+                <span
+                  key={commentsCount}
+                  className="ml-1 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white animate-pulse-once"
+                >
+                  {commentsCount}
+                </span>
+              ) : null}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShareOpen(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
             >
@@ -290,14 +316,11 @@ export default function EchoItem(props: Props) {
           </div>
         </div>
 
-        {/* Réactions empathiques (officielles) — compat legacy */}
         <div className="mt-3 flex flex-wrap gap-2">
           {REACTIONS.map((r) => {
             const active = getActive(props.resByMe, r.type);
             const count = getCount(props.resCounts, r.type);
 
-            // busyResKey: compat (EchoFeed actuel construit souvent `${echoId}:${type}`)
-            // On considère “busy” si key match nouveau OU legacy.
             const keyNew = `${echo.id}:${r.type}`;
             const keyLegacy = `${echo.id}:${NEW_TO_LEGACY[r.type]}`;
             const busy = props.busyResKey === keyNew || props.busyResKey === keyLegacy;
@@ -368,6 +391,18 @@ export default function EchoItem(props: Props) {
       </article>
 
       {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+
+      {commentsOpen ? (
+        <CommentsModal
+          open={commentsOpen}
+          echoId={echo.id}
+          userId={currentUserId}
+          canPost={canPost}
+          initialCount={commentsCount}
+          onCommentInserted={props.onCommentInserted}
+          onClose={() => setCommentsOpen(false)}
+        />
+      ) : null}
     </>
   );
 }

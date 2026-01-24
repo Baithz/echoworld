@@ -2,14 +2,14 @@
  * =============================================================================
  * Fichier      : app/echo/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-24)
+ * Version      : 1.3.1 (2026-01-24)
  * Objet        : Lecture d’un écho + interactions (P0)
  * -----------------------------------------------------------------------------
- * Fix v1.2.0 (PHASE 2) :
- * - [PHASE2] Réactions branchées sur la BDD réelle : public.echo_reactions(reaction_type)
- * - [PHASE2] Suppression de l’accès legacy echo_resonances.type (colonne invalide)
- * - [KEEP] UI réactions (understand/support/reflect) + Mirror/Reply/Share/Photos inchangés
- * - [SAFE] Auth soft + canView + mirror + replies conservés, best-effort robuste
+ * Fix v1.3.1 (PHASE 3bis) :
+ * - [FIX] Remplace prop obsolète onCountChange -> onCommentInserted (CommentsModal v1.2.0)
+ * - [PHASE3bis] Compteur comments_count géré localement par la page (incrément local uniquement)
+ * - [KEEP] Réactions PHASE 2 (echo_reactions.reaction_type), Mirror/Share/Photos/UI conservés
+ * - [SAFE] Best-effort : badge=0 si meta KO, aucune régression runtime
  * =============================================================================
  */
 
@@ -23,6 +23,8 @@ import { supabase } from '@/lib/supabase/client';
 
 import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 import ShareModal from '@/components/echo/ShareModal';
+import CommentsModal from '@/components/echo/CommentsModal';
+import { fetchCommentsCountMeta } from '@/lib/echo/comments';
 
 type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
 type Status = 'draft' | 'published' | 'archived' | 'deleted';
@@ -65,7 +67,7 @@ type UserSettingsRow = {
 // Ces tables peuvent ne pas exister dans tes types Supabase générés,
 // d’où le `never` sur insert(). On passe via un client "loose" (sans `any` explicite).
 type EchoMirrorInsert = { echo_id: string; user_id: string };
-type EchoReplyInsert = { echo_id: string; user_id: string; content: string };
+type EchoResponseInsert = { echo_id: string; user_id: string; content: string };
 
 function formatDateTimeFR(iso: string): string {
   try {
@@ -108,6 +110,12 @@ function initReactByMe(): Record<ReactionType, boolean> {
   return { understand: false, support: false, reflect: false };
 }
 
+function safeNonNegInt(input: unknown, fallback = 0): number {
+  const n = typeof input === 'number' ? input : Number(input);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
 export default function EchoDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -127,11 +135,17 @@ export default function EchoDetailPage() {
   // Interactions state
   const [mirrorLoading, setMirrorLoading] = useState(false);
   const [isMirrored, setIsMirrored] = useState(false);
+
+  // PHASE 3: comment state (on conserve les states existants "reply" pour zéro régression UI)
   const [replyLoading, setReplyLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
 
   // Share modal
   const [shareOpen, setShareOpen] = useState(false);
+
+  // PHASE 3: Comments modal + badge count
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentsCount, setCommentsCount] = useState<number>(0);
 
   // PHASE 2: Reactions UI state (OFFICIAL: echo_reactions.reaction_type)
   const [reactByMe, setReactByMe] = useState<Record<ReactionType, boolean>>(initReactByMe());
@@ -169,7 +183,7 @@ export default function EchoDetailPage() {
     };
   }, []);
 
-  // Load echo + author + viewer settings + mirrors + reactions meta
+  // Load echo + author + viewer settings + mirrors + reactions meta + comments count
   useEffect(() => {
     let mounted = true;
 
@@ -239,10 +253,7 @@ export default function EchoDetailPage() {
          * Colonnes: echo_id, user_id, reaction_type
          */
         try {
-          const rxRes = await supabaseLoose
-            .from('echo_reactions')
-            .select('user_id,reaction_type')
-            .eq('echo_id', e.id);
+          const rxRes = await supabaseLoose.from('echo_reactions').select('user_id,reaction_type').eq('echo_id', e.id);
 
           if (!mounted) return;
 
@@ -262,9 +273,22 @@ export default function EchoDetailPage() {
           setReactCounts(counts);
           setReactByMe(byMe);
         } catch {
-          // Best-effort : si la table n’est pas accessible, on n’empêche pas la page de fonctionner.
           setReactCounts(initReactCounts());
           setReactByMe(initReactByMe());
+        }
+
+        /**
+         * PHASE 3 — Comments count (badge)
+         * Source: public.echo_responses
+         * Best-effort : si KO, on reste à 0 sans casser.
+         */
+        try {
+          const cRes = await fetchCommentsCountMeta({ echoIds: [e.id] });
+          if (!mounted) return;
+          if (cRes.ok) setCommentsCount(safeNonNegInt(cRes.countById[e.id] ?? 0, 0));
+        } catch {
+          if (!mounted) return;
+          setCommentsCount(0);
         }
       } catch (err) {
         if (!mounted) return;
@@ -356,6 +380,10 @@ export default function EchoDetailPage() {
     }
   };
 
+  /**
+   * PHASE 3 — Commenter (table officielle: echo_responses)
+   * On garde la UI "Répondre" existante (replyText/replyLoading) pour zéro régression visuelle.
+   */
   const submitReply = async () => {
     if (!viewerId || !echo) {
       router.push('/login');
@@ -371,14 +399,17 @@ export default function EchoDetailPage() {
     setError(null);
 
     try {
-      const payload: EchoReplyInsert = { echo_id: echo.id, user_id: viewerId, content: msg };
-      const ins = await supabaseLoose.from('echo_replies').insert(payload);
+      const payload: EchoResponseInsert = { echo_id: echo.id, user_id: viewerId, content: msg };
+      const ins = await supabaseLoose.from('echo_responses').insert(payload);
       if (ins.error) throw ins.error;
 
       setReplyText('');
-      setOk('Réponse envoyée.');
+      setOk('Commentaire envoyé.');
+
+      // badge best-effort (optimistic)
+      setCommentsCount((n) => n + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur réponse.');
+      setError(err instanceof Error ? err.message : 'Erreur commentaire.');
     } finally {
       setReplyLoading(false);
     }
@@ -527,6 +558,18 @@ export default function EchoDetailPage() {
               className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-white"
             >
               Partager
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCommentsOpen(true)}
+              className="rounded-xl border border-slate-200 bg-white/70 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-white"
+              title="Voir et ajouter des commentaires"
+            >
+              Commentaires
+              {commentsCount > 0 ? (
+                <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{commentsCount}</span>
+              ) : null}
             </button>
 
             <button
@@ -707,6 +750,19 @@ export default function EchoDetailPage() {
       </main>
 
       {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+
+      {commentsOpen ? (
+        <CommentsModal
+          open={commentsOpen}
+          echoId={echo.id}
+          userId={viewerId}
+          canPost={!!settings?.allow_responses}
+          initialCount={commentsCount}
+          // PHASE 3bis: incrément local uniquement (pas de recalcul global)
+          onCommentInserted={() => setCommentsCount((n) => n + 1)}
+          onClose={() => setCommentsOpen(false)}
+        />
+      ) : null}
     </>
   );
 }
