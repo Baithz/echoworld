@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/messages/startDirectConversation.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.3.0 (2026-01-24)
+// Version      : 1.3.1 (2026-01-24)
 // Objet        : Démarrer/ouvrir une conversation DIRECTE (2 membres) — aligné BDD réelle
 // -----------------------------------------------------------------------------
 // Description  :
@@ -11,6 +11,11 @@
 // - FIX RLS : created_by envoyé UNIQUEMENT si valide (sinon DEFAULT DB)
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 1.3.1 (2026-01-24)
+// - [FIX] RLS 403: Refresh session via getSession() avant INSERT pour garantir token JWT valide
+// - [DEBUG] Log session data (hasSession, userId) pour diagnostiquer token expiré
+// - [SAFE] Guard session: si pas de session valide, retour immédiat "Session expirée"
+// - [KEEP] Signature + shape de retour inchangés (compat callers)
 // 1.3.0 (2026-01-24)
 // - [FIX] RLS 403: created_by envoyé UNIQUEMENT si me est truthy (sinon DEFAULT auth.uid() DB)
 // - [DEBUG] Logs ciblés pour tracer auth.getUser() et INSERT payload (env NEXT_PUBLIC_EW_DEBUG=1)
@@ -102,6 +107,20 @@ export async function startDirectConversation({
   echoId?: string | null;
 }): Promise<Res> {
   debugLog('START', { otherUserId, echoId });
+
+  // CRITICAL: Refresh session pour garantir un token JWT valide
+  const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+  
+  debugLog('supabase.auth.getSession() result', {
+    hasSession: Boolean(sessionData?.session),
+    userId: sessionData?.session?.user?.id ?? null,
+    error: sessionErr?.message ?? null,
+  });
+
+  if (sessionErr || !sessionData?.session) {
+    debugError('No valid session', sessionErr);
+    return { ok: false, error: 'Session expirée. Reconnectez-vous.' };
+  }
 
   // IMPORTANT: ne jamais faire confiance au userId passé en param (peut être stale)
   const { data: authData, error: authErr } = await supabase.auth.getUser();
