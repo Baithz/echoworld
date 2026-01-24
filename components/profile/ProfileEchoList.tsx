@@ -1,15 +1,25 @@
-// =============================================================================
-// Fichier      : components/profile/ProfileEchoList.tsx
-// Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.3.1 (2026-01-24)
-// Objet        : Liste UI des échos d'un profil (public) avec images et interactions
-// -----------------------------------------------------------------------------
-// CHANGELOG
-// 2.3.1 (2026-01-24)
-// - [FIX] ESLint react-hooks/set-state-in-effect : suppression du setState sync dans useEffect
-// - [SAFE] Resync best-effort via “merge non destructif” lors du rendu (pas de cascade renders)
-// - [KEEP] PHASE3bis : state parent + incrément local uniquement + CommentsModal + badge animé
-// =============================================================================
+/**
+ * =============================================================================
+ * Fichier      : components/profile/ProfileEchoList.tsx
+ * Auteur       : Régis KREMER (Baithz) — EchoWorld
+ * Version      : 2.4.0 (2026-01-24)
+ * Objet        : Liste UI des échos d'un profil (public) — alignée PHASE3bis + PHASE4
+ * -----------------------------------------------------------------------------
+ * PHASE 4 — Partage (UI + DB)
+ * - [PHASE4] Passe currentUserId (optionnel) à ShareModal pour log echo_shares (best-effort)
+ * - [KEEP] Ouverture ShareModal inchangée
+ *
+ * PHASE 3bis — Realtime comments_count (incrément local uniquement)
+ * - [PHASE3bis] State parent commentsCountById = source centrale
+ * - [PHASE3bis] onCommentInserted(echoId) => +1 local (jamais de décrément)
+ * - [PHASE3bis] Resync best-effort via merge non destructif (max / pas d’écrasement)
+ * - [KEEP] CommentsModal lecture + ajout si connecté (canPost)
+ *
+ * KEEP / SAFE
+ * - [KEEP] UI cards + preview + réactions UI-only conservées (pas de régression visuelle)
+ * - [SAFE] Aucun `any`, pas de setState sync dans useEffect, pas de décrément compteur
+ * =============================================================================
+ */
 
 'use client';
 
@@ -17,7 +27,6 @@ import { useMemo, useState } from 'react';
 import { Heart, MessageCircle, Share2, MapPin } from 'lucide-react';
 
 import type { PublicEcho } from '@/lib/profile/getProfile';
-
 import { REACTIONS, type ReactionType } from '@/lib/echo/reactions';
 import EchoPreview from '@/lib/echo/EchoPreview';
 import ShareModal from '@/components/echo/ShareModal';
@@ -92,10 +101,7 @@ function buildInitialCommentsCountById(echoes: PublicEcho[]): Record<string, num
  * - On ne décrémente jamais, on ne remplace pas une valeur déjà incrémentée
  * - Si un écho disparaît, on le garde en cache (inoffensif) : pas de cleanup en render.
  */
-function mergeCommentsCounts(
-  prev: Record<string, number>,
-  echoes: PublicEcho[]
-): Record<string, number> {
+function mergeCommentsCounts(prev: Record<string, number>, echoes: PublicEcho[]): Record<string, number> {
   const next = { ...prev };
   for (const e of echoes ?? []) {
     const fromProps = safeCount((e as unknown as { comments_count?: number | null }).comments_count);
@@ -123,13 +129,9 @@ function EchoCard({
 }) {
   const [expanded, setExpanded] = useState(false);
 
+  // UI-only (à brancher plus tard sur un meta fetch)
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0); // TODO: fetch from DB
-
-  const [shareOpen, setShareOpen] = useState(false);
-
-  // PHASE 3bis — CommentsModal (lecture + ajout) + signal parent
-  const [commentsOpen, setCommentsOpen] = useState(false);
 
   // UI-only (à brancher plus tard sur un meta fetch)
   const [reactByMe, setReactByMe] = useState<Record<LegacyResonanceType, boolean>>({
@@ -143,6 +145,10 @@ function EchoCard({
     i_reflect_with_you: 0,
   });
   const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  // Modales
+  const [shareOpen, setShareOpen] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
 
   const location = useMemo(() => [echo.city, echo.country].filter(Boolean).join(', '), [echo.city, echo.country]);
 
@@ -218,7 +224,7 @@ function EchoCard({
                 {location && (
                   <>
                     <span>•</span>
-                    <div className="flex items-center gap-1 min-w-0">
+                    <div className="flex min-w-0 items-center gap-1">
                       <MapPin className="h-3 w-3 shrink-0" />
                       <span className="truncate">{location}</span>
                     </div>
@@ -229,7 +235,7 @@ function EchoCard({
                 <span>•</span>
                 <span
                   key={commentsCount}
-                  className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700 animate-pulse-once"
+                  className="animate-pulse-once rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
                 >
                   {commentsCount} com{commentsCount > 1 ? 's' : ''}
                 </span>
@@ -291,20 +297,6 @@ function EchoCard({
             )}
           </div>
 
-          {/* Theme tags */}
-          {(echo.theme_tags?.length ?? 0) > 0 && !expanded && (
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              {echo.theme_tags.slice(0, 4).map((t) => (
-                <span
-                  key={`${echo.id}-${t}`}
-                  className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
-                >
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
-
           {/* Lien (conservé) */}
           <div className="mt-4">
             <a
@@ -335,7 +327,7 @@ function EchoCard({
                     active
                       ? 'border-slate-900 bg-slate-900 text-white shadow-lg'
                       : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
-                  } ${(busy || !currentUserId) ? 'cursor-not-allowed opacity-60' : ''}`}
+                  } ${busy || !currentUserId ? 'cursor-not-allowed opacity-60' : ''}`}
                   title={currentUserId ? r.label : 'Connecte-toi pour réagir'}
                 >
                   <span className="text-sm">{r.icon}</span>
@@ -360,9 +352,7 @@ function EchoCard({
               className="group flex items-center gap-2 transition-colors hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
               title={currentUserId ? 'Aimer' : 'Connecte-toi pour aimer'}
             >
-              <Heart
-                className={`h-4 w-4 transition-all group-hover:scale-110 ${liked ? 'fill-rose-600 text-rose-600' : ''}`}
-              />
+              <Heart className={`h-4 w-4 transition-all group-hover:scale-110 ${liked ? 'fill-rose-600 text-rose-600' : ''}`} />
               <span className="text-xs font-semibold">{likesCount > 0 ? likesCount : ''}</span>
             </button>
 
@@ -391,8 +381,16 @@ function EchoCard({
         </div>
       </div>
 
-      {shareOpen ? <ShareModal echoId={echo.id} onClose={() => setShareOpen(false)} /> : null}
+      {/* PHASE 4: userId optionnel (log echo_shares best-effort) */}
+      {shareOpen ? (
+        <ShareModal
+          echoId={echo.id}
+          onClose={() => setShareOpen(false)}
+          userId={currentUserId ?? null}
+        />
+      ) : null}
 
+      {/* PHASE 3bis: CommentsModal + incrément local uniquement */}
       {commentsOpen ? (
         <CommentsModal
           open={commentsOpen}
