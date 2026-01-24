@@ -2,14 +2,26 @@
  * =============================================================================
  * Fichier      : components/echo/EchoFeed.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.0 (2026-01-24)
- * Objet        : Flux d'échos — branche EchoItem (media + resonances + mirror + DM)
+ * Version      : 1.5.1 (2026-01-24)
+ * Objet        : Flux d'échos — branche EchoItem (media + reactions + mirror + DM)
  * -----------------------------------------------------------------------------
- * PHASE 1 — Unifier le “contrat Echo” (types + mapping)
- * - [NEW] Ajout image_urls au type EchoRow (normalisé en [] au rendu)
- * - [NEW] Viewer meta optionnelle (comments_count/mirrored/can_dm) sans casser les queries
+ * PHASE 2 — Brancher correctement les réactions sur la BDD réelle
+ * - [PHASE2] Remplace la lecture/écriture legacy echo_resonances par echo_reactions (reaction_type)
+ * - [FIX] ESLint no-unused-vars: supprime NEW_TO_LEGACY (non utilisé)
+ * - [KEEP] Compat EchoItem : resCounts/resByMe exposent les clés officielles + legacy (même valeurs)
  * - [KEEP] Zéro régression : fallback media via echo_media si image_urls absent
- * - [KEEP] Likes, share, resonances, mirror, DM, hero, toasts conservés
+ * - [KEEP] Likes, share, mirror, DM, hero, toasts conservés
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.5.1 (2026-01-24)
+ * - [FIX] Supprime NEW_TO_LEGACY inutilisé (ESLint)
+ * - [SAFE] Aucune régression fonctionnelle
+ * 1.5.0 (2026-01-24)
+ * - [PHASE2] fetchReactionMeta + toggleEchoReaction (source de vérité: echo_reactions)
+ * - [KEEP] UI inchangée, compat keys (understand/support/reflect + i_feel_you/i_support_you/i_reflect_with_you)
+ * 1.4.0 (2026-01-24)
+ * - PHASE 1 — contrat Echo (image_urls + viewer meta)
  * =============================================================================
  */
 
@@ -22,14 +34,14 @@ import EchoItem from '@/components/echo/EchoItem';
 import {
   fetchEchoMediaMeta,
   fetchLikeMeta,
-  fetchResonanceMeta,
+  fetchReactionMeta,
   sendEchoMirror,
   shareEcho,
   toggleEchoLike,
-  toggleEchoResonance,
-  type ResonanceType,
+  toggleEchoReaction,
 } from '@/lib/echo/actions';
 import { startDirectConversation } from '@/lib/messages/startDirectConversation';
+import type { ReactionType } from '@/lib/echo/reactions';
 
 export type EchoRow = {
   id: string;
@@ -68,46 +80,64 @@ function formatDateFR(iso: string): string {
 type ToastKind = 'ok' | 'error';
 type ToastState = { kind: ToastKind; message: string } | null;
 
-// Compat EchoItem: peut envoyer legacy OU new (understand/support/reflect)
-type ReactionKey = 'understand' | 'support' | 'reflect';
-type AnyReactionType = ResonanceType | ReactionKey;
+/**
+ * Compat EchoItem :
+ * - EchoItem peut envoyer/consommer soit les clés officielles, soit legacy.
+ * - Phase 2 : DB officielle = echo_reactions (understand/support/reflect).
+ * - On expose donc les DEUX jeux de clés (mêmes valeurs) pour zéro régression.
+ */
+type LegacyResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
+type ReactionKey = ReactionType; // 'understand' | 'support' | 'reflect'
+type AnyReactionKey = ReactionKey | LegacyResonanceType;
 
-const NEW_TO_LEGACY: Record<ReactionKey, ResonanceType> = {
-  understand: 'i_feel_you',
-  support: 'i_support_you',
-  reflect: 'i_reflect_with_you',
+const LEGACY_TO_NEW: Record<LegacyResonanceType, ReactionKey> = {
+  i_feel_you: 'understand',
+  i_support_you: 'support',
+  i_reflect_with_you: 'reflect',
 };
 
-function toLegacyResonanceType(t: AnyReactionType): ResonanceType {
-  if (t === 'understand' || t === 'support' || t === 'reflect') return NEW_TO_LEGACY[t];
-  return t;
+function isReactionKey(v: AnyReactionKey): v is ReactionKey {
+  return v === 'understand' || v === 'support' || v === 'reflect';
 }
 
-function withReactionKeysCounts(base: Record<ResonanceType, number>): Record<ResonanceType | ReactionKey, number> {
+function toOfficialReactionType(t: AnyReactionKey): ReactionKey {
+  if (isReactionKey(t)) return t;
+  return LEGACY_TO_NEW[t];
+}
+
+function withCompatKeysCounts(base: Record<ReactionKey, number>): Record<ReactionKey | LegacyResonanceType, number> {
   return {
-    i_feel_you: base.i_feel_you ?? 0,
-    i_support_you: base.i_support_you ?? 0,
-    i_reflect_with_you: base.i_reflect_with_you ?? 0,
-    understand: base.i_feel_you ?? 0,
-    support: base.i_support_you ?? 0,
-    reflect: base.i_reflect_with_you ?? 0,
+    understand: base.understand ?? 0,
+    support: base.support ?? 0,
+    reflect: base.reflect ?? 0,
+    i_feel_you: base.understand ?? 0,
+    i_support_you: base.support ?? 0,
+    i_reflect_with_you: base.reflect ?? 0,
   };
 }
 
-function withReactionKeysByMe(base: Record<ResonanceType, boolean>): Record<ResonanceType | ReactionKey, boolean> {
+function withCompatKeysByMe(base: Record<ReactionKey, boolean>): Record<ReactionKey | LegacyResonanceType, boolean> {
   return {
-    i_feel_you: base.i_feel_you ?? false,
-    i_support_you: base.i_support_you ?? false,
-    i_reflect_with_you: base.i_reflect_with_you ?? false,
-    understand: base.i_feel_you ?? false,
-    support: base.i_support_you ?? false,
-    reflect: base.i_reflect_with_you ?? false,
+    understand: base.understand ?? false,
+    support: base.support ?? false,
+    reflect: base.reflect ?? false,
+    i_feel_you: base.understand ?? false,
+    i_support_you: base.support ?? false,
+    i_reflect_with_you: base.reflect ?? false,
   };
 }
 
 function normalizeImageUrls(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input.map((x) => String(x ?? '').trim()).filter(Boolean);
+}
+
+function initReactionCounts(): Record<ReactionKey, number> {
+  return { understand: 0, support: 0, reflect: 0 };
+}
+
+function initReactionByMe(): Record<ReactionKey, boolean> {
+  return { understand: false, support: false, reflect: false };
 }
 
 export default function EchoFeed({
@@ -132,14 +162,14 @@ export default function EchoFeed({
   // Media meta (fallback si image_urls non présent)
   const [mediaById, setMediaById] = useState<Record<string, string[]>>({});
 
-  // Resonance meta (legacy keys)
-  const [resCountsByEcho, setResCountsByEcho] = useState<Record<string, Record<ResonanceType, number>>>({});
-  const [resByMeByEcho, setResByMeByEcho] = useState<Record<string, Record<ResonanceType, boolean>>>({});
+  // Reactions meta (OFFICIAL)
+  const [rxCountsByEcho, setRxCountsByEcho] = useState<Record<string, Record<ReactionKey, number>>>({});
+  const [rxByMeByEcho, setRxByMeByEcho] = useState<Record<string, Record<ReactionKey, boolean>>>({});
 
   // UI states
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [busyLikeId, setBusyLikeId] = useState<string | null>(null);
-  const [busyResKey, setBusyResKey] = useState<string | null>(null);
+  const [busyReactionKey, setBusyReactionKey] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState>(null);
 
   const toastTimer = useRef<number | null>(null);
@@ -229,23 +259,43 @@ export default function EchoFeed({
     };
   }, [echoes, hasEchoes]);
 
-  // Load resonance meta (legacy)
+  // Load reactions meta (PHASE 2 — official table echo_reactions)
   useEffect(() => {
     let mounted = true;
 
-    const loadRes = async () => {
+    const loadReactions = async () => {
       if (!hasEchoes) return;
       const ids = echoes.map((e) => e.id);
 
-      const res = await fetchResonanceMeta({ echoIds: ids, userId });
+      const res = await fetchReactionMeta({ echoIds: ids, userId });
       if (!mounted) return;
       if (!res.ok) return;
 
-      setResCountsByEcho(res.countsByEcho);
-      setResByMeByEcho(res.byMeByEcho);
+      const nextCounts: Record<string, Record<ReactionKey, number>> = {};
+      const nextByMe: Record<string, Record<ReactionKey, boolean>> = {};
+
+      for (const echoId of ids) {
+        const c = (res.countsByEcho[echoId] ?? {}) as Record<string, number>;
+        const m = (res.byMeByEcho[echoId] ?? {}) as Record<string, boolean>;
+
+        // read official first, fallback legacy (si un ancien meta est renvoyé)
+        const understandCount = Number(c.understand ?? c.i_feel_you ?? 0) || 0;
+        const supportCount = Number(c.support ?? c.i_support_you ?? 0) || 0;
+        const reflectCount = Number(c.reflect ?? c.i_reflect_with_you ?? 0) || 0;
+
+        const understandMe = Boolean(m.understand ?? m.i_feel_you ?? false);
+        const supportMe = Boolean(m.support ?? m.i_support_you ?? false);
+        const reflectMe = Boolean(m.reflect ?? m.i_reflect_with_you ?? false);
+
+        nextCounts[echoId] = { understand: understandCount, support: supportCount, reflect: reflectCount };
+        nextByMe[echoId] = { understand: understandMe, support: supportMe, reflect: reflectMe };
+      }
+
+      setRxCountsByEcho(nextCounts);
+      setRxByMeByEcho(nextByMe);
     };
 
-    loadRes();
+    loadReactions();
 
     return () => {
       mounted = false;
@@ -297,73 +347,68 @@ export default function EchoFeed({
     showToast('ok', 'Partage prêt.');
   };
 
-  // NOTE: compatible EchoItem (AnyReactionType), persistence reste legacy via actions.ts
-  const onResonance = async (echoId: string, type: AnyReactionType) => {
+  /**
+   * PHASE 2 — Réactions : persistence officielle echo_reactions
+   * Compat : EchoItem peut envoyer 'understand'|'support'|'reflect' OU legacy.
+   */
+  const onResonance = async (echoId: string, type: AnyReactionKey) => {
     if (!userId) {
       showToast('error', 'Connecte-toi pour réagir.');
       return;
     }
 
-    const legacyType = toLegacyResonanceType(type);
-    const key = `${echoId}:${legacyType}`;
-    if (busyResKey) return;
+    const official = toOfficialReactionType(type);
+    const key = `${echoId}:${official}`;
+    if (busyReactionKey) return;
 
-    const was = !!resByMeByEcho[echoId]?.[legacyType];
+    const was = !!rxByMeByEcho[echoId]?.[official];
     const next = !was;
 
     // optimistic
-    setBusyResKey(key);
+    setBusyReactionKey(key);
 
-    setResByMeByEcho((s) => ({
+    setRxByMeByEcho((s) => ({
       ...s,
       [echoId]: {
-        i_feel_you: s[echoId]?.i_feel_you ?? false,
-        i_support_you: s[echoId]?.i_support_you ?? false,
-        i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
-        [legacyType]: next,
+        ...(s[echoId] ?? initReactionByMe()),
+        [official]: next,
       },
     }));
 
-    setResCountsByEcho((s) => ({
+    setRxCountsByEcho((s) => ({
       ...s,
       [echoId]: {
-        i_feel_you: s[echoId]?.i_feel_you ?? 0,
-        i_support_you: s[echoId]?.i_support_you ?? 0,
-        i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
-        [legacyType]: Math.max(0, (s[echoId]?.[legacyType] ?? 0) + (next ? 1 : -1)),
+        ...(s[echoId] ?? initReactionCounts()),
+        [official]: Math.max(0, (s[echoId]?.[official] ?? 0) + (next ? 1 : -1)),
       },
     }));
 
-    const res = await toggleEchoResonance({ echoId, userId, type: legacyType, nextOn: next });
+    const res = await toggleEchoReaction({ echoId, userId, type: official, nextOn: next });
 
     if (!res.ok) {
-      setResByMeByEcho((s) => ({
+      setRxByMeByEcho((s) => ({
         ...s,
         [echoId]: {
-          i_feel_you: s[echoId]?.i_feel_you ?? false,
-          i_support_you: s[echoId]?.i_support_you ?? false,
-          i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? false,
-          [legacyType]: was,
+          ...(s[echoId] ?? initReactionByMe()),
+          [official]: was,
         },
       }));
 
-      setResCountsByEcho((s) => ({
+      setRxCountsByEcho((s) => ({
         ...s,
         [echoId]: {
-          i_feel_you: s[echoId]?.i_feel_you ?? 0,
-          i_support_you: s[echoId]?.i_support_you ?? 0,
-          i_reflect_with_you: s[echoId]?.i_reflect_with_you ?? 0,
-          [legacyType]: Math.max(0, (s[echoId]?.[legacyType] ?? 0) + (was ? 1 : -1)),
+          ...(s[echoId] ?? initReactionCounts()),
+          [official]: Math.max(0, (s[echoId]?.[official] ?? 0) + (was ? 1 : -1)),
         },
       }));
 
       showToast('error', res.error ?? 'Erreur réaction.');
-      setBusyResKey(null);
+      setBusyReactionKey(null);
       return;
     }
 
     showToast('ok', next ? 'Réaction ajoutée.' : 'Réaction retirée.');
-    setBusyResKey(null);
+    setBusyReactionKey(null);
   };
 
   const onMirror = async (echoId: string, toUserId: string, message: string) => {
@@ -505,16 +550,8 @@ export default function EchoFeed({
 
           <div className="mt-6 grid gap-4 md:grid-cols-2">
             {echoes.map((e) => {
-              const legacyCounts = resCountsByEcho[e.id] ?? {
-                i_feel_you: 0,
-                i_support_you: 0,
-                i_reflect_with_you: 0,
-              };
-              const legacyByMe = resByMeByEcho[e.id] ?? {
-                i_feel_you: false,
-                i_support_you: false,
-                i_reflect_with_you: false,
-              };
+              const counts = rxCountsByEcho[e.id] ?? initReactionCounts();
+              const byMe = rxByMeByEcho[e.id] ?? initReactionByMe();
 
               const imgs = normalizeImageUrls(e.image_urls);
               const media = imgs.length > 0 ? imgs : (mediaById[e.id] ?? []);
@@ -530,8 +567,9 @@ export default function EchoFeed({
                   likeCount={likeCountById[e.id] ?? 0}
                   onLike={onLike}
                   media={media}
-                  resCounts={withReactionKeysCounts(legacyCounts)}
-                  resByMe={withReactionKeysByMe(legacyByMe)}
+                  // compat EchoItem : clés officielles + legacy
+                  resCounts={withCompatKeysCounts(counts)}
+                  resByMe={withCompatKeysByMe(byMe)}
                   onResonance={onResonance}
                   onMirror={onMirror}
                   onMessage={onMessage}
@@ -539,7 +577,7 @@ export default function EchoFeed({
                   onShare={onShare}
                   copied={copiedId === e.id}
                   busyLike={busyLikeId === e.id}
-                  busyResKey={busyResKey}
+                  busyResKey={busyReactionKey}
                 />
               );
             })}

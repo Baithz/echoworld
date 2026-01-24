@@ -1,14 +1,19 @@
 // =============================================================================
 // Fichier      : lib/echo/actions.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.5.0 (2026-01-24)
+// Version      : 1.6.1 (2026-01-24)
 // Objet        : Actions Echo (like, share, media, resonances, mirrors) — SAFE
 // -----------------------------------------------------------------------------
-// FIX v1.5.0 (PHASE 1)
-// - [PHASE1] Ajout pont "réactions officielles" (understand/support/reflect) vers legacy echo_resonances
-// - [NEW] toggleEchoReaction + fetchReactionMeta (retourne clés REACTIONS + legacy, sans casser EchoFeed)
-// - [KEEP] Contrat flat + 0 any / 0 {} vide / 0 never Supabase
-// - [SAFE] Exports legacy conservés, logique métier inchangée
+// FIX v1.6.1 (PHASE 2)
+// - [FIX] ESLint no-unused-vars: supprime helpers non utilisés (asLegacyType + isReactionType)
+// - [KEEP] Aucune régression: logique PHASE 2 inchangée, exports legacy conservés
+//
+// FIX v1.6.0 (PHASE 2)
+// - [PHASE2] Branche les réactions officielles sur la BDD réelle: echo_reactions(reaction_type)
+// - [PHASE2] fetchReactionMeta lit echo_reactions en priorité + fallback echo_resonances (legacy)
+// - [PHASE2] toggleEchoReaction écrit echo_reactions + miroir legacy optionnel (echo_resonances)
+// - [KEEP] Exports legacy conservés (fetchResonanceMeta / toggleEchoResonance) => zéro régression
+// - [KEEP] Contrat flat + 0 any / 0 {} vide / neutralise le "never" Supabase
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -205,11 +210,14 @@ export async function fetchEchoMediaMeta({
 export type ResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
 
 /**
- * PHASE 1 — Réactions officielles (UI) mappées vers legacy DB
- * NB: pas d'import vers '@/lib/echo/reactions' ici => pas de dépendance croisée.
+ * PHASE 2 — Réactions officielles (DB echo_reactions)
+ * (on conserve aussi les clés legacy via mapping et miroir optionnel)
  */
 export type ReactionType = 'understand' | 'support' | 'reflect';
 export type AnyReactionType = ResonanceType | ReactionType;
+
+type EchoReactionRow = { echo_id: string; user_id: string; reaction_type: ReactionType };
+type EchoResonanceRow = { echo_id: string; user_id: string; resonance_type: ResonanceType };
 
 const NEW_TO_LEGACY: Record<ReactionType, ResonanceType> = {
   understand: 'i_feel_you',
@@ -217,13 +225,8 @@ const NEW_TO_LEGACY: Record<ReactionType, ResonanceType> = {
   reflect: 'i_reflect_with_you',
 };
 
-function isReactionType(v: AnyReactionType): v is ReactionType {
-  return v === 'understand' || v === 'support' || v === 'reflect';
-}
-
-function asLegacyType(t: AnyReactionType): ResonanceType {
-  if (isReactionType(t)) return NEW_TO_LEGACY[t];
-  return t;
+function isResonanceType(v: AnyReactionType): v is ResonanceType {
+  return v === 'i_feel_you' || v === 'i_support_you' || v === 'i_reflect_with_you';
 }
 
 function initLegacyCounts(): Record<ResonanceType, number> {
@@ -242,17 +245,31 @@ function initLegacyByMe(): Record<ResonanceType, boolean> {
   };
 }
 
-function withReactionKeys<T extends number | boolean>(
-  obj: Record<ResonanceType, T>
-): Record<ResonanceType | ReactionType, T> {
+function initFullCounts(): Record<ResonanceType | ReactionType, number> {
   return {
-    ...obj,
-    understand: obj.i_feel_you,
-    support: obj.i_support_you,
-    reflect: obj.i_reflect_with_you,
+    i_feel_you: 0,
+    i_support_you: 0,
+    i_reflect_with_you: 0,
+    understand: 0,
+    support: 0,
+    reflect: 0,
   };
 }
 
+function initFullByMe(): Record<ResonanceType | ReactionType, boolean> {
+  return {
+    i_feel_you: false,
+    i_support_you: false,
+    i_reflect_with_you: false,
+    understand: false,
+    support: false,
+    reflect: false,
+  };
+}
+
+/**
+ * PHASE 1 — Legacy meta (inchangé) : echo_resonances(resonance_type)
+ */
 export async function fetchResonanceMeta({
   echoIds,
   userId,
@@ -274,7 +291,7 @@ export async function fetchResonanceMeta({
 
     if (error || !data) return { ok: false, error: error?.message ?? 'Resonances indisponibles.' };
 
-    const rows = data as { echo_id: string; user_id: string; resonance_type: string }[];
+    const rows = data as EchoResonanceRow[];
 
     const countsByEcho: Record<string, Record<ResonanceType, number>> = {};
     const byMeByEcho: Record<string, Record<ResonanceType, boolean>> = {};
@@ -288,7 +305,7 @@ export async function fetchResonanceMeta({
 
       if (t === 'i_feel_you' || t === 'i_support_you' || t === 'i_reflect_with_you') {
         countsByEcho[echoId][t] = (countsByEcho[echoId][t] ?? 0) + 1;
-        if (userId && r.user_id === userId) byMeByEcho[echoId][t] = true;
+        if (userId && String(r.user_id) === userId) byMeByEcho[echoId][t] = true;
       }
     });
 
@@ -299,8 +316,9 @@ export async function fetchResonanceMeta({
 }
 
 /**
- * PHASE 1 — Meta “réactions” (officielles) : renvoie les clés legacy + les clés REACTIONS
- * Pour brancher une UI unique (EchoItem / ProfileEchoList / EchoFeed) sans casser l’existant.
+ * PHASE 2 — Meta “réactions” officielle : echo_reactions(reaction_type)
+ * Retourne systématiquement les clés officielles + les clés legacy (compat UI).
+ * Fallback safe : si table/req KO => echo_resonances (legacy).
  */
 export async function fetchReactionMeta({
   echoIds,
@@ -314,18 +332,78 @@ export async function fetchReactionMeta({
     byMeByEcho: Record<string, Record<ResonanceType | ReactionType, boolean>>;
   }>
 > {
+  if (!echoIds.length) return { ok: true, countsByEcho: {}, byMeByEcho: {} };
+
+  // 1) Priorité : echo_reactions
+  try {
+    const { data, error } = (await (table('echo_reactions')
+      .select('echo_id,user_id,reaction_type')
+      .in('echo_id', echoIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+    if (!error && data) {
+      const rows = data as EchoReactionRow[];
+
+      const countsByEcho: Record<string, Record<ResonanceType | ReactionType, number>> = {};
+      const byMeByEcho: Record<string, Record<ResonanceType | ReactionType, boolean>> = {};
+
+      rows.forEach((r) => {
+        const echoId = String(r.echo_id);
+        const rt = r.reaction_type;
+
+        if (!countsByEcho[echoId]) countsByEcho[echoId] = initFullCounts();
+        if (!byMeByEcho[echoId]) byMeByEcho[echoId] = initFullByMe();
+
+        // compteur officiel
+        countsByEcho[echoId][rt] = (countsByEcho[echoId][rt] ?? 0) + 1;
+
+        // compat legacy (mêmes valeurs)
+        const legacy = NEW_TO_LEGACY[rt];
+        countsByEcho[echoId][legacy] = (countsByEcho[echoId][legacy] ?? 0) + 1;
+
+        if (userId && String(r.user_id) === userId) {
+          byMeByEcho[echoId][rt] = true;
+          byMeByEcho[echoId][legacy] = true;
+        }
+      });
+
+      // Contrat stable : objets présents même si 0
+      echoIds.forEach((id) => {
+        const k = String(id);
+        if (!countsByEcho[k]) countsByEcho[k] = initFullCounts();
+        if (!byMeByEcho[k]) byMeByEcho[k] = initFullByMe();
+      });
+
+      return { ok: true, countsByEcho, byMeByEcho };
+    }
+  } catch {
+    // ignore -> fallback legacy
+  }
+
+  // 2) Fallback : echo_resonances
   const base = await fetchResonanceMeta({ echoIds, userId });
   if (!base.ok) return base;
 
   const countsByEcho: Record<string, Record<ResonanceType | ReactionType, number>> = {};
   const byMeByEcho: Record<string, Record<ResonanceType | ReactionType, boolean>> = {};
 
-  Object.keys(base.countsByEcho).forEach((echoId) => {
-    const c = base.countsByEcho[echoId];
-    const m = base.byMeByEcho[echoId];
+  echoIds.forEach((id) => {
+    const echoId = String(id);
+    const c = base.countsByEcho[echoId] ?? initLegacyCounts();
+    const m = base.byMeByEcho[echoId] ?? initLegacyByMe();
 
-    countsByEcho[echoId] = withReactionKeys<number>(c);
-    byMeByEcho[echoId] = withReactionKeys<boolean>(m);
+    countsByEcho[echoId] = {
+      ...c,
+      understand: c.i_feel_you ?? 0,
+      support: c.i_support_you ?? 0,
+      reflect: c.i_reflect_with_you ?? 0,
+    };
+
+    byMeByEcho[echoId] = {
+      ...m,
+      understand: m.i_feel_you ?? false,
+      support: m.i_support_you ?? false,
+      reflect: m.i_reflect_with_you ?? false,
+    };
   });
 
   return { ok: true, countsByEcho, byMeByEcho };
@@ -367,8 +445,8 @@ export async function toggleEchoResonance({
 }
 
 /**
- * PHASE 1 — Toggle “réaction” (officielle) : map vers legacy DB
- * (permet à l’UI d’appeler avec understand/support/reflect sans casser echo_resonances)
+ * PHASE 2 — Toggle “réaction” officielle : écrit echo_reactions + miroir legacy optionnel
+ * - Accepte aussi du legacy (AnyReactionType) => route vers toggleEchoResonance
  */
 export async function toggleEchoReaction({
   echoId,
@@ -381,8 +459,40 @@ export async function toggleEchoReaction({
   type: AnyReactionType;
   nextOn: boolean;
 }): Promise<ResVoid> {
-  const legacy = asLegacyType(type);
-  return toggleEchoResonance({ echoId, userId, type: legacy, nextOn });
+  // Legacy direct -> inchangé
+  if (isResonanceType(type)) {
+    return toggleEchoResonance({ echoId, userId, type, nextOn });
+  }
+
+  // Officiel -> echo_reactions + miroir legacy
+  const rt = type as ReactionType;
+
+  try {
+    if (nextOn) {
+      const { error } = await table('echo_reactions').insert({
+        echo_id: echoId,
+        user_id: userId,
+        reaction_type: rt,
+      });
+      if (error) return { ok: false, error: error.message };
+    } else {
+      const { error } = (await (table('echo_reactions')
+        .delete()
+        .eq('echo_id', echoId)
+        .eq('user_id', userId)
+        .eq('reaction_type', rt) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+      if (error) return { ok: false, error: error.message };
+    }
+
+    // Miroir legacy (optionnel mais recommandé tant que du code legacy existe)
+    const legacy = NEW_TO_LEGACY[rt];
+    const mirror = await toggleEchoResonance({ echoId, userId, type: legacy, nextOn });
+    if (!mirror.ok) return mirror;
+
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMsg(e, 'Erreur réaction.') };
+  }
 }
 
 /* ============================================================================

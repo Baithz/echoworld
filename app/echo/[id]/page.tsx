@@ -2,15 +2,14 @@
  * =============================================================================
  * Fichier      : app/echo/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-23)
+ * Version      : 1.2.0 (2026-01-24)
  * Objet        : Lecture d’un écho + interactions (P0)
  * -----------------------------------------------------------------------------
- * Fix v1.1.0 :
- * - [FIX] Ajout pt-28 (évite le passage sous le header global)
- * - [NEW] Affichage photos de l’écho (image_urls) + grille responsive
- * - [NEW] Partage réel via ShareModal (remplace "copier lien" comme unique action)
- * - [NEW] Réactions empathiques (understand/support/reflect) en UI (sans casser Mirror/Reply existants)
- * - [SAFE] Aucune régression: auth soft + canView + mirror + replies conservés
+ * Fix v1.2.0 (PHASE 2) :
+ * - [PHASE2] Réactions branchées sur la BDD réelle : public.echo_reactions(reaction_type)
+ * - [PHASE2] Suppression de l’accès legacy echo_resonances.type (colonne invalide)
+ * - [KEEP] UI réactions (understand/support/reflect) + Mirror/Reply/Share/Photos inchangés
+ * - [SAFE] Auth soft + canView + mirror + replies conservés, best-effort robuste
  * =============================================================================
  */
 
@@ -42,7 +41,7 @@ type EchoRow = {
   status: Status | null;
   created_at: string;
 
-  // NEW: photos (table echoes)
+  // photos (table echoes)
   image_urls?: string[] | null;
 };
 
@@ -67,14 +66,6 @@ type UserSettingsRow = {
 // d’où le `never` sur insert(). On passe via un client "loose" (sans `any` explicite).
 type EchoMirrorInsert = { echo_id: string; user_id: string };
 type EchoReplyInsert = { echo_id: string; user_id: string; content: string };
-
-// Compat (réactions legacy si tes tables/actions actuelles ne sont pas encore migrées)
-type LegacyResonanceType = 'i_feel_you' | 'i_support_you' | 'i_reflect_with_you';
-const NEW_TO_LEGACY: Record<ReactionType, LegacyResonanceType> = {
-  understand: 'i_feel_you',
-  support: 'i_support_you',
-  reflect: 'i_reflect_with_you',
-};
 
 function formatDateTimeFR(iso: string): string {
   try {
@@ -109,6 +100,14 @@ function emptyResult<T>() {
   return Promise.resolve({ data: null as T | null, error: null as unknown });
 }
 
+function initReactCounts(): Record<ReactionType, number> {
+  return { understand: 0, support: 0, reflect: 0 };
+}
+
+function initReactByMe(): Record<ReactionType, boolean> {
+  return { understand: false, support: false, reflect: false };
+}
+
 export default function EchoDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -131,20 +130,12 @@ export default function EchoDetailPage() {
   const [replyLoading, setReplyLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
 
-  // NEW: Share modal
+  // Share modal
   const [shareOpen, setShareOpen] = useState(false);
 
-  // NEW: Reactions UI state (best-effort, branchable later)
-  const [reactByMe, setReactByMe] = useState<Record<LegacyResonanceType, boolean>>({
-    i_feel_you: false,
-    i_support_you: false,
-    i_reflect_with_you: false,
-  });
-  const [reactCounts, setReactCounts] = useState<Record<LegacyResonanceType, number>>({
-    i_feel_you: 0,
-    i_support_you: 0,
-    i_reflect_with_you: 0,
-  });
+  // PHASE 2: Reactions UI state (OFFICIAL: echo_reactions.reaction_type)
+  const [reactByMe, setReactByMe] = useState<Record<ReactionType, boolean>>(initReactByMe());
+  const [reactCounts, setReactCounts] = useState<Record<ReactionType, number>>(initReactCounts());
   const [reactBusyKey, setReactBusyKey] = useState<string | null>(null);
 
   // Client "loose" pour éviter le `never` sur les tables non typées dans Database
@@ -178,7 +169,7 @@ export default function EchoDetailPage() {
     };
   }, []);
 
-  // Load echo + author + viewer settings
+  // Load echo + author + viewer settings + mirrors + reactions meta
   useEffect(() => {
     let mounted = true;
 
@@ -238,40 +229,42 @@ export default function EchoDetailPage() {
 
           if (!mounted) return;
           setIsMirrored(!!mRes.data && !mRes.error);
+        } else {
+          setIsMirrored(false);
         }
 
-        // Reactions meta best-effort (si table existe déjà). Sinon: reste à 0 sans bloquer.
-        if (viewerId) {
-          const metaRes = await supabaseLoose
-            .from('echo_resonances')
-            .select('type,user_id')
+        /**
+         * PHASE 2 — Reactions meta (OFFICIAL)
+         * Table: public.echo_reactions
+         * Colonnes: echo_id, user_id, reaction_type
+         */
+        try {
+          const rxRes = await supabaseLoose
+            .from('echo_reactions')
+            .select('user_id,reaction_type')
             .eq('echo_id', e.id);
 
           if (!mounted) return;
 
-          if (!metaRes.error && Array.isArray(metaRes.data)) {
-            const counts: Record<LegacyResonanceType, number> = {
-              i_feel_you: 0,
-              i_support_you: 0,
-              i_reflect_with_you: 0,
-            };
-            const byMe: Record<LegacyResonanceType, boolean> = {
-              i_feel_you: false,
-              i_support_you: false,
-              i_reflect_with_you: false,
-            };
+          const counts = initReactCounts();
+          const byMe = initReactByMe();
 
-            for (const row of metaRes.data as Array<{ type?: string | null; user_id?: string | null }>) {
-              const t = row.type as LegacyResonanceType;
-              if (t === 'i_feel_you' || t === 'i_support_you' || t === 'i_reflect_with_you') {
+          if (!rxRes.error && Array.isArray(rxRes.data)) {
+            for (const row of rxRes.data as Array<{ user_id?: string | null; reaction_type?: string | null }>) {
+              const t = (row.reaction_type ?? '') as ReactionType;
+              if (t === 'understand' || t === 'support' || t === 'reflect') {
                 counts[t] += 1;
-                if (row.user_id === viewerId) byMe[t] = true;
+                if (viewerId && row.user_id === viewerId) byMe[t] = true;
               }
             }
-
-            setReactCounts(counts);
-            setReactByMe(byMe);
           }
+
+          setReactCounts(counts);
+          setReactByMe(byMe);
+        } catch {
+          // Best-effort : si la table n’est pas accessible, on n’empêche pas la page de fonctionner.
+          setReactCounts(initReactCounts());
+          setReactByMe(initReactByMe());
         }
       } catch (err) {
         if (!mounted) return;
@@ -346,7 +339,6 @@ export default function EchoDetailPage() {
     try {
       if (isMirrored) {
         const del = await supabaseLoose.from('echo_mirrors').delete().eq('echo_id', echo.id).eq('user_id', viewerId);
-
         if (del.error) throw del.error;
         setIsMirrored(false);
         setOk('Écho retiré des miroirs.');
@@ -392,41 +384,57 @@ export default function EchoDetailPage() {
     }
   };
 
+  /**
+   * PHASE 2 — Toggle réaction (OFFICIAL): echo_reactions.reaction_type
+   * - Insert: (echo_id, user_id, reaction_type)
+   * - Delete: filter by same triplet
+   */
   const toggleReaction = async (type: ReactionType) => {
     if (!viewerId || !echo) {
       router.push('/login');
       return;
     }
 
-    const legacy = NEW_TO_LEGACY[type];
-    const key = `${echo.id}:${legacy}`;
+    const key = `${echo.id}:${type}`;
     setReactBusyKey(key);
     setOk(null);
     setError(null);
 
+    const active = !!reactByMe[type];
+
+    // optimistic
+    setReactByMe((prev) => ({ ...prev, [type]: !active }));
+    setReactCounts((prev) => ({
+      ...prev,
+      [type]: active ? Math.max(0, (prev[type] ?? 0) - 1) : (prev[type] ?? 0) + 1,
+    }));
+
     try {
-      const active = !!reactByMe[legacy];
-
-      // optimistic
-      setReactByMe((prev) => ({ ...prev, [legacy]: !active }));
-      setReactCounts((prev) => ({
-        ...prev,
-        [legacy]: active ? Math.max(0, (prev[legacy] ?? 0) - 1) : (prev[legacy] ?? 0) + 1,
-      }));
-
-      // best-effort persistence si table dispo (sinon ignore)
       if (active) {
-        await supabaseLoose
-          .from('echo_resonances')
+        const del = await supabaseLoose
+          .from('echo_reactions')
           .delete()
           .eq('echo_id', echo.id)
           .eq('user_id', viewerId)
-          .eq('type', legacy);
+          .eq('reaction_type', type);
+
+        if (del.error) throw del.error;
       } else {
-        await supabaseLoose.from('echo_resonances').insert({ echo_id: echo.id, user_id: viewerId, type: legacy });
+        const ins = await supabaseLoose.from('echo_reactions').insert({
+          echo_id: echo.id,
+          user_id: viewerId,
+          reaction_type: type,
+        });
+
+        if (ins.error) throw ins.error;
       }
     } catch (err) {
-      // rollback minimal (reload à froid plus tard si besoin)
+      // rollback (strict, sans laisser l'UI en état faux)
+      setReactByMe((prev) => ({ ...prev, [type]: active }));
+      setReactCounts((prev) => ({
+        ...prev,
+        [type]: active ? (prev[type] ?? 0) + 1 : Math.max(0, (prev[type] ?? 0) - 1),
+      }));
       setError(err instanceof Error ? err.message : 'Erreur réaction.');
     } finally {
       setReactBusyKey(null);
@@ -459,7 +467,10 @@ export default function EchoDetailPage() {
             >
               Explorer
             </Link>
-            <Link href="/account" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95">
+            <Link
+              href="/account"
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95"
+            >
               Mon espace
             </Link>
           </div>
@@ -527,15 +538,26 @@ export default function EchoDetailPage() {
             </button>
 
             {isOwner ? (
-              <Link href="/share" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95">
+              <Link
+                href="/share"
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:opacity-95"
+              >
                 Nouveau
               </Link>
             ) : null}
           </div>
         </div>
 
-        {error && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
-        {ok && <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{ok}</div>}
+        {error ? (
+          <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            {error}
+          </div>
+        ) : null}
+        {ok ? (
+          <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            {ok}
+          </div>
+        ) : null}
 
         {/* Photos */}
         {photos.length > 0 ? (
@@ -560,15 +582,14 @@ export default function EchoDetailPage() {
           </section>
         ) : null}
 
-        {/* Réactions empathiques */}
+        {/* Réactions empathiques (PHASE 2 — OFFICIAL) */}
         <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-4 backdrop-blur-md">
           <div className="text-sm font-semibold text-slate-900">Réagir</div>
           <div className="mt-3 flex flex-wrap gap-2">
             {REACTIONS.map((r) => {
-              const legacy = NEW_TO_LEGACY[r.type];
-              const active = !!reactByMe[legacy];
-              const count = reactCounts[legacy] ?? 0;
-              const busy = reactBusyKey === `${echo.id}:${legacy}`;
+              const active = !!reactByMe[r.type];
+              const count = reactCounts[r.type] ?? 0;
+              const busy = reactBusyKey === `${echo.id}:${r.type}`;
 
               return (
                 <button
@@ -577,13 +598,17 @@ export default function EchoDetailPage() {
                   onClick={() => void toggleReaction(r.type)}
                   disabled={busy || !viewerId}
                   className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${
-                    active ? 'border-slate-900 bg-slate-900 text-white shadow-lg' : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
+                    active
+                      ? 'border-slate-900 bg-slate-900 text-white shadow-lg'
+                      : 'border-slate-200 bg-white text-slate-900 hover:bg-slate-50'
                   } ${(busy || !viewerId) ? 'cursor-not-allowed opacity-60' : ''}`}
                   title={!viewerId ? 'Connecte-toi pour réagir' : r.label}
                 >
                   <span className="text-sm">{r.icon}</span>
                   <span className="hidden sm:inline">{r.label}</span>
-                  <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] text-slate-700 sm:bg-white/20 sm:text-inherit">{count}</span>
+                  <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] text-slate-700 sm:bg-white/20 sm:text-inherit">
+                    {count}
+                  </span>
                 </button>
               );
             })}
@@ -644,7 +669,10 @@ export default function EchoDetailPage() {
               </div>
             </div>
             {!viewerId ? (
-              <Link href="/login" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">
+              <Link
+                href="/login"
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+              >
                 Se connecter
               </Link>
             ) : null}

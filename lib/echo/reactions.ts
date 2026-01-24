@@ -2,19 +2,14 @@
  * =============================================================================
  * Fichier      : lib/echo/reactions.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-23)
- * Objet        : Gestion des réactions empathiques (understand, support, reflect)
+ * Version      : 1.1.1 (2026-01-24)
+ * Objet        : Gestion des réactions empathiques (understand, support, reflect) — PHASE 2
  * -----------------------------------------------------------------------------
- * Description  :
- * - Types ReactionType : 'understand' | 'support' | 'reflect'
- * - fetchReactionsMeta : compte + byMe pour plusieurs échos
- * - toggleReaction : ajouter/retirer une réaction
- * - Helpers typés (pas de any, contournement Supabase)
- *
- * CHANGELOG
- * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-23)
- * - [NEW] Système de réactions empathiques
+ * FIX v1.1.1
+ * - [FIX] ESLint no-unused-vars: supprime EchoReactionRow (non utilisé)
+ * - [FIX] ESLint no-unused-vars: supprime la variable error non utilisée (cast inutile)
+ * - [KEEP] API inchangée: fetchReactionsMeta / toggleReaction
+ * - [KEEP] Source de vérité: echo_reactions.reaction_type
  * =============================================================================
  */
 
@@ -45,7 +40,7 @@ type Chain = {
 };
 
 function table(name: string): Chain {
-  return supabase.from(name) as unknown as Chain;
+  return (supabase.from(name) as unknown) as Chain;
 }
 
 function errMsg(e: unknown): string {
@@ -55,8 +50,20 @@ function errMsg(e: unknown): string {
   return typeof obj?.message === 'string' ? obj.message : 'Erreur inconnue';
 }
 
+function isReactionType(v: unknown): v is ReactionType {
+  return v === 'understand' || v === 'support' || v === 'reflect';
+}
+
+function initCounts(): Record<ReactionType, number> {
+  return { understand: 0, support: 0, reflect: 0 };
+}
+
+function initByMe(): Record<ReactionType, boolean> {
+  return { understand: false, support: false, reflect: false };
+}
+
 /**
- * Récupère les métadonnées de réactions pour plusieurs échos
+ * Récupère les métadonnées de réactions pour plusieurs échos (table officielle echo_reactions)
  */
 export async function fetchReactionsMeta({
   echoIds,
@@ -72,49 +79,43 @@ export async function fetchReactionsMeta({
 > {
   if (!echoIds.length) return { ok: true, countsByEcho: {}, byMeByEcho: {} };
 
-  const initCounts = (): Record<ReactionType, number> => ({
-    understand: 0,
-    support: 0,
-    reflect: 0,
-  });
-
-  const initByMe = (): Record<ReactionType, boolean> => ({
-    understand: false,
-    support: false,
-    reflect: false,
-  });
-
   try {
-    const result = await table('echo_reactions')
-      .select('echo_id,user_id,reaction')
-      .in('echo_id', echoIds);
-    
-    const { data, error } = result as unknown as PgRes<unknown>;
+    const q = table('echo_reactions').select('echo_id,user_id,reaction_type').in('echo_id', echoIds);
 
-    if (error) return { ok: false, error: error.message };
+    const awaited = (await (q as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+    if (awaited.error) return { ok: false, error: awaited.error.message };
 
-    const rows = (data ?? []) as Array<{
+    const rows = (awaited.data ?? []) as Array<{
       echo_id: string;
       user_id: string;
-      reaction: string;
+      reaction_type: unknown;
     }>;
 
     const countsByEcho: Record<string, Record<ReactionType, number>> = {};
     const byMeByEcho: Record<string, Record<ReactionType, boolean>> = {};
 
     for (const r of rows) {
-      const echoId = r.echo_id;
-      const type = r.reaction as ReactionType;
+      const echoId = String(r.echo_id ?? '');
+      if (!echoId) continue;
+
+      const rt = r.reaction_type;
+      if (!isReactionType(rt)) continue;
 
       if (!countsByEcho[echoId]) countsByEcho[echoId] = initCounts();
       if (!byMeByEcho[echoId]) byMeByEcho[echoId] = initByMe();
 
-      if (type === 'understand' || type === 'support' || type === 'reflect') {
-        countsByEcho[echoId][type]++;
-        if (userId && r.user_id === userId) {
-          byMeByEcho[echoId][type] = true;
-        }
+      countsByEcho[echoId][rt] = (countsByEcho[echoId][rt] ?? 0) + 1;
+
+      if (userId && String(r.user_id) === userId) {
+        byMeByEcho[echoId][rt] = true;
       }
+    }
+
+    // Contrat stable: assurer entrée par echoId demandé
+    for (const id of echoIds) {
+      const k = String(id);
+      if (!countsByEcho[k]) countsByEcho[k] = initCounts();
+      if (!byMeByEcho[k]) byMeByEcho[k] = initByMe();
     }
 
     return { ok: true, countsByEcho, byMeByEcho };
@@ -124,7 +125,7 @@ export async function fetchReactionsMeta({
 }
 
 /**
- * Toggle une réaction sur un écho
+ * Toggle une réaction sur un écho (table officielle echo_reactions)
  */
 export async function toggleReaction({
   echoId,
@@ -139,28 +140,25 @@ export async function toggleReaction({
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     if (nextOn) {
-      // Ajouter
       const { error } = await table('echo_reactions').insert({
         echo_id: echoId,
         user_id: userId,
-        reaction: type,
+        reaction_type: type,
       });
 
       if (error) return { ok: false, error: error.message };
       return { ok: true };
-    } else {
-      // Retirer
-      const result = await table('echo_reactions')
-        .delete()
-        .eq('echo_id', echoId)
-        .eq('user_id', userId)
-        .eq('reaction', type);
-      
-      const { error } = result as unknown as PgRes<unknown>;
-
-      if (error) return { ok: false, error: error.message };
-      return { ok: true };
     }
+
+    const q = table('echo_reactions')
+      .delete()
+      .eq('echo_id', echoId)
+      .eq('user_id', userId)
+      .eq('reaction_type', type);
+
+    const awaited = (await (q as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+    if (awaited.error) return { ok: false, error: awaited.error.message };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: errMsg(e) };
   }
