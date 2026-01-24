@@ -2,11 +2,11 @@
  * =============================================================================
  * Fichier      : components/map/ExploreFilters.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-23)
+ * Version      : 2.0.0 (2026-01-24)
  * Objet        : Filtres Map /explore (émotion + période + proximité)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Sélecteur d’émotions (chips)
+ * - Sélecteur d'émotions (chips) - 8 émotions DB complètes
  * - Filtre temporel (24h / 7d)
  * - Filtre géographique (nearMe) (aria-pressed)
  * - Callbacks contrôlés (no state interne)
@@ -14,6 +14,12 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.0.0 (2026-01-24)
+ * - [BREAKING] Migration vers les 8 émotions DB (vs 6 émotions legacy)
+ * - [NEW] Ajout émotions : resilience, gratitude, courage, peace, wonder
+ * - [REMOVED] Émotions legacy : sadness, anger, fear
+ * - [KEEP] UI/UX identique, accessibilité préservée
+ * 
  * 1.2.0 (2026-01-23)
  * - [IMPROVED] Typage aligné Map : EmotionKey importé depuis mapStyle (évite divergences)
  * - [KEEP] Zéro changement visuel (classes identiques), zéro régression
@@ -23,18 +29,31 @@
 'use client';
 
 import React from 'react';
-import type { EmotionKey } from '@/components/map/mapStyle';
+import type { EmotionKeyDB } from '@/components/map/mapStyle';
 
-const EMOTIONS = ['joy', 'sadness', 'anger', 'fear', 'love', 'hope'] as const satisfies readonly EmotionKey[];
+// 8 émotions officielles de la base de données
+const EMOTIONS = [
+  'joy',
+  'hope',
+  'love',
+  'resilience',
+  'gratitude',
+  'courage',
+  'peace',
+  'wonder',
+] as const satisfies readonly EmotionKeyDB[];
+
 type Emotion = (typeof EMOTIONS)[number];
 
 const EMO_META: Record<Emotion, { label: string; icon: string }> = {
   joy: { label: 'Joie', icon: '😊' },
-  sadness: { label: 'Tristesse', icon: '😔' },
-  anger: { label: 'Colère', icon: '😡' },
-  fear: { label: 'Peur', icon: '😨' },
-  love: { label: 'Amour', icon: '❤️' },
   hope: { label: 'Espoir', icon: '✨' },
+  love: { label: 'Amour', icon: '❤️' },
+  resilience: { label: 'Résilience', icon: '💪' },
+  gratitude: { label: 'Gratitude', icon: '🙏' },
+  courage: { label: 'Courage', icon: '🦁' },
+  peace: { label: 'Paix', icon: '🕊️' },
+  wonder: { label: 'Émerveillement', icon: '🌟' },
 };
 
 function chipClass(active: boolean): string {
