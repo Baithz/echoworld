@@ -162,3 +162,16 @@ export async function searchEchoes(term: string, limit = 5): Promise<SearchEchoR
     return [];
   }
 }
+
+// -----------------------------------------------------------------------------
+// Recherche topics / tags
+// NOTE: La table 'topics' n'existe pas dans le schéma actuel.
+// Cette fonction est désactivée pour éviter les erreurs 404.
+// Si vous souhaitez activer la recherche par tags, créez d'abord la table
+// dans Supabase ou utilisez une vue basée sur les colonnes theme_tags/emotion_tags.
+// -----------------------------------------------------------------------------
+export async function searchTopics(): Promise<never[]> {
+  // DÉSACTIVÉ: table topics inexistante
+  // Retourne un tableau vide pour éviter l'erreur PGRST205
+  return [];
+}
