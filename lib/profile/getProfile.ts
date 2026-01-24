@@ -1,10 +1,20 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.4.0 (2026-01-23)
+// Version      : 1.5.0 (2026-01-24)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
+// Description  :
+// - Résolution profil par id/handle (public_profile_enabled)
+// - Récupération échos publics (published + world/local)
+// - Stats publiques (counts + topThemes)
+// - isFollowing via table follows (RLS OK)
+// ----------------------------------------------------------------------------
 // CHANGELOG
+// 1.5.0 (2026-01-24)
+// - [FIX] Normalisation handle unique (lower/trim/@ + allow ".") cohérente partout
+// - [IMPROVED] getProfileByHandle: stratégie de lookup plus robuste (exact + normalized + fallback ilike)
+// - [KEEP] Zéro régression sur types, stats, echoes, checkIfFollowing
 // 1.4.0 (2026-01-23)
 // - [NEW] Ajout banner_url + banner_pos_y dans PublicProfile
 // - [NEW] Ajout image_urls dans PublicEcho
@@ -23,8 +33,8 @@ export type PublicProfile = {
   avatar_url: string | null;
   bio: string | null;
   public_profile_enabled: boolean | null;
-  banner_url: string | null; // ✅ Nouveau
-  banner_pos_y: number | null; // ✅ Nouveau
+  banner_url: string | null;
+  banner_pos_y: number | null;
 };
 
 export type PublicEcho = {
@@ -42,13 +52,13 @@ export type PublicEcho = {
   visibility: 'world' | 'local' | 'private' | 'semi_anonymous' | string;
   emotion_tags: string[];
   theme_tags: string[];
-  image_urls: string[]; // ✅ Nouveau
+  image_urls: string[];
 };
 
 export type PublicProfileStats = {
   echoesCount: number;
-  followersCount: number; // ✅ Nouveau
-  followingCount: number; // ✅ Nouveau
+  followersCount: number;
+  followingCount: number;
   topThemes: string[];
   location: { country: string | null; city: string | null };
 };
@@ -90,10 +100,24 @@ const ECHO_SELECT =
 
 const DEBUG = process.env.NODE_ENV === 'development';
 
+function log(message: string, data?: unknown) {
+  if (DEBUG) console.log(`[getProfile] ${message}`, data ?? '');
+}
+function logError(message: string, error?: unknown) {
+  console.error(`[getProfile] ERROR: ${message}`, error ?? '');
+}
+
 function cleanHandleForLookup(input: string): string {
   return (input ?? '').trim().replace(/^@/, '').trim();
 }
 
+/**
+ * Normalisation "canonique" utilisée pour :
+ * - URL /u/[handle]
+ * - comparaison cohérente avec l’index unique lower(handle)
+ *
+ * Note: on autorise "." (john.doe) car ton helper historique le permet déjà.
+ */
 export function normalizeHandleForUrl(input: string): string {
   const raw = cleanHandleForLookup(input);
   if (!raw) return '';
@@ -137,24 +161,12 @@ function pickEcho(row: EchoRow): PublicEcho {
   };
 }
 
-function log(message: string, data?: unknown) {
-  if (DEBUG) {
-    console.log(`[getProfile] ${message}`, data ?? '');
-  }
-}
-
-function logError(message: string, error?: unknown) {
-  console.error(`[getProfile] ERROR: ${message}`, error ?? '');
-}
-
 export async function getProfileById(id: string): Promise<PublicProfile | null> {
   const clean = (id ?? '').trim();
   if (!clean) {
     log('getProfileById: ID vide');
     return null;
   }
-
-  log(`getProfileById: Recherche profil id=${clean}`);
 
   try {
     const supabase = await createSupabaseServerClient();
@@ -169,20 +181,9 @@ export async function getProfileById(id: string): Promise<PublicProfile | null> 
       logError(`getProfileById: Erreur Supabase pour id=${clean}`, error);
       return null;
     }
+    if (!data) return null;
 
-    if (!data) {
-      log(`getProfileById: Aucun profil trouvé pour id=${clean}`);
-      return null;
-    }
-
-    const profile = pickProfile(data);
-    log(`getProfileById: Profil trouvé`, {
-      id: profile.id,
-      handle: profile.handle,
-      public_profile_enabled: profile.public_profile_enabled,
-    });
-
-    return profile;
+    return pickProfile(data);
   } catch (err) {
     logError(`getProfileById: Exception pour id=${clean}`, err);
     return null;
@@ -196,67 +197,58 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
     return null;
   }
 
-  log(`getProfileByHandle: Recherche handle="${clean}"`);
+  const normalized = normalizeHandleForUrl(clean);
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    log(`getProfileByHandle: Tentative 1 - ilike exact "${clean}"`);
+    // 1) tentative exact (si DB stocke déjà normalisé)
+    {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .eq('handle', clean)
+        .maybeSingle<ProfileRow>();
 
-    const first = await supabase
-      .from('profiles')
-      .select(PROFILE_SELECT)
-      .ilike('handle', clean)
-      .maybeSingle<ProfileRow>();
-
-    if (!first.error && first.data) {
-      const profile = pickProfile(first.data);
-      log(`getProfileByHandle: Profil trouvé (exact match)`, {
-        id: profile.id,
-        handle: profile.handle,
-        public_profile_enabled: profile.public_profile_enabled,
-      });
-      return profile;
+      if (!error && data) return pickProfile(data);
+      if (error) logError(`getProfileByHandle: Erreur exact eq(handle,"${clean}")`, error);
     }
 
-    if (first.error) {
-      logError(`getProfileByHandle: Erreur tentative 1 pour handle="${clean}"`, first.error);
-    } else {
-      log(`getProfileByHandle: Aucun résultat tentative 1`);
+    // 2) tentative exact normalized (cas @John.Doe -> john.doe)
+    if (normalized && normalized !== clean) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .eq('handle', normalized)
+        .maybeSingle<ProfileRow>();
+
+      if (!error && data) return pickProfile(data);
+      if (error) logError(`getProfileByHandle: Erreur eq(handle,"${normalized}")`, error);
     }
 
-    const normalized = normalizeHandleForUrl(clean);
+    // 3) fallback ilike (tolérant, mais moins performant)
+    {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT)
+        .ilike('handle', clean)
+        .maybeSingle<ProfileRow>();
 
-    if (normalized && normalized !== clean.toLowerCase()) {
-      log(`getProfileByHandle: Tentative 2 - ilike normalized "${normalized}"`);
+      if (!error && data) return pickProfile(data);
+      if (error) logError(`getProfileByHandle: Erreur ilike(handle,"${clean}")`, error);
+    }
 
-      const second = await supabase
+    if (normalized && normalized !== clean) {
+      const { data, error } = await supabase
         .from('profiles')
         .select(PROFILE_SELECT)
         .ilike('handle', normalized)
         .maybeSingle<ProfileRow>();
 
-      if (!second.error && second.data) {
-        const profile = pickProfile(second.data);
-        log(`getProfileByHandle: Profil trouvé (normalized match)`, {
-          id: profile.id,
-          handle: profile.handle,
-          public_profile_enabled: profile.public_profile_enabled,
-        });
-        return profile;
-      }
-
-      if (second.error) {
-        logError(
-          `getProfileByHandle: Erreur tentative 2 pour normalized="${normalized}"`,
-          second.error
-        );
-      } else {
-        log(`getProfileByHandle: Aucun résultat tentative 2`);
-      }
+      if (!error && data) return pickProfile(data);
+      if (error) logError(`getProfileByHandle: Erreur ilike(handle,"${normalized}")`, error);
     }
 
-    log(`getProfileByHandle: Aucun profil trouvé pour handle="${clean}"`);
     return null;
   } catch (err) {
     logError(`getProfileByHandle: Exception pour handle="${clean}"`, err);
@@ -264,19 +256,11 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
   }
 }
 
-export async function getUserPublicEchoes(
-  userId: string,
-  limit = 12
-): Promise<PublicEcho[]> {
+export async function getUserPublicEchoes(userId: string, limit = 12): Promise<PublicEcho[]> {
   const clean = (userId ?? '').trim();
-  if (!clean) {
-    log('getUserPublicEchoes: userId vide');
-    return [];
-  }
+  if (!clean) return [];
 
   const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) ? Math.floor(limit) : 12, 50));
-
-  log(`getUserPublicEchoes: Recherche échos pour userId=${clean}, limit=${safeLimit}`);
 
   try {
     const supabase = await createSupabaseServerClient();
@@ -290,20 +274,12 @@ export async function getUserPublicEchoes(
       .order('created_at', { ascending: false })
       .limit(safeLimit);
 
-    if (error) {
-      logError(`getUserPublicEchoes: Erreur pour userId=${clean}`, error);
+    if (error || !data) {
+      if (error) logError(`getUserPublicEchoes: Erreur pour userId=${clean}`, error);
       return [];
     }
 
-    if (!data) {
-      log(`getUserPublicEchoes: Aucun écho trouvé pour userId=${clean}`);
-      return [];
-    }
-
-    const echoes = (data as unknown as EchoRow[]).map(pickEcho);
-    log(`getUserPublicEchoes: ${echoes.length} échos trouvés pour userId=${clean}`);
-
-    return echoes;
+    return (data as unknown as EchoRow[]).map(pickEcho);
   } catch (err) {
     logError(`getUserPublicEchoes: Exception pour userId=${clean}`, err);
     return [];
@@ -328,7 +304,6 @@ export async function getUserPublicEchoesCount(userId: string): Promise<number> 
       if (error) logError(`getUserPublicEchoesCount: Erreur pour userId=${clean}`, error);
       return 0;
     }
-
     return count;
   } catch (err) {
     logError(`getUserPublicEchoesCount: Exception pour userId=${clean}`, err);
@@ -422,71 +397,34 @@ export async function getUserPublicTopThemes(
 export async function getPublicProfileWithEchoesById(
   userId: string,
   limit = 12
-): Promise<{
-  profile: PublicProfile | null;
-  echoes: PublicEcho[];
-}> {
+): Promise<{ profile: PublicProfile | null; echoes: PublicEcho[] }> {
   const profile = await getProfileById(userId);
-  if (!profile) {
-    log(`getPublicProfileWithEchoesById: Profil non trouvé pour id=${userId}`);
-    return { profile: null, echoes: [] };
-  }
+  if (!profile) return { profile: null, echoes: [] };
+  if (profile.public_profile_enabled === false) return { profile: null, echoes: [] };
 
-  if (profile.public_profile_enabled === false) {
-    log(`getPublicProfileWithEchoesById: Profil non public pour id=${userId}`);
-    return { profile: null, echoes: [] };
-  }
-
-  const profileId = profile.id;
-  const echoes = await getUserPublicEchoes(profileId, limit);
-
+  const echoes = await getUserPublicEchoes(profile.id, limit);
   return { profile, echoes };
 }
 
 export async function getPublicProfileWithEchoesByHandle(
   handle: string,
   limit = 12
-): Promise<{
-  profile: PublicProfile | null;
-  echoes: PublicEcho[];
-}> {
+): Promise<{ profile: PublicProfile | null; echoes: PublicEcho[] }> {
   const profile = await getProfileByHandle(handle);
-  if (!profile) {
-    log(`getPublicProfileWithEchoesByHandle: Profil non trouvé pour handle=${handle}`);
-    return { profile: null, echoes: [] };
-  }
+  if (!profile) return { profile: null, echoes: [] };
+  if (profile.public_profile_enabled === false) return { profile: null, echoes: [] };
 
-  if (profile.public_profile_enabled === false) {
-    log(`getPublicProfileWithEchoesByHandle: Profil non public pour handle=${handle}`);
-    return { profile: null, echoes: [] };
-  }
-
-  const profileId = profile.id;
-  const echoes = await getUserPublicEchoes(profileId, limit);
-
+  const echoes = await getUserPublicEchoes(profile.id, limit);
   return { profile, echoes };
 }
 
 export async function getPublicProfileDataById(
   userId: string,
   limit = 12
-): Promise<{
-  profile: PublicProfile | null;
-  echoes: PublicEcho[];
-  stats: PublicProfileStats | null;
-}> {
+): Promise<{ profile: PublicProfile | null; echoes: PublicEcho[]; stats: PublicProfileStats | null }> {
   const profile = await getProfileById(userId);
-  if (!profile) {
-    log(`getPublicProfileDataById: Profil non trouvé pour id=${userId}`);
-    return { profile: null, echoes: [], stats: null };
-  }
-
-  if (profile.public_profile_enabled === false) {
-    log(
-      `getPublicProfileDataById: Profil non public (public_profile_enabled=false) pour id=${userId}`
-    );
-    return { profile: null, echoes: [], stats: null };
-  }
+  if (!profile) return { profile: null, echoes: [], stats: null };
+  if (profile.public_profile_enabled === false) return { profile: null, echoes: [], stats: null };
 
   const profileId = profile.id;
 
@@ -498,37 +436,26 @@ export async function getPublicProfileDataById(
     getUserPublicTopThemes(profileId),
   ]);
 
-  const stats: PublicProfileStats = {
-    echoesCount,
-    followersCount,
-    followingCount,
-    topThemes,
-    location: { country: null, city: null },
+  return {
+    profile,
+    echoes,
+    stats: {
+      echoesCount,
+      followersCount,
+      followingCount,
+      topThemes,
+      location: { country: null, city: null },
+    },
   };
-
-  return { profile, echoes, stats };
 }
 
 export async function getPublicProfileDataByHandle(
   handle: string,
   limit = 12
-): Promise<{
-  profile: PublicProfile | null;
-  echoes: PublicEcho[];
-  stats: PublicProfileStats | null;
-}> {
+): Promise<{ profile: PublicProfile | null; echoes: PublicEcho[]; stats: PublicProfileStats | null }> {
   const profile = await getProfileByHandle(handle);
-  if (!profile) {
-    log(`getPublicProfileDataByHandle: Profil non trouvé pour handle=${handle}`);
-    return { profile: null, echoes: [], stats: null };
-  }
-
-  if (profile.public_profile_enabled === false) {
-    log(
-      `getPublicProfileDataByHandle: Profil non public (public_profile_enabled=false) pour handle=${handle}`
-    );
-    return { profile: null, echoes: [], stats: null };
-  }
+  if (!profile) return { profile: null, echoes: [], stats: null };
+  if (profile.public_profile_enabled === false) return { profile: null, echoes: [], stats: null };
 
   const profileId = profile.id;
 
@@ -540,22 +467,23 @@ export async function getPublicProfileDataByHandle(
     getUserPublicTopThemes(profileId),
   ]);
 
-  const stats: PublicProfileStats = {
-    echoesCount,
-    followersCount,
-    followingCount,
-    topThemes,
-    location: { country: null, city: null },
+  return {
+    profile,
+    echoes,
+    stats: {
+      echoesCount,
+      followersCount,
+      followingCount,
+      topThemes,
+      location: { country: null, city: null },
+    },
   };
-
-  return { profile, echoes, stats };
 }
 
-export async function checkIfFollowing(
-  currentUserId: string,
-  targetUserId: string
-): Promise<boolean> {
-  if (!currentUserId || !targetUserId) return false;
+export async function checkIfFollowing(currentUserId: string, targetUserId: string): Promise<boolean> {
+  const a = (currentUserId ?? '').trim();
+  const b = (targetUserId ?? '').trim();
+  if (!a || !b) return false;
 
   try {
     const supabase = await createSupabaseServerClient();
@@ -563,8 +491,8 @@ export async function checkIfFollowing(
     const { data, error } = await supabase
       .from('follows')
       .select('id')
-      .eq('follower_id', currentUserId)
-      .eq('following_id', targetUserId)
+      .eq('follower_id', a)
+      .eq('following_id', b)
       .maybeSingle();
 
     if (error) return false;

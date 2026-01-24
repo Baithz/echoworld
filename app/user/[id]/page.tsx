@@ -2,10 +2,18 @@
  * =============================================================================
  * Fichier      : app/user/[id]/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.5.1 (2026-01-23)
+ * Version      : 1.6.0 (2026-01-24)
  * Objet        : Page profil public par ID (/user/uuid)
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Charge profil + échos + stats via getPublicProfileDataById()
+ * - Expose currentUserId + isFollowing au ProfileView (actions activables)
+ *
  * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.6.0 (2026-01-24)
+ * - [FIX] Typage Next.js App Router : params non-Promise
+ * - [KEEP] Cache React + comportement notFound identiques
  * 1.5.1 (2026-01-23)
  * - [FIX] Guards TypeScript : profile/stats peuvent être null après catch
  * 1.5.0 (2026-01-23)
@@ -17,14 +25,11 @@ import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import type { Metadata } from 'next';
 import ProfileView from '@/components/profile/ProfileView';
-import {
-  getPublicProfileDataById,
-  checkIfFollowing,
-} from '@/lib/profile/getProfile';
+import { getPublicProfileDataById, checkIfFollowing } from '@/lib/profile/getProfile';
 import { getCurrentUserContext } from '@/lib/user/getCurrentUser';
 
 type PageProps = {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 };
 
 const getCachedProfile = cache(async (userId: string, echoLimit: number) => {
@@ -32,12 +37,13 @@ const getCachedProfile = cache(async (userId: string, echoLimit: number) => {
 });
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
-  const { id } = await params;
+  const id = (params.id ?? '').trim();
+  if (!id) return { title: 'Profil introuvable • EchoWorld' };
 
   try {
     const { profile } = await getCachedProfile(id, 1);
     if (!profile) throw new Error('Profile not found');
-    
+
     const displayName = profile.display_name || profile.handle || 'Utilisateur';
 
     return {
@@ -45,14 +51,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description: profile.bio || `Profil de ${displayName} sur EchoWorld.`,
     };
   } catch {
-    return {
-      title: 'Profil introuvable • EchoWorld',
-    };
+    return { title: 'Profil introuvable • EchoWorld' };
   }
 }
 
 export default async function PublicIdProfilePage({ params }: PageProps) {
-  const { id } = await params;
+  const id = (params.id ?? '').trim();
+  if (!id) notFound();
 
   let data;
   try {
@@ -64,11 +69,11 @@ export default async function PublicIdProfilePage({ params }: PageProps) {
 
   const { profile, echoes, stats } = data;
 
-  // Récupération user actuel
+  // Récupération user actuel (viewer)
   const { user } = await getCurrentUserContext();
   const currentUserId = user?.id ?? null;
 
-  // Vérification si on suit ce profil
+  // isFollowing fiable via table follows (RLS OK)
   const isFollowing = currentUserId
     ? await checkIfFollowing(currentUserId, profile.id)
     : false;

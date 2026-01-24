@@ -1,20 +1,14 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileView.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.1.0 (2026-01-23)
+// Version      : 2.2.0 (2026-01-24)
 // Objet        : Vue UI profil public premium (bannière, avatar, actions, échos)
 // -----------------------------------------------------------------------------
 // CHANGELOG
-// 2.1.0 (2026-01-23)
-// - [FIX] Ajout pt-28 pour compenser le header fixe (évite superposition)
-// 2.0.0 (2026-01-23)
-// - [NEW] Ajout bannière avec banner_url + banner_pos_y (comme /account)
-// - [NEW] Boutons "Suivre" et "Message" (ProfileActions)
-// - [IMPROVED] Layout pleine largeur + design cohérent avec /account
-// - [IMPROVED] Avatar plus grand avec border
-// - [IMPROVED] Stats enrichies (followers/following)
-// 1.1.0 (2026-01-23)
-// - Version initiale basique
+// 2.2.0 (2026-01-24)
+// - [FIX] Props ProfileActions : passage strict (profileId/currentUserId/isFollowing) sans undefined
+// - [SAFE] Normalisation currentUserId en string|null (évite mismatch TS)
+// - [KEEP] Rendu inchangé (layout/bannière/avatar/stats/échos) + pt-28 conservé
 // =============================================================================
 
 'use client';
@@ -56,26 +50,26 @@ export default function ProfileView({
   profile,
   echoes = [],
   stats,
-  currentUserId = null,
-  isFollowing = false,
+  currentUserId,
+  isFollowing,
 }: Props) {
+  const safeCurrentUserId: string | null = typeof currentUserId === 'string' ? currentUserId : null;
+  const safeIsFollowing: boolean = Boolean(isFollowing);
+
   const label = profile.display_name ?? profile.handle ?? 'User';
   const handle = profile.handle ? `@${profile.handle}` : null;
-  const isOwnProfile = currentUserId && currentUserId === profile.id;
+
+  const isOwnProfile = Boolean(safeCurrentUserId && safeCurrentUserId === profile.id);
 
   const bannerPosY = Number.isFinite(Number(profile.banner_pos_y))
     ? Number(profile.banner_pos_y)
     : 0;
 
-  const location = [stats?.location?.city, stats?.location?.country]
-    .filter(Boolean)
-    .join(', ');
+  const location = [stats?.location?.city, stats?.location?.country].filter(Boolean).join(', ');
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-8 pt-28">
-      {/* Card principale */}
       <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-black/5">
-        {/* Bannière */}
         <div className="relative h-64 w-full overflow-hidden bg-linear-to-br from-violet-500/20 via-sky-500/15 to-emerald-500/10">
           {profile.banner_url ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -94,10 +88,8 @@ export default function ProfileView({
           )}
         </div>
 
-        {/* Conteneur glass (comme /account) */}
         <div className="relative -mt-16 rounded-3xl border border-white/30 bg-white/35 px-6 pb-6 backdrop-blur-md shadow-lg shadow-black/5">
           <div className="px-6 pb-6 pt-20">
-            {/* Avatar */}
             <div className="absolute left-6 top-0 -translate-y-1/2">
               <div className="inline-flex h-32 w-32 items-center justify-center overflow-hidden rounded-3xl border-4 border-white bg-white shadow-xl">
                 {profile.avatar_url ? (
@@ -108,80 +100,64 @@ export default function ProfileView({
                     className="h-full w-full object-cover"
                   />
                 ) : (
-                  <span className="text-3xl font-bold text-slate-900">
-                    {initials(label)}
-                  </span>
+                  <span className="text-3xl font-bold text-slate-900">{initials(label)}</span>
                 )}
               </div>
             </div>
 
-            {/* Header identity + actions */}
             <div className="pl-0 md:pl-40">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="flex-1">
                   <h1 className="text-2xl font-bold text-slate-900">{label}</h1>
-                  {handle && (
-                    <div className="mt-1 text-sm text-slate-500">{handle}</div>
-                  )}
+                  {handle ? <div className="mt-1 text-sm text-slate-500">{handle}</div> : null}
                 </div>
 
-                {/* Actions (Suivre / Message) */}
-                {!isOwnProfile && (
+                {!isOwnProfile ? (
                   <ProfileActions
                     profileId={profile.id}
-                    currentUserId={currentUserId}
-                    isFollowing={isFollowing}
+                    currentUserId={safeCurrentUserId}
+                    isFollowing={safeIsFollowing}
                   />
-                )}
+                ) : null}
               </div>
 
-              {/* Bio */}
-              {profile.bio && (
+              {profile.bio ? (
                 <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
                   {profile.bio}
                 </p>
-              )}
+              ) : null}
 
-              {/* Localisation */}
-              {location && (
+              {location ? (
                 <div className="mt-3 flex items-center gap-2 text-sm text-slate-600">
                   <MapPin className="h-4 w-4" />
                   <span>{location}</span>
                 </div>
-              )}
+              ) : null}
 
-              {/* Stats */}
               <div className="mt-5 flex flex-wrap gap-4 text-sm">
-                {typeof stats?.echoesCount === 'number' && (
+                {typeof stats?.echoesCount === 'number' ? (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.echoesCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.echoesCount}</span>{' '}
                     <span className="text-slate-600">échos</span>
                   </div>
-                )}
+                ) : null}
 
-                {typeof stats?.followersCount === 'number' && (
+                {typeof stats?.followersCount === 'number' ? (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.followersCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.followersCount}</span>{' '}
                     <span className="text-slate-600">abonnés</span>
                   </div>
-                )}
+                ) : null}
 
-                {typeof stats?.followingCount === 'number' && (
+                {typeof stats?.followingCount === 'number' ? (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.followingCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.followingCount}</span>{' '}
                     <span className="text-slate-600">abonnements</span>
                   </div>
-                )}
+                ) : null}
               </div>
 
-              {/* Top thèmes */}
-              {stats?.topThemes && stats.topThemes.length > 0 && (
+              {stats?.topThemes && stats.topThemes.length > 0 ? (
                 <div className="mt-4 flex flex-wrap gap-2">
                   {stats.topThemes.map((theme) => (
                     <span
@@ -192,12 +168,11 @@ export default function ProfileView({
                     </span>
                   ))}
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
 
-        {/* Footer "Profil public" */}
         <div className="border-t border-slate-200 bg-slate-50 px-6 py-4 text-xs text-slate-500 sm:px-8">
           <div className="flex items-center gap-2">
             <User className="h-3 w-3" />
@@ -206,18 +181,13 @@ export default function ProfileView({
         </div>
       </div>
 
-      {/* Échos */}
       <div className="mt-8">
         <div className="mb-4 flex items-baseline justify-between">
-          <h2 className="text-sm font-extrabold uppercase tracking-wide text-slate-700">
-            Échos
-          </h2>
-          <span className="text-xs text-slate-500">
-            Publics (world/local) • published
-          </span>
+          <h2 className="text-sm font-extrabold uppercase tracking-wide text-slate-700">Échos</h2>
+          <span className="text-xs text-slate-500">Publics (world/local) • published</span>
         </div>
 
-        <ProfileEchoList echoes={echoes} currentUserId={currentUserId} />
+        <ProfileEchoList echoes={echoes} currentUserId={safeCurrentUserId} />
       </div>
     </div>
   );
