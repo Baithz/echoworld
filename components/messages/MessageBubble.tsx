@@ -2,12 +2,12 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.1 (2026-01-25)
+ * Version      : 2.5.0 (2026-01-25)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
  * -----------------------------------------------------------------------------
  * Description  :
  * - Affiche bulle message (mine vs received)
- * - Avatars avec initiales fallback
+ * - Avatars avec image si avatar_url, fallback initiales
  * - Pseudo cliquable → /u/[handle]
  * - Support optimistic UI (status: sending/sent/failed)
  * - Bouton Retry si failed
@@ -18,15 +18,15 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.4.1 (2026-01-25)
- * - [FIX] Position du bouton emoji : ancré au badge (à gauche), stable et non écrasé
- * - [KEEP] Inversion mine/received (reply + badge côté extérieur) inchangée
- * - [KEEP] Optimistic/retry/quoted/callbacks inchangés
+ * 2.5.0 (2026-01-25)
+ * - [FIX] Avatar: affiche avatar_url (image) si dispo, fallback initiales si absent/erreur
+ * - [KEEP] Reply/badges/reactions/quoted/optimistic/retry inchangés
  * =============================================================================
  */
 
 'use client';
 
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Loader2, AlertCircle, RotateCw, Reply } from 'lucide-react';
 import QuotedMessage from './QuotedMessage';
@@ -80,6 +80,11 @@ function getDisplayName(profile: SenderProfile | null | undefined): string {
   return (profile.display_name ?? profile.handle ?? 'Utilisateur').trim();
 }
 
+function getAvatarUrl(profile: SenderProfile | null | undefined): string | null {
+  const url = (profile?.avatar_url ?? '').trim();
+  return url ? url : null;
+}
+
 export default function MessageBubble({
   message,
   mine,
@@ -118,6 +123,32 @@ export default function MessageBubble({
   const replyPosClass = mine ? '-left-9' : '-right-9';
   const cornerPosClass = mine ? 'left-0' : 'right-0';
 
+  // Avatar (image) + fallback
+  const avatarUrl = useMemo(() => getAvatarUrl(senderProfile), [senderProfile]);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const showAvatarImg = !!avatarUrl && !avatarFailed;
+
+  const avatarBaseClass = `flex items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white font-bold text-slate-700 transition ${
+    isDock ? 'h-7 w-7 text-[10px]' : 'h-9 w-9 text-xs'
+  }`;
+
+  const AvatarContent = (
+    <>
+      {showAvatarImg ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={avatarUrl!}
+          alt={getDisplayName(senderProfile)}
+          className="h-full w-full object-cover"
+          referrerPolicy="no-referrer"
+          onError={() => setAvatarFailed(true)}
+        />
+      ) : (
+        getInitials(senderProfile)
+      )}
+    </>
+  );
+
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -131,21 +162,13 @@ export default function MessageBubble({
             {profileUrl ? (
               <Link
                 href={profileUrl}
-                className={`flex items-center justify-center rounded-full border border-slate-200 bg-white font-bold text-slate-700 transition hover:border-slate-300 ${
-                  isDock ? 'h-7 w-7 text-[10px]' : 'h-9 w-9 text-xs'
-                }`}
-                aria-label={`Profile ${getDisplayName(senderProfile)}`}
+                className={avatarBaseClass}
+                aria-label={`Profil ${getDisplayName(senderProfile)}`}
               >
-                {getInitials(senderProfile)}
+                {AvatarContent}
               </Link>
             ) : (
-              <div
-                className={`flex items-center justify-center rounded-full border border-slate-200 bg-white font-bold text-slate-700 ${
-                  isDock ? 'h-7 w-7 text-[10px]' : 'h-9 w-9 text-xs'
-                }`}
-              >
-                {getInitials(senderProfile)}
-              </div>
+              <div className={avatarBaseClass}>{AvatarContent}</div>
             )}
           </div>
         )}
@@ -243,31 +266,23 @@ export default function MessageBubble({
               {/* ✅ Coin réactions (badge + emoji) : emoji ancré AU BADGE */}
               {(showBadges || canReact) && (
                 <div className={`absolute bottom-0 ${cornerPosClass} translate-y-1/2 z-20`}>
-                  {/* Wrapper relatif pour positionner l'emoji par rapport au badge */}
                   <div className="relative inline-flex items-center">
-                    {/* Emoji hover : toujours à gauche du badge, sans bouger le badge */}
                     {canReact && showBadges && (
-                        <div
+                      <div
                         className={`absolute top-1/2 -translate-y-1/2 opacity-0 pointer-events-none transition
-                            group-hover:opacity-100 group-hover:pointer-events-auto
-                            ${
-                            mine
-                                ? 'left-full ml-2'        // mine → emoji à DROITE du badge
-                                : '-left-2 -translate-x-full' // received → emoji à GAUCHE du badge
-                            }`}
-                        >
+                          group-hover:opacity-100 group-hover:pointer-events-auto
+                          ${mine ? 'left-full ml-2' : '-left-2 -translate-x-full'}`}
+                      >
                         <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
-                        </div>
+                      </div>
                     )}
 
-                    {/* Cas sans badge : on affiche l'emoji seul (hover) au coin */}
                     {canReact && !showBadges && (
                       <div className="opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto">
                         <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
                       </div>
                     )}
 
-                    {/* Badge */}
                     {showBadges && (
                       <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
                     )}
@@ -276,7 +291,6 @@ export default function MessageBubble({
               )}
             </div>
 
-            {/* Espace bas pour éviter collision message suivant */}
             {(showBadges || canReact) && <div className="h-4" />}
           </div>
         </div>
