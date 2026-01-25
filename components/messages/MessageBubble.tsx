@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-25)
+ * Version      : 2.3.0 (2026-01-25)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,20 +12,17 @@
  * - Support optimistic UI (status: sending/sent/failed)
  * - Bouton Retry si failed
  * - LOT 2 : QuotedMessage si parent_id
- * - LOT 2 : Actions "Répondre" + "Emoji" sous le message (hover stable)
- * - LOT 2 : ReactionBadges superposées en bas de bulle (ancrées, pas dans le flux)
+ * - LOT 2 : Reply toujours visible à droite de la bulle (hors flux, ancré)
+ * - LOT 2 : Emoji garde comportement hover (sous bulle)
+ * - LOT 2 : ReactionBadges superposées sur la bulle (bottom-right, half-out)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-25)
- * - [FIX] ReactionBadges ancrées à la bulle (superposition bottom-corner) au lieu d'être sous le message
- * - [UX] Déborde visuellement de la bulle (effet Slack/Discord) sans casser layout
- * - [KEEP] Lot 1/2 : avatars, retry, quoted, actions hover, callbacks inchangés
- * 2.1.0 (2026-01-25)
- * - [FIX] Actions ne disparaissent plus lors du déplacement souris vers le picker
- * - [UX] Actions placées sous la bulle + visibles uniquement au hover
- * - [UX] Zone hover = bulle + actions (stable)
- * - [KEEP] Lot 1/2 : avatars, retry, quoted, badges, callbacks inchangés
+ * 2.3.0 (2026-01-25)
+ * - [UX] Reply toujours visible, ancré à droite de la bulle (comme demandé)
+ * - [KEEP] Emoji conserve le comportement hover sous la bulle
+ * - [FIX] ReactionBadges réellement superposées sur la bulle (bottom-right)
+ * - [KEEP] Lot 1/2 : avatars, retry, quoted, callbacks, mapping inchangés
  * =============================================================================
  */
 
@@ -69,9 +66,7 @@ function getInitials(profile: SenderProfile | null | undefined): string {
   const dn = (profile.display_name ?? '').trim();
   if (dn) {
     const parts = dn.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return dn.slice(0, 2).toUpperCase();
   }
 
@@ -109,21 +104,19 @@ export default function MessageBubble({
   const reactionGroups = groupReactions(message.reactions ?? [], userId);
 
   const handleReactionToggle = (emoji: string) => {
-    if (onReactionToggle && message.id) {
-      onReactionToggle(message.id, emoji);
-    }
+    if (onReactionToggle && message.id) onReactionToggle(message.id, emoji);
   };
 
   const handleReply = () => {
     if (onReply) onReply(message);
   };
 
-  // Actions affichées uniquement si message stable (pas sending/failed)
-  const canShowActions = !isSending && !isFailed && (onReply || onReactionToggle);
+  // Reply/Emoji uniquement sur message "stable"
+  const canReply = !isSending && !isFailed && !!onReply;
+  const canReact = !isSending && !isFailed && !!onReactionToggle;
 
-  // Réactions superposées uniquement si message "stable"
-  // (évite un empilement visuel pendant l'optimistic sending / failed UI)
-  const canShowReactionsOverlay = !isSending && !isFailed && reactionGroups.length > 0;
+  // Badges uniquement si stable + au moins une réaction
+  const showBadges = !isSending && !isFailed && reactionGroups.length > 0;
 
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
@@ -182,90 +175,92 @@ export default function MessageBubble({
             />
           )}
 
-          {/* Bubble + Overlays + Actions : group hover stable */}
-          <div className="group relative">
-            {/* Content bubble (relative = ancrage overlays) */}
-            <div
-              className={`relative rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
-                mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
-              } ${isFailed ? 'border-red-300 bg-red-50' : ''}`}
-            >
-              <div className="whitespace-pre-wrap">{safeText(message.content)}</div>
-
-              {/* Meta (time + status) */}
+          {/* Wrapper hover stable (bulle + zone emoji hover) */}
+          <div className="group relative inline-block max-w-full">
+            {/* Bulle + overlays ancrés */}
+            <div className="relative overflow-visible">
+              {/* Content bubble */}
               <div
-                className={`mt-1 flex items-center gap-2 ${isDock ? 'text-[10px]' : 'text-[11px]'} ${
-                  mine && !isFailed ? 'text-white/70' : 'text-slate-500'
-                }`}
+                className={`relative rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
+                  mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
+                } ${isFailed ? 'border-red-300 bg-red-50' : ''}`}
               >
-                <span>{formatTime(message.created_at)}</span>
+                <div className="whitespace-pre-wrap">{safeText(message.content)}</div>
 
-                {isSending && (
-                  <>
-                    <span>•</span>
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    <span>Envoi…</span>
-                  </>
-                )}
+                {/* Meta (time + status) */}
+                <div
+                  className={`mt-1 flex items-center gap-2 ${isDock ? 'text-[10px]' : 'text-[11px]'} ${
+                    mine && !isFailed ? 'text-white/70' : 'text-slate-500'
+                  }`}
+                >
+                  <span>{formatTime(message.created_at)}</span>
 
-                {isFailed && (
-                  <>
-                    <span>•</span>
-                    <AlertCircle className="h-3 w-3 text-red-600" />
-                    <span className="text-red-600">Échec</span>
-                  </>
+                  {isSending && (
+                    <>
+                      <span>•</span>
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Envoi…</span>
+                    </>
+                  )}
+
+                  {isFailed && (
+                    <>
+                      <span>•</span>
+                      <AlertCircle className="h-3 w-3 text-red-600" />
+                      <span className="text-red-600">Échec</span>
+                    </>
+                  )}
+                </div>
+
+                {/* Retry button (failed only) */}
+                {isFailed && onRetry && (
+                  <button
+                    type="button"
+                    onClick={() => onRetry(message)}
+                    className={`mt-2 inline-flex items-center gap-1 rounded-lg border border-red-300 bg-white px-2 py-1 font-semibold text-red-700 transition hover:border-red-400 ${
+                      isDock ? 'text-[10px]' : 'text-xs'
+                    }`}
+                  >
+                    <RotateCw className="h-3 w-3" />
+                    Réessayer
+                  </button>
                 )}
               </div>
 
-              {/* Retry button (failed only) */}
-              {isFailed && onRetry && (
+              {/* ✅ Reply TOUJOURS visible à droite de la bulle */}
+              {canReply && (
                 <button
                   type="button"
-                  onClick={() => onRetry(message)}
-                  className={`mt-2 inline-flex items-center gap-1 rounded-lg border border-red-300 bg-white px-2 py-1 font-semibold text-red-700 transition hover:border-red-400 ${
-                    isDock ? 'text-[10px]' : 'text-xs'
+                  onClick={handleReply}
+                  className={`absolute top-1/2 -translate-y-1/2 ${
+                    // Toujours à droite de la bulle (comme demandé)
+                    '-right-9'
+                  } flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 ${
+                    isDock ? 'h-6 w-6' : 'h-7 w-7'
                   }`}
+                  aria-label="Répondre"
                 >
-                  <RotateCw className="h-3 w-3" />
-                  Réessayer
+                  <Reply className={isDock ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
                 </button>
+              )}
+
+              {/* ✅ ReactionBadges superposées bottom-right sur la bulle (half-out) */}
+              {showBadges && (
+                <div className="absolute bottom-0 right-0 translate-y-1/2 z-10">
+                  <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
+                </div>
               )}
             </div>
 
-            {/* ✅ LOT 2 : ReactionBadges superposées (ancrées à la bulle) */}
-            {canShowReactionsOverlay && (
-              <div
-                className={`absolute ${mine ? 'right-2' : 'left-2'} -bottom-3 z-10`}
-                // -bottom-3 => moitié sur la bulle / moitié hors bulle
-              >
-                <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
+            {/* ✅ Emoji : garde le même comportement (hover, sous la bulle) */}
+            {canReact && (
+              <div className="mt-1 flex justify-end opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto">
+                <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
               </div>
             )}
 
-            {/* LOT 2 : Actions (sous la bulle, visibles au hover) */}
-            {canShowActions && (
-              <div
-                className={`mt-1 flex items-center gap-1 ${mine ? 'justify-start' : 'justify-end'} opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
-              >
-                {onReply && (
-                  <button
-                    type="button"
-                    onClick={handleReply}
-                    className={`flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 ${
-                      isDock ? 'h-6 w-6' : 'h-7 w-7'
-                    }`}
-                    aria-label="Répondre"
-                  >
-                    <Reply className={isDock ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
-                  </button>
-                )}
-
-                {onReactionToggle && <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />}
-              </div>
-            )}
-
-            {/* Espace pour éviter que l'overlay réaction chevauche le message suivant */}
-            {canShowReactionsOverlay && <div className="h-3" />}
+            {/* Petit espace si badges affichées (évite collision avec message suivant) */}
+            {showBadges && <div className="h-4" />}
           </div>
         </div>
       </div>
