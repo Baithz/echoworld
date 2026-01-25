@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileActions.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.2.1 (2026-01-25)
+// Version      : 2.2.2 (2026-01-25)
 // Objet        : Actions profil public (Suivre / Message) avec messagerie intégrée
 // -----------------------------------------------------------------------------
 // Description  :
@@ -11,6 +11,10 @@
 // - Refresh UI (router.refresh) après follow/unfollow pour stats serveur
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 2.2.2 (2026-01-25)
+// - [FIX] Force refreshSession() avant getSession() pour garantir access_token frais (évite 403 RLS)
+// - [SAFE] Fallback: si refresh échoue, tente quand même getSession() (fail-soft)
+// - [KEEP] Aucune régression follow / UI / logs / contrat props
 // 2.2.1 (2026-01-25)
 // - [FIX] Envoie access_token dans Authorization header (workaround session serveur)
 // - [DEBUG] Log token retrieval pour diagnostiquer session
@@ -78,6 +82,46 @@ function debugError(message: string, err?: unknown) {
     console.error(`[ProfileActions] ERROR: ${message}`, err ?? '');
   } catch {
     /* noop */
+  }
+}
+
+/**
+ * Résout un access_token "frais" pour les appels API server-side (Authorization: Bearer).
+ * - CRITICAL: refreshSession() avant getSession() pour éviter token expiré => 403 RLS
+ * - SAFE: si refresh échoue, tente quand même getSession() (fail-soft)
+ */
+async function getFreshAccessToken(): Promise<string | null> {
+  try {
+    debugLog('getFreshAccessToken: refreshSession() start', {});
+    const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+
+    debugLog('getFreshAccessToken: refreshSession() result', {
+      ok: !refreshErr,
+      hasSession: Boolean(refreshed?.session),
+      userId: refreshed?.session?.user?.id ?? null,
+      error: refreshErr?.message ?? null,
+    });
+  } catch (err) {
+    // fail-soft: on tentera getSession() quand même
+    debugError('getFreshAccessToken: refreshSession exception', err);
+  }
+
+  try {
+    debugLog('getFreshAccessToken: getSession() start', {});
+    const { data: s, error: sessErr } = await supabase.auth.getSession();
+
+    debugLog('getFreshAccessToken: getSession() result', {
+      ok: !sessErr,
+      hasSession: Boolean(s?.session),
+      userId: s?.session?.user?.id ?? null,
+      error: sessErr?.message ?? null,
+    });
+
+    const token = s?.session?.access_token ?? null;
+    return token ? String(token) : null;
+  } catch (err) {
+    debugError('getFreshAccessToken: getSession exception', err);
+    return null;
   }
 }
 
@@ -176,30 +220,32 @@ export default function ProfileActions({ profileId, currentUserId, isFollowing: 
 
     setLoadingMessage(true);
     try {
-      // Get current session token
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      // CRITICAL FIX: forcer refreshSession() puis getSession() pour garantir un token frais (évite 403 RLS)
+      const accessToken = await getFreshAccessToken();
 
       if (!accessToken) {
         throw new Error('Session expirée. Reconnectez-vous.');
       }
 
-      // CRITICAL FIX: Appel API Route serveur avec token dans headers
+      debugLog('handleMessage: accessToken resolved', { hasToken: Boolean(accessToken) });
+
+      // Appel API Route serveur avec token dans headers
       const response = await fetch('/api/conversations/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ otherUserId: profileId }),
       });
 
-      const result = await response.json();
+      const result = await response.json().catch(() => null);
 
-      debugLog('handleMessage: API response', result);
+      debugLog('handleMessage: API response', { ok: response.ok, result });
 
-      if (!response.ok || !result.ok) {
-        throw new Error(result.error ?? 'Impossible de créer la conversation');
+      if (!response.ok || !result?.ok) {
+        const msg = (result && typeof result.error === 'string' && result.error) || 'Impossible de créer la conversation';
+        throw new Error(msg);
       }
 
       debugLog('handleMessage: opening dock', { conversationId: result.conversationId });
