@@ -1,24 +1,24 @@
 // =============================================================================
 // Fichier      : lib/messages/index.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.0.0 (2026-01-25)
-// Objet        : Queries Messages (conversations, messages, unread, read state) — LOT 1 optimistic UI
+// Version      : 2.0.1 (2026-01-25)
+// Objet        : Queries Messages + sendMessage() (optimistic UI + reply parent_id) — LOT 1/2
 // -----------------------------------------------------------------------------
 // BDD (réelle) :
 // - public.conversations(id, type conversation_type, title?, created_by?, echo_id?, created_at, updated_at)
 // - public.conversation_members(conversation_id, user_id, role, joined_at, last_read_at, muted)
-// - public.messages(id, conversation_id, sender_id, content, payload?, created_at, edited_at?, deleted_at?)
+// - public.messages(id, conversation_id, sender_id, content, payload?, parent_id?, created_at, edited_at?, deleted_at?)
 // - public.profiles(id, handle, display_name, avatar_url, ...)
 //
 // CHANGELOG
 // -----------------------------------------------------------------------------
-// 2.0.0 (2026-01-25)
-// - [NEW] sendMessage() supporte payload?: { client_id: string } pour optimistic UI
-// - [NEW] fetchSenderProfiles(senderIds: string[]) : batch fetch profiles pour avatars + noms
-// - [KEEP] fetchConversationsForUser enrichit peer_* (handle/display_name/avatar_url) inchangé
+// 2.0.1 (2026-01-25)
+// - [FIX] Reply: parent_id est désormais écrit dans la colonne messages.parent_id (pas seulement payload)
+// - [KEEP] Optimistic UI: payload.client_id conservé pour dedupe realtime
+// - [KEEP] fetchConversationsForUser enrichit peer_* inchangé
 // - [KEEP] fetchUnreadMessagesCount, markConversationRead inchangés
-// - [KEEP] Types ConversationRow, MessageRow inchangés
-// - [SAFE] Neutralise TS "never" sans `any` explicite
+// - [KEEP] fetchSenderProfiles inchangé
+// - [SAFE] Pas de `any` ajouté, fail-soft conservé
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -59,6 +59,7 @@ export type MessageRow = {
   sender_id: string;
   content: string;
   payload: unknown | null;
+  parent_id?: string | null; // LOT 2 : reply (colonne DB)
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
@@ -106,7 +107,6 @@ type MsgCountRes = {
 
 /* ============================================================================
  * HELPERS — neutralise "never" Supabase sans any
- * (IMPORTANT: pas de `Function`, pas de rules ban-types)
  * ============================================================================
  */
 
@@ -172,8 +172,6 @@ export async function fetchUnreadMessagesCount(userId: string): Promise<number> 
 
     const lastRead = asIsoOrNull(r.last_read_at);
 
-    // supabase-js v2 : select('id', { count:'exact', head:true }) renvoie { count }
-    // On type sans Function.
     type CountQuery = {
       eq: (c: string, v: unknown) => CountQuery;
       is: (c: string, v: unknown) => CountQuery;
@@ -340,10 +338,6 @@ export async function fetchMessages(conversationId: string, limit = 50): Promise
  * ============================================================================
  */
 
-/**
- * Fetch profiles pour une liste de sender_id (batch).
- * Retourne Map<sender_id, SenderProfile>
- */
 export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<string, SenderProfile>> {
   const ids = uniq(senderIds);
   const map = new Map<string, SenderProfile>();
@@ -366,14 +360,14 @@ export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<stri
 }
 
 /* ============================================================================
- * LOT 1 — SEND MESSAGE (support optimistic UI via payload.client_id)
+ * LOT 1/2 — SEND MESSAGE (optimistic UI + reply)
  * ============================================================================
  */
 
 export async function sendMessage(
   conversationId: string,
   content: string,
-  payload?: { client_id?: string; [key: string]: unknown }
+  payload?: { client_id?: string; parent_id?: string | null; [key: string]: unknown }
 ): Promise<MessageRow> {
   const cid = (conversationId ?? '').trim();
   const clean = (content ?? '').trim();
@@ -383,15 +377,22 @@ export async function sendMessage(
   const senderId = u.user?.id ?? null;
   if (!senderId) throw new Error('Not authenticated.');
 
+  // ✅ LOT 2 : parent_id DOIT aller dans la colonne messages.parent_id
+  const parentId = payload?.parent_id ?? null;
+
   const insertPayload: Record<string, unknown> = {
     conversation_id: cid,
     sender_id: senderId,
     content: clean,
+    parent_id: parentId, // ✅ FIX
   };
 
-  // LOT 1 : support payload (client_id pour optimistic dedupe)
+  // ✅ LOT 1 : payload = dédié au dedupe (client_id). On ne stocke plus parent_id ici.
   if (payload && typeof payload === 'object') {
-    insertPayload.payload = payload;
+    const clientId = typeof payload.client_id === 'string' ? payload.client_id.trim() : '';
+    if (clientId) {
+      insertPayload.payload = { client_id: clientId };
+    }
   }
 
   const { data, error } = await supabase

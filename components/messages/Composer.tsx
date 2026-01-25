@@ -2,21 +2,15 @@
  * =============================================================================
  * Fichier      : components/messages/Composer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-25)
+ * Version      : 2.0.1 (2026-01-25)
  * Objet        : Composer avec optimistic UI + retry + replyTo — LOT 2
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.0 (2026-01-25)
- * - [NEW] LOT 2 : State replyTo (UiMessage | null)
- * - [NEW] LOT 2 : ReplyPreview si replyTo (avec bouton cancel)
- * - [NEW] LOT 2 : sendMessage inclut parent_id si replyTo
- * - [KEEP] LOT 1 : Optimistic + retry + max 3 sending inchangés
- * 1.0.0 (2026-01-25)
- * - [NEW] Composer réutilisable avec optimistic UI
- * - [NEW] Anti double-send : max 3 "sending" (Q3=B)
- * - [NEW] Retry intelligent (même client_id)
- * - [NEW] Enter vs Shift+Enter
+ * 2.0.1 (2026-01-25)
+ * - [FIX] Reply: parent_id transmis pour écriture en colonne DB (messages.parent_id)
+ * - [KEEP] Optimistic + retry + max 3 sending inchangés
+ * - [KEEP] UI / ReplyPreview / callbacks inchangés
  * =============================================================================
  */
 
@@ -67,6 +61,7 @@ export default function Composer({
     if (!conversationId || !userId || !clean || pendingSendingCount >= 3) return;
 
     const clientId = generateClientId();
+    const parentId: string | null = replyTo?.id ? String(replyTo.id) : null;
 
     // 1) Optimistic message
     const optimisticMsg: UiMessage = {
@@ -78,7 +73,7 @@ export default function Composer({
       created_at: new Date().toISOString(),
       edited_at: null,
       deleted_at: null,
-      parent_id: replyTo?.id ?? null,
+      parent_id: parentId,
       status: 'sending',
       client_id: clientId,
       optimistic: true,
@@ -91,8 +86,8 @@ export default function Composer({
 
     // 2) Send to DB
     try {
-      const payload: { client_id: string; parent_id?: string } = { client_id: clientId };
-      if (replyTo?.id) payload.parent_id = replyTo.id;
+      const payload: { client_id: string; parent_id?: string | null } = { client_id: clientId };
+      if (parentId) payload.parent_id = parentId;
 
       const dbMsg = await sendMessage(conversationId, clean, payload);
       onConfirmSent(clientId, dbMsg as UiMessage);
