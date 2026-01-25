@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/api/conversations/create/route.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.1 (2026-01-25)
+ * Version      : 1.0.2 (2026-01-25)
  * Objet        : API Route pour créer des conversations directes (RLS garanti)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,10 @@
  * 
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.0.2 (2026-01-25)
+ * - [FIX] RLS 500: Ajoute created_by = me dans TOUS les INSERT (session serveur ET Authorization header)
+ * - [CRITICAL] Sans created_by explicite, policy conversations_insert_auth refuse (created_by = auth.uid())
+ * - [KEEP] Logique création/recherche conversation inchangée
  * 1.0.1 (2026-01-25)
  * - [FIX] Accepte access_token dans Authorization header (fallback si pas de cookies)
  * - [SAFE] Priorité: cookies serveur > Authorization header
@@ -156,6 +160,7 @@ export async function POST(req: Request) {
           .insert({
             type: 'direct',
             title: null,
+            created_by: me, // ✅ CRITICAL: requis pour RLS policy
             echo_id: echoId,
           })
           .select('id')
@@ -278,15 +283,13 @@ export async function POST(req: Request) {
     }
 
     // 5. Créer nouvelle conversation
-    // CRITICAL: Ne PAS envoyer created_by → le DEFAULT auth.uid() de la DB s'appliquera
-    // avec le JWT serveur valide
     const { data: newConv, error: convError } = await supabase
       .from('conversations')
       .insert({
         type: 'direct',
         title: null,
+        created_by: me, // ✅ CRITICAL: requis pour RLS policy
         echo_id: echoId,
-        // created_by: me, ← NE PAS METTRE, laisser le DEFAULT DB
       })
       .select('id')
       .single();
