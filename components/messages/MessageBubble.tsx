@@ -2,38 +2,32 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-25)
+ * Version      : 2.1.0 (2026-01-25)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
  * -----------------------------------------------------------------------------
  * Description  :
  * - Affiche bulle message (mine vs received)
- * - Avatars avec initiales fallback (Q2=B)
+ * - Avatars avec initiales fallback
  * - Pseudo cliquable → /u/[handle]
  * - Support optimistic UI (status: sending/sent/failed)
  * - Bouton Retry si failed
  * - LOT 2 : QuotedMessage si parent_id
- * - LOT 2 : Bouton "Répondre" + ReactionPicker
+ * - LOT 2 : Actions "Répondre" + "Emoji" sous le message
+ * - LOT 2 : Actions visibles uniquement au hover (bulle + zone actions)
  * - LOT 2 : ReactionBadges groupées
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.0 (2026-01-25)
- * - [NEW] LOT 2 : QuotedMessage si message.parent_id
- * - [NEW] LOT 2 : Bouton "Répondre" (hover) → callback onReply
- * - [NEW] LOT 2 : ReactionPicker (hover) → callback onReactionToggle
- * - [NEW] LOT 2 : ReactionBadges (sous bulle) → callback onReactionToggle
- * - [KEEP] LOT 1 : Avatars, retry, optimistic inchangés
- * 1.0.0 (2026-01-25)
- * - [NEW] Bulle message réutilisable
- * - [NEW] Avatars avec initiales fallback
- * - [NEW] Pseudo cliquable (lien /u/[handle])
- * - [NEW] Support optimistic UI (sending/sent/failed + retry)
+ * 2.1.0 (2026-01-25)
+ * - [FIX] Actions ne disparaissent plus lors du déplacement souris vers le picker
+ * - [UX] Actions placées sous la bulle + visibles uniquement au hover
+ * - [UX] Zone hover = bulle + actions (stable)
+ * - [KEEP] Lot 1/2 : avatars, retry, quoted, badges, callbacks inchangés
  * =============================================================================
  */
 
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { Loader2, AlertCircle, RotateCw, Reply } from 'lucide-react';
 import QuotedMessage from './QuotedMessage';
@@ -101,8 +95,6 @@ export default function MessageBubble({
   onQuoteClick,
   variant = 'page',
 }: Props) {
-  const [isHovered, setIsHovered] = useState(false);
-
   const isDock = variant === 'dock';
   const status = message.status ?? 'sent';
   const isSending = status === 'sending';
@@ -120,17 +112,14 @@ export default function MessageBubble({
   };
 
   const handleReply = () => {
-    if (onReply) {
-      onReply(message);
-    }
+    if (onReply) onReply(message);
   };
 
+  // Actions affichées uniquement si message stable (pas sending/failed)
+  const canShowActions = !isSending && !isFailed && (onReply || onReactionToggle);
+
   return (
-    <div
-      className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
+    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div className={`flex gap-2 ${mine ? 'flex-row-reverse' : 'flex-row'} ${isDock ? 'max-w-[85%]' : 'max-w-[80%]'}`}>
         {/* Avatar (received only) */}
         {!mine && (
@@ -157,7 +146,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {/* Bubble */}
+        {/* Message block */}
         <div className="min-w-0 flex-1">
           {/* Sender name (received only) */}
           {!mine && (
@@ -182,8 +171,9 @@ export default function MessageBubble({
             />
           )}
 
-          {/* Content */}
-          <div className="relative">
+          {/* Bubble + Actions are a "group" to keep hover stable */}
+          <div className="group">
+            {/* Content bubble */}
             <div
               className={`rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
                 mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
@@ -231,12 +221,12 @@ export default function MessageBubble({
               )}
             </div>
 
-            {/* LOT 2 : Actions (hover) - Répondre + Réactions */}
-            {isHovered && !isSending && !isFailed && (
+            {/* LOT 2 : Actions (sous la bulle, visibles au hover) */}
+            {canShowActions && (
               <div
-                className={`absolute ${mine ? 'left-0' : 'right-0'} top-0 flex items-center gap-1 ${
-                  isDock ? '-mt-7' : '-mt-8'
-                }`}
+                className={`mt-1 flex items-center gap-1 ${
+                  mine ? 'justify-start' : 'justify-end'
+                } opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
               >
                 {onReply && (
                   <button
@@ -251,9 +241,7 @@ export default function MessageBubble({
                   </button>
                 )}
 
-                {onReactionToggle && (
-                  <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
-                )}
+                {onReactionToggle && <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />}
               </div>
             )}
           </div>
