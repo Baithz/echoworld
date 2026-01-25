@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/layout/Header.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.5.1 (2026-01-22)
+ * Version      : 1.5.3 (2026-01-25)
  * Objet        : Header navigation moderne - Sticky + Glassmorphism (sans dropdown)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,13 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.5.3 (2026-01-25)
+ * - [FIX] Utilise window.location.replace au lieu de router.replace pour la déconnexion
+ * - [FIX] Supprime l'import useRouter devenu inutile (correction ESLint)
+ * - [KEEP] Redirection vers / (home) après déconnexion
+ * 1.5.2 (2026-01-25)
+ * - [FIX] Redirection vers / (home) après déconnexion (au lieu de rester sur la page courante)
+ * - [KEEP] Logo, badges, GlobalSearch, ChatDock, mobile menu inchangés
  * 1.5.1 (2026-01-22)
  * - [UPDATE] Logo : suppression du container (border/bg/shadow) + taille augmentée
  * - [UPDATE] Dashboard -> Pour moi (label + aria) + icône plus "personnelle"
@@ -227,11 +234,17 @@ export default function Header() {
   const logout = async () => {
     try {
       await supabase.auth.signOut();
-    } finally {
       cacheRef.current = null;
       setProfile(null);
       setSettings(null);
       setIsMobileMenuOpen(false);
+
+      // ✅ Redirection vers la page d'accueil après déconnexion
+      window.location.replace('/');
+    } catch (err) {
+      console.error('Logout error:', err);
+      // On redirige quand même vers la home en cas d'erreur
+      window.location.replace('/');
     }
   };
 
@@ -360,7 +373,7 @@ export default function Header() {
                   <Link
                     href="/for-me"
                     className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-900 backdrop-blur-md transition-all hover:border-slate-300 hover:bg-white"
-                    aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
+                    aria-label="Pour moi. Échos en résonance avec vos centres d'intérêt."
                     title="Pour moi — résonances & intérêts"
                   >
                     <Heart className="h-4 w-4" />
@@ -491,12 +504,12 @@ export default function Header() {
                   ) : null}
                 </Link>
 
-                {/* NEW: Pour moi (mobile menu) */}
+                {/* Pour moi (mobile menu) */}
                 <Link
                   href="/for-me"
                   onClick={closeMobile}
                   className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-base font-medium text-slate-900 hover:bg-white"
-                  aria-label="Pour moi. Échos en résonance avec vos centres d’intérêt."
+                  aria-label="Pour moi. Échos en résonance avec vos centres d'intérêt."
                 >
                   <span className="flex items-center gap-3">
                     <Heart className="h-5 w-5" />
