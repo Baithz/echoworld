@@ -1,20 +1,21 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileActions.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.1.3 (2026-01-24)
+// Version      : 2.2.0 (2026-01-25)
 // Objet        : Actions profil public (Suivre / Message) avec messagerie intégrée
 // -----------------------------------------------------------------------------
 // Description  :
 // - Follow/Unfollow via table follows (RLS: auth.uid() = follower_id)
 // - Guard non connecté : redirection /login (clic possible même si non connecté)
-// - Message : startDirectConversation + ouverture ChatDock (RealtimeProvider)
+// - Message : API Route /api/conversations/create (RLS garanti côté serveur)
 // - Refresh UI (router.refresh) après follow/unfollow pour stats serveur
 // -----------------------------------------------------------------------------
 // CHANGELOG
-// 2.1.3 (2026-01-24)
-// - [FIX] Fallback UID côté client: si currentUserId SSR est null, récupère via supabase.auth.getUser()
-// - [DEBUG] Logs ciblés pour diagnostiquer redirect /login -> / (uid null) et flow message/follow
-// - [SAFE] Contrat inchangé (props/types/exports), logique follow/message identique
+// 2.2.0 (2026-01-25)
+// - [FIX] RLS 403: Appel API Route /api/conversations/create au lieu de startDirectConversation
+// - [SAFE] Session serveur (cookies) → JWT valide → auth.uid() correct dans DEFAULT DB
+// - [DEBUG] Logs ciblés pour diagnostiquer flow message/follow
+// - [KEEP] Contrat inchangé (props/types/exports), logique follow identique
 // =============================================================================
 
 'use client';
@@ -23,7 +24,6 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { UserPlus, UserMinus, MessageCircle, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
-import { startDirectConversation } from '@/lib/messages/startDirectConversation';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 
 type Props = {
@@ -32,7 +32,7 @@ type Props = {
   isFollowing: boolean;
 };
 
-// Helpers pour follows (évite any, comme dans lib/messages)
+// Helpers pour follows (évite any)
 type PostgrestErrorLike = { message?: string } | null;
 type PostgrestResultLike<T> = { data: T | null; error: PostgrestErrorLike };
 
@@ -61,7 +61,6 @@ async function deleteFollow(followerId: string, followingId: string) {
 
 function debugLog(message: string, data?: unknown) {
   try {
-    // Debug client: activer via Vercel env NEXT_PUBLIC_EW_DEBUG=1
     if (process.env.NEXT_PUBLIC_EW_DEBUG !== '1') return;
     console.log(`[ProfileActions] ${message}`, data ?? '');
   } catch {
@@ -173,20 +172,24 @@ export default function ProfileActions({ profileId, currentUserId, isFollowing: 
 
     setLoadingMessage(true);
     try {
-      const result = await startDirectConversation({
-        userId: uid,
-        otherUserId: profileId,
+      // CRITICAL FIX: Appel API Route serveur au lieu de client direct
+      const response = await fetch('/api/conversations/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otherUserId: profileId }),
       });
 
-      debugLog('handleMessage: startDirectConversation result', result);
+      const result = await response.json();
 
-      if (!result.ok) {
+      debugLog('handleMessage: API response', result);
+
+      if (!response.ok || !result.ok) {
         throw new Error(result.error ?? 'Impossible de créer la conversation');
       }
 
-      debugLog('handleMessage: opening dock', { conversationId: result.data.conversationId });
+      debugLog('handleMessage: opening dock', { conversationId: result.conversationId });
 
-      openConversation(result.data.conversationId);
+      openConversation(result.conversationId);
       openChatDock();
     } catch (err) {
       console.error('Error starting conversation:', err);
