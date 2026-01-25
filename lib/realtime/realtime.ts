@@ -2,18 +2,24 @@
  * =============================================================================
  * Fichier      : lib/realtime/realtime.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-22)
- * Objet        : Gestion centralisée Supabase Realtime (messages + notifications)
+ * Version      : 1.2.0 (2026-01-25)
+ * Objet        : Gestion centralisée Supabase Realtime (Broadcast manuel)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Un seul endroit crée/maintient les channels Realtime (évite doubles subscribe)
+ * - Utilise Broadcast Channels (pas Replication DB)
  * - Callbacks abonnables via onMessage/onNotification
  * - initRealtime(userId) / destroyRealtime()
+ * - CRITICAL FIX: Replication indispo (private alpha) → Broadcast manuel
  *
- * Improvements (v1.1.0)
- * - Cleanup plus strict : unsubscribe + removeChannel (évite channels fantômes en dev/HMR)
- * - Guards runtime : vérifie champs minimaux avant de notifier les listeners
- * - SAFE : API publique inchangée
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-25)
+ * - [FIX] CRITICAL: Replication désactivée → Broadcast manuel via channel
+ * - [NEW] broadcastMessage() pour diffuser manuellement après INSERT
+ * - [KEEP] onMessage/onNotification API publique inchangée (zéro régression)
+ * 1.1.0 (2026-01-22)
+ * - [IMPROVED] Cleanup plus strict : unsubscribe + removeChannel
+ * - [IMPROVED] Guards runtime : vérifie champs minimaux avant notify
  * =============================================================================
  */
 
@@ -68,15 +74,12 @@ function cleanupChannel(ch: RealtimeChannel | null) {
   if (!ch) return;
 
   try {
-    // Unsubscribe (async côté SDK) — on fire-and-forget
     void ch.unsubscribe();
   } catch {
     // noop
   }
 
   try {
-    // supabase-js v2 : removeChannel recommandé pour éviter les channels fantômes en HMR
-    // On garde un guard pour compat.
     const anySb = supabase as unknown as { removeChannel?: (c: RealtimeChannel) => Promise<unknown> };
     if (typeof anySb.removeChannel === 'function') {
       void anySb.removeChannel(ch);
@@ -89,87 +92,68 @@ function cleanupChannel(ch: RealtimeChannel | null) {
 function ensureStartedForUser(userId: string) {
   if (currentUserId === userId && messagesChannel && notificationsChannel) return;
 
-  // Si on change d'user (ou hot reload), on clean proprement.
   destroyRealtime();
 
   currentUserId = userId;
 
   // --------------------------------------------------------------------------
-  // Messages (RLS -> on reçoit uniquement ce qui est visible)
+  // Messages (Broadcast manuel, pas Replication DB)
   // --------------------------------------------------------------------------
   messagesChannel = supabase
-    .channel('ew-messages')
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-      },
-      (payload) => {
-        // payload.new est typé any côté SDK
-        const rec = payload.new as Partial<RealtimeMessagePayload['record']> | null;
+    .channel('ew-messages-broadcast')
+    .on('broadcast', { event: 'message_insert' }, (payload) => {
+      const rec = payload.payload as Partial<RealtimeMessagePayload['record']> | null;
 
-        // Guards minimaux
-        if (!rec) return;
-        if (!isNonEmptyString(rec.id)) return;
-        if (!isNonEmptyString(rec.conversation_id)) return;
-        if (!isNonEmptyString(rec.sender_id)) return;
-        if (!isNonEmptyString(rec.created_at)) return;
+      // Guards minimaux
+      if (!rec) return;
+      if (!isNonEmptyString(rec.id)) return;
+      if (!isNonEmptyString(rec.conversation_id)) return;
+      if (!isNonEmptyString(rec.sender_id)) return;
+      if (!isNonEmptyString(rec.created_at)) return;
 
-        const record: RealtimeMessagePayload['record'] = {
-          id: rec.id,
-          conversation_id: rec.conversation_id,
-          sender_id: rec.sender_id,
-          content: typeof rec.content === 'string' ? rec.content : '',
-          created_at: rec.created_at,
-          edited_at: rec.edited_at ?? null,
-          deleted_at: rec.deleted_at ?? null,
-          payload: rec.payload ?? null,
-        };
+      const record: RealtimeMessagePayload['record'] = {
+        id: rec.id,
+        conversation_id: rec.conversation_id,
+        sender_id: rec.sender_id,
+        content: typeof rec.content === 'string' ? rec.content : '',
+        created_at: rec.created_at,
+        edited_at: rec.edited_at ?? null,
+        deleted_at: rec.deleted_at ?? null,
+        payload: rec.payload ?? null,
+      };
 
-        messageListeners.forEach((cb) => cb({ type: 'message_insert', record }));
-      }
-    )
+      messageListeners.forEach((cb) => cb({ type: 'message_insert', record }));
+    })
     .subscribe();
 
   // --------------------------------------------------------------------------
-  // Notifications (filtrées par destinataire)
+  // Notifications (Broadcast manuel)
   // --------------------------------------------------------------------------
   notificationsChannel = supabase
-    .channel('ew-notifications')
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'notifications',
-        filter: `user_id=eq.${userId}`,
-      },
-      (payload) => {
-        const rec = payload.new as Partial<RealtimeNotificationPayload['record']> | null;
+    .channel('ew-notifications-broadcast')
+    .on('broadcast', { event: 'notification_insert' }, (payload) => {
+      const rec = payload.payload as Partial<RealtimeNotificationPayload['record']> | null;
 
-        if (!rec) return;
-        if (!isNonEmptyString(rec.id)) return;
-        if (!isNonEmptyString(rec.user_id)) return;
-        if (rec.user_id !== userId) return;
-        if (!isNonEmptyString(rec.created_at)) return;
+      if (!rec) return;
+      if (!isNonEmptyString(rec.id)) return;
+      if (!isNonEmptyString(rec.user_id)) return;
+      if (rec.user_id !== userId) return; // Filtre côté client
+      if (!isNonEmptyString(rec.created_at)) return;
 
-        const record: RealtimeNotificationPayload['record'] = {
-          id: rec.id,
-          user_id: rec.user_id,
-          actor_id: rec.actor_id ?? null,
-          type: typeof rec.type === 'string' ? rec.type : 'unknown',
-          title: rec.title ?? null,
-          body: rec.body ?? null,
-          payload: rec.payload ?? null,
-          read_at: rec.read_at ?? null,
-          created_at: rec.created_at,
-        };
+      const record: RealtimeNotificationPayload['record'] = {
+        id: rec.id,
+        user_id: rec.user_id,
+        actor_id: rec.actor_id ?? null,
+        type: typeof rec.type === 'string' ? rec.type : 'unknown',
+        title: rec.title ?? null,
+        body: rec.body ?? null,
+        payload: rec.payload ?? null,
+        read_at: rec.read_at ?? null,
+        created_at: rec.created_at,
+      };
 
-        notificationListeners.forEach((cb) => cb({ type: 'notification_insert', record }));
-      }
-    )
+      notificationListeners.forEach((cb) => cb({ type: 'notification_insert', record }));
+    })
     .subscribe();
 }
 
@@ -197,4 +181,35 @@ export function onMessage(cb: MessageListener) {
 export function onNotification(cb: NotificationListener) {
   notificationListeners.add(cb);
   return () => notificationListeners.delete(cb);
+}
+
+/**
+ * LOT 2.5 : Broadcast manuel après INSERT (contourne Replication indispo)
+ */
+export async function broadcastMessage(record: RealtimeMessagePayload['record']): Promise<void> {
+  if (!messagesChannel) return;
+
+  try {
+    await messagesChannel.send({
+      type: 'broadcast',
+      event: 'message_insert',
+      payload: record,
+    });
+  } catch (err) {
+    console.error('[Realtime] Broadcast failed:', err);
+  }
+}
+
+export async function broadcastNotification(record: RealtimeNotificationPayload['record']): Promise<void> {
+  if (!notificationsChannel) return;
+
+  try {
+    await notificationsChannel.send({
+      type: 'broadcast',
+      event: 'notification_insert',
+      payload: record,
+    });
+  } catch (err) {
+    console.error('[Realtime] Broadcast failed:', err);
+  }
 }

@@ -1,8 +1,8 @@
 // =============================================================================
 // Fichier      : lib/messages/index.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.1.0 (2026-01-25)
-// Objet        : Queries Messages + sendMessage() (optimistic UI + reply parent_id) — LOT 1/2
+// Version      : 2.2.0 (2026-01-25)
+// Objet        : Queries Messages + sendMessage() (optimistic UI + reply + broadcast) — LOT 1/2/2.5
 // -----------------------------------------------------------------------------
 // BDD (réelle) :
 // - public.conversations(id, type conversation_type, title?, created_by?, echo_id?, created_at, updated_at)
@@ -12,14 +12,16 @@
 //
 // CHANGELOG
 // -----------------------------------------------------------------------------
-// 2.1.0 (2026-01-25)
-// - [NEW] fetchUnreadCountsByConversation() : map conv_id -> count (pour badge par conv)
+// 2.2.0 (2026-01-25)
+// - [NEW] LOT 2.5 : Broadcast manuel après sendMessage() (contourne Replication indispo)
 // - [KEEP] Reply: parent_id écrit dans messages.parent_id
 // - [KEEP] Optimistic UI: payload.client_id conservé pour dedupe realtime
 // - [KEEP] fetchConversationsForUser enrichit peer_* inchangé
 // - [KEEP] fetchUnreadMessagesCount, markConversationRead inchangés
 // - [KEEP] fetchSenderProfiles inchangé
 // - [SAFE] Pas de `any` ajouté, fail-soft conservé
+// 2.1.0 (2026-01-25)
+// - [NEW] fetchUnreadCountsByConversation() : map conv_id -> count (pour badge par conv)
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -31,14 +33,13 @@ import { supabase } from '@/lib/supabase/client';
 
 export type ConversationRow = {
   id: string;
-  type: 'direct' | 'group' | string; // enum conversation_type côté DB
+  type: 'direct' | 'group' | string;
   title: string | null;
   created_by: string | null;
   echo_id: string | null;
   created_at: string;
   updated_at: string;
 
-  // PHASE 5 : enrichissement optionnel (si conv direct)
   peer_user_id?: string | null;
   peer_handle?: string | null;
   peer_display_name?: string | null;
@@ -60,13 +61,12 @@ export type MessageRow = {
   sender_id: string;
   content: string;
   payload: unknown | null;
-  parent_id?: string | null; // LOT 2 : reply (colonne DB)
+  parent_id?: string | null;
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
 };
 
-// LOT 1 : Profile minimal pour sender enrichment
 export type SenderProfile = {
   id: string;
   handle: string | null;
@@ -74,7 +74,6 @@ export type SenderProfile = {
   avatar_url: string | null;
 };
 
-// Minimal profile shape (pour titrage des DM)
 type ProfileRow = {
   id: string;
   handle: string | null;
@@ -106,15 +105,9 @@ type MsgCountRes = {
   error: { message?: string } | null;
 };
 
-/* ============================================================================
- * HELPERS — neutralise "never" Supabase sans any
- * ============================================================================
- */
-
 type PgErr = { message?: string } | null;
 type PgRes<T> = { data: T | null; error: PgErr };
 
-// Builder minimal pour chains qu'on utilise
 type Chain = {
   select: (...args: unknown[]) => Chain;
   eq: (...args: unknown[]) => Chain;
@@ -122,12 +115,8 @@ type Chain = {
   is: (...args: unknown[]) => Chain;
   order: (...args: unknown[]) => Chain;
   limit: (n: number) => Chain;
-
-  // mutations
   update: (values: unknown) => Promise<PgRes<unknown>>;
   insert: (values: unknown) => Chain;
-
-  // finals
   maybeSingle: () => Promise<PgRes<unknown>>;
   single: () => Promise<PgRes<unknown>>;
 };
@@ -145,16 +134,10 @@ function asIsoOrNull(v: unknown): string | null {
   return s ? s : null;
 }
 
-/* ============================================================================
- * UNREAD — calcule les non lus (sans v_unread_counts)
- * ============================================================================
- */
-
 export async function fetchUnreadMessagesCount(userId: string): Promise<number> {
   const uid = (userId ?? '').trim();
   if (!uid) return 0;
 
-  // 1) Mes memberships (conv + last_read_at)
   const mineRes = (await (table('conversation_members')
     .select('conversation_id,user_id,last_read_at')
     .eq('user_id', uid) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
@@ -164,7 +147,6 @@ export async function fetchUnreadMessagesCount(userId: string): Promise<number> 
   const rows = Array.isArray(mineRes.data) ? (mineRes.data as ConvMemberLite[]) : [];
   if (rows.length === 0) return 0;
 
-  // 2) N+1 (SAFE) : count messages > last_read_at et pas envoyés par moi
   let total = 0;
 
   for (const r of rows) {
@@ -199,16 +181,10 @@ export async function fetchUnreadMessagesCount(userId: string): Promise<number> 
   return total;
 }
 
-/* ============================================================================
- * UNREAD (PAR CONVERSATION) — badge par conv
- * ============================================================================
- */
-
 export async function fetchUnreadCountsByConversation(userId: string): Promise<Record<string, number>> {
   const uid = (userId ?? '').trim();
   if (!uid) return {};
 
-  // 1) Mes memberships (conv + last_read_at)
   const mineRes = (await (table('conversation_members')
     .select('conversation_id,user_id,last_read_at')
     .eq('user_id', uid) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
@@ -252,16 +228,10 @@ export async function fetchUnreadCountsByConversation(userId: string): Promise<R
   return out;
 }
 
-/* ============================================================================
- * CONVERSATIONS — aligné BDD + enrichissement peer pour DM
- * ============================================================================
- */
-
 export async function fetchConversationsForUser(userId: string): Promise<ConversationRow[]> {
   const uid = (userId ?? '').trim();
   if (!uid) return [];
 
-  // 1) membership -> conversations(*)
   const res = (await (supabase
     .from('conversation_members')
     .select('conversation_id, conversations(id,type,title,created_by,echo_id,created_at,updated_at)')
@@ -288,23 +258,20 @@ export async function fetchConversationsForUser(userId: string): Promise<Convers
     });
   }
 
-  // Tri récent (updated_at desc)
   rows.sort((a, b) => {
     const ta = new Date(a.updated_at).getTime();
     const tb = new Date(b.updated_at).getTime();
     return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
   });
 
-  // 2) Enrichissement DM : conv direct uniquement -> peer via members + profiles
   const convIds = uniq(rows.filter((c) => c.type === 'direct').map((c) => c.id));
   if (convIds.length === 0) return rows;
 
-  // 2a) membres des conv direct (2 lignes attendues)
   const memRes = (await (table('conversation_members')
     .select('conversation_id,user_id')
     .in('conversation_id', convIds) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
 
-  if (memRes.error || !Array.isArray(memRes.data)) return rows; // fail-soft
+  if (memRes.error || !Array.isArray(memRes.data)) return rows;
 
   const memRows = memRes.data as Array<{ conversation_id?: unknown; user_id?: unknown }>;
   const peerByConv = new Map<string, string>();
@@ -322,7 +289,6 @@ export async function fetchConversationsForUser(userId: string): Promise<Convers
     return rows.map((c) => (c.type === 'direct' ? { ...c, peer_user_id: peerByConv.get(c.id) ?? null } : c));
   }
 
-  // 2b) profiles
   const profRes = (await (supabase
     .from('profiles')
     .select('id,handle,display_name,avatar_url')
@@ -384,11 +350,6 @@ export async function fetchMessages(conversationId: string, limit = 50): Promise
   return ((data as unknown) ?? []) as MessageRow[];
 }
 
-/* ============================================================================
- * LOT 1 — SENDER PROFILES (batch fetch pour avatars + noms)
- * ============================================================================
- */
-
 export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<string, SenderProfile>> {
   const ids = uniq(senderIds);
   const map = new Map<string, SenderProfile>();
@@ -407,11 +368,6 @@ export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<stri
   return map;
 }
 
-/* ============================================================================
- * LOT 1/2 — SEND MESSAGE (optimistic UI + reply)
- * ============================================================================
- */
-
 export async function sendMessage(
   conversationId: string,
   content: string,
@@ -425,7 +381,6 @@ export async function sendMessage(
   const senderId = u.user?.id ?? null;
   if (!senderId) throw new Error('Not authenticated.');
 
-  // ✅ LOT 2 : parent_id DOIT aller dans la colonne messages.parent_id
   const parentId = payload?.parent_id ?? null;
 
   const insertPayload: Record<string, unknown> = {
@@ -435,7 +390,6 @@ export async function sendMessage(
     parent_id: parentId,
   };
 
-  // ✅ LOT 1 : payload = dédié au dedupe (client_id)
   if (payload && typeof payload === 'object') {
     const clientId = typeof payload.client_id === 'string' ? payload.client_id.trim() : '';
     if (clientId) insertPayload.payload = { client_id: clientId };
@@ -444,13 +398,29 @@ export async function sendMessage(
   const { data, error } = await supabase.from('messages').insert(insertPayload as unknown as never).select('*').single();
 
   if (error) throw error;
-  return data as unknown as MessageRow;
+
+  const msg = data as unknown as MessageRow;
+
+  // LOT 2.5 : Broadcast manuel (contourne Replication indispo)
+  try {
+    const { broadcastMessage } = await import('@/lib/realtime/realtime');
+    await broadcastMessage({
+      id: msg.id,
+      conversation_id: msg.conversation_id,
+      sender_id: msg.sender_id,
+      content: msg.content,
+      created_at: msg.created_at,
+      edited_at: msg.edited_at,
+      deleted_at: msg.deleted_at,
+      payload: msg.payload,
+    });
+  } catch {
+    // Fail-soft: si broadcast échoue, message quand même créé en DB
+  }
+
+  return msg;
 }
 
-/**
- * Marque une conversation comme lue.
- * - Update direct conversation_members.last_read_at (RLS: user_id = auth.uid())
- */
 export async function markConversationRead(conversationId: string): Promise<void> {
   const cid = (conversationId ?? '').trim();
   if (!cid) return;
