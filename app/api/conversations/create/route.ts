@@ -2,18 +2,22 @@
  * =============================================================================
  * Fichier      : app/api/conversations/create/route.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
+ * Version      : 1.0.1 (2026-01-25)
  * Objet        : API Route pour créer des conversations directes (RLS garanti)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Crée une conversation directe entre 2 users via client Supabase serveur
- * - Session serveur (cookies) → JWT valide garanti
+ * - Session serveur (cookies) OU token Authorization header
  * - RLS policy conversations_insert_auth respectée (created_by = auth.uid())
  * - Cherche conversation existante avant de créer
  * - Ajoute les 2 membres dans conversation_members
  * 
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.0.1 (2026-01-25)
+ * - [FIX] Accepte access_token dans Authorization header (fallback si pas de cookies)
+ * - [SAFE] Priorité: cookies serveur > Authorization header
+ * - [KEEP] Logique création/recherche conversation inchangée
  * 1.0.0 (2026-01-25)
  * - [NEW] Route API serveur pour contourner problème JWT client expiré
  * - [SAFE] Session serveur (cookies) → auth.uid() valide dans DEFAULT DB
@@ -31,13 +35,164 @@ type RequestBody = {
 
 export async function POST(req: Request) {
   try {
-    // 1. Client Supabase serveur (session via cookies)
+    // 1. Client Supabase serveur
     const supabase = await createSupabaseServerClient();
 
-    // 2. Vérifier l'auth
-    const { data: userData, error: authError } = await supabase.auth.getUser();
+    // 2. Essayer d'abord la session serveur (cookies)
+    let userData;
+    const { data: userDataTemp, error: authError } = await supabase.auth.getUser();
+    userData = userDataTemp;
     
+    // Si pas de session serveur, essayer le token dans Authorization header
     if (authError || !userData?.user) {
+      const authHeader = req.headers.get('Authorization');
+      
+      if (authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        
+        // Créer un client avec le token explicite
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+        const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+        
+        const supabaseWithToken = createClient(supabaseUrl, supabaseAnonKey, {
+          global: {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        });
+        
+        const { data: tokenUserData, error: tokenError } = await supabaseWithToken.auth.getUser();
+        
+        if (tokenError || !tokenUserData?.user) {
+          return NextResponse.json(
+            { ok: false, error: 'Token invalide ou expiré' },
+            { status: 401 }
+          );
+        }
+        
+        // Utiliser ce client pour le reste de la requête
+        userData = tokenUserData;
+        
+        // Refaire l'INSERT avec le client authentifié par token
+        const me = userData.user.id;
+        const body = (await req.json().catch(() => ({}))) as RequestBody;
+        const other = body.otherUserId?.trim();
+        const echoId = body.echoId || null;
+
+        if (!other) {
+          return NextResponse.json(
+            { ok: false, error: 'otherUserId requis' },
+            { status: 400 }
+          );
+        }
+
+        if (me === other) {
+          return NextResponse.json(
+            { ok: false, error: 'Impossible de créer une conversation avec soi-même' },
+            { status: 400 }
+          );
+        }
+
+        // Chercher conversation existante
+        const { data: myMemberships } = await supabaseWithToken
+          .from('conversation_members')
+          .select('conversation_id')
+          .eq('user_id', me);
+
+        if (myMemberships && myMemberships.length > 0) {
+          const myConvIds = myMemberships.map((m) => m.conversation_id);
+
+          const { data: commonMemberships } = await supabaseWithToken
+            .from('conversation_members')
+            .select('conversation_id')
+            .eq('user_id', other)
+            .in('conversation_id', myConvIds);
+
+          if (commonMemberships && commonMemberships.length > 0) {
+            const commonConvIds = commonMemberships.map((m) => m.conversation_id);
+
+            const { data: existingConv } = await supabaseWithToken
+              .from('conversations')
+              .select('id')
+              .in('id', commonConvIds)
+              .eq('type', 'direct')
+              .eq('echo_id', echoId)
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (existingConv) {
+              return NextResponse.json({
+                ok: true,
+                conversationId: existingConv.id,
+                created: false,
+              });
+            }
+
+            const { data: fallbackConv } = await supabaseWithToken
+              .from('conversations')
+              .select('id')
+              .in('id', commonConvIds)
+              .eq('type', 'direct')
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (fallbackConv) {
+              return NextResponse.json({
+                ok: true,
+                conversationId: fallbackConv.id,
+                created: false,
+              });
+            }
+          }
+        }
+
+        // Créer nouvelle conversation
+        const { data: newConv, error: convError } = await supabaseWithToken
+          .from('conversations')
+          .insert({
+            type: 'direct',
+            title: null,
+            echo_id: echoId,
+          })
+          .select('id')
+          .single();
+
+        if (convError || !newConv) {
+          console.error('[API conversations/create] Insert error:', convError);
+          return NextResponse.json(
+            { ok: false, error: convError?.message || 'Erreur création conversation' },
+            { status: 500 }
+          );
+        }
+
+        const conversationId = newConv.id;
+
+        const { error: membersError } = await supabaseWithToken
+          .from('conversation_members')
+          .insert([
+            { conversation_id: conversationId, user_id: me, role: 'member' },
+            { conversation_id: conversationId, user_id: other, role: 'member' },
+          ]);
+
+        if (membersError) {
+          console.error('[API conversations/create] Members error:', membersError);
+          return NextResponse.json(
+            { ok: false, error: 'Erreur ajout membres' },
+            { status: 500 }
+          );
+        }
+
+        return NextResponse.json({
+          ok: true,
+          conversationId,
+          created: true,
+        });
+      }
+      
       return NextResponse.json(
         { ok: false, error: 'Non authentifié' },
         { status: 401 }

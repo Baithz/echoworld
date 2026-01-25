@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileActions.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.2.0 (2026-01-25)
+// Version      : 2.2.1 (2026-01-25)
 // Objet        : Actions profil public (Suivre / Message) avec messagerie intégrée
 // -----------------------------------------------------------------------------
 // Description  :
@@ -11,6 +11,10 @@
 // - Refresh UI (router.refresh) après follow/unfollow pour stats serveur
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 2.2.1 (2026-01-25)
+// - [FIX] Envoie access_token dans Authorization header (workaround session serveur)
+// - [DEBUG] Log token retrieval pour diagnostiquer session
+// - [KEEP] Fallback sur cookies serveur si disponibles
 // 2.2.0 (2026-01-25)
 // - [FIX] RLS 403: Appel API Route /api/conversations/create au lieu de startDirectConversation
 // - [SAFE] Session serveur (cookies) → JWT valide → auth.uid() correct dans DEFAULT DB
@@ -172,10 +176,21 @@ export default function ProfileActions({ profileId, currentUserId, isFollowing: 
 
     setLoadingMessage(true);
     try {
-      // CRITICAL FIX: Appel API Route serveur au lieu de client direct
+      // Get current session token
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+
+      if (!accessToken) {
+        throw new Error('Session expirée. Reconnectez-vous.');
+      }
+
+      // CRITICAL FIX: Appel API Route serveur avec token dans headers
       const response = await fetch('/api/conversations/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
         body: JSON.stringify({ otherUserId: profileId }),
       });
 
