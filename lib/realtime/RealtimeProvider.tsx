@@ -2,18 +2,23 @@
  * =============================================================================
  * Fichier      : lib/realtime/RealtimeProvider.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.5.0 (2026-01-25)
- * Objet        : Provider global Realtime — LOT 2 Broadcast reactions
+ * Version      : 1.6.0 (2026-01-25)
+ * Objet        : Provider global Realtime — Live messages + LOT 2 reactions broadcast
  * -----------------------------------------------------------------------------
  * Description  :
  * - Se branche sur Supabase auth
- * - Fetch initial : v_unread_counts (via helpers)
+ * - Fetch initial : unread counts (via helpers)
  * - Realtime : incrémente badges sur INSERT messages/notifications
+ * - Live : expose onNewMessage(callback) pour push UI des messages entrants
  * - API context : unread counts + open/close dock + open/close conversation
  * - LOT 2 : Broadcast reactions (INSERT/DELETE message_reactions)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.6.0 (2026-01-25)
+ * - [NEW] Live: onNewMessage(callback) pour diffuser les messages entrants (UI temps réel)
+ * - [KEEP] Badges unread + auto-open dock + confirm optimistic inchangés
+ * - [KEEP] LOT 2 reactions broadcast (message_reactions) inchangé
  * 1.5.0 (2026-01-25)
  * - [NEW] LOT 2 : Event onReactionChange(callback) pour broadcast reactions
  * - [NEW] LOT 2 : Subscribe table message_reactions (INSERT/DELETE)
@@ -32,6 +37,20 @@ import { fetchUnreadMessagesCount } from '@/lib/messages';
 import { fetchUnreadNotificationsCount } from '@/lib/notifications';
 
 type MessageConfirmCallback = (payload: { record: { id: string; payload?: unknown } }) => void;
+
+// NEW: Live incoming message callback (UI push)
+type NewMessageCallback = (payload: {
+  record: {
+    id: string;
+    conversation_id: string;
+    sender_id: string;
+    content: string;
+    created_at: string;
+    edited_at: string | null;
+    deleted_at: string | null;
+    payload: unknown | null;
+  };
+}) => void;
 
 // LOT 2 : Reaction change callback
 type ReactionChangeCallback = (payload: {
@@ -71,6 +90,9 @@ type RealtimeContextValue = {
   // LOT 1 : confirm optimistic
   onMessageConfirm: (callback: MessageConfirmCallback) => () => void;
 
+  // NEW : live messages (incoming)
+  onNewMessage: (callback: NewMessageCallback) => () => void;
+
   // LOT 2 : reactions broadcast
   onReactionChange: (callback: ReactionChangeCallback) => () => void;
 };
@@ -99,6 +121,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   // LOT 1 : callbacks confirm optimistic
   const confirmCallbacksRef = useRef<Set<MessageConfirmCallback>>(new Set());
+
+  // NEW : callbacks live incoming messages
+  const newMessageCallbacksRef = useRef<Set<NewMessageCallback>>(new Set());
 
   // LOT 2 : callbacks reactions
   const reactionCallbacksRef = useRef<Set<ReactionChangeCallback>>(new Set());
@@ -169,6 +194,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // NEW : subscribe to live incoming messages (UI)
+  const onNewMessage = useCallback((callback: NewMessageCallback) => {
+    newMessageCallbacksRef.current.add(callback);
+    return () => {
+      newMessageCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   // LOT 2 : subscribe to reaction changes
   const onReactionChange = useCallback((callback: ReactionChangeCallback) => {
     reactionCallbacksRef.current.add(callback);
@@ -230,7 +263,24 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       const activeConv = activeConvRef.current;
 
       // Si dock ouvert + conversation déjà active => pas de bump (l'utilisateur lit déjà)
-      if (dockOpen && activeConv === convId) return;
+      if (dockOpen && activeConv === convId) {
+        // NEW: même si on ne bump pas, on diffuse le message pour l'UI live.
+        newMessageCallbacksRef.current.forEach((cb) =>
+          cb({
+            record: {
+              id: p.record.id,
+              conversation_id: p.record.conversation_id,
+              sender_id: p.record.sender_id,
+              content: p.record.content,
+              created_at: p.record.created_at,
+              edited_at: p.record.edited_at ?? null,
+              deleted_at: p.record.deleted_at ?? null,
+              payload: p.record.payload ?? null,
+            },
+          })
+        );
+        return;
+      }
 
       // Badge unread
       bumpUnreadMessages(1);
@@ -239,6 +289,22 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       if (dockOpen) {
         setActiveConversationId(convId);
       }
+
+      // NEW : notify live message callbacks (UI can append/dedupe)
+      newMessageCallbacksRef.current.forEach((cb) =>
+        cb({
+          record: {
+            id: p.record.id,
+            conversation_id: p.record.conversation_id,
+            sender_id: p.record.sender_id,
+            content: p.record.content,
+            created_at: p.record.created_at,
+            edited_at: p.record.edited_at ?? null,
+            deleted_at: p.record.deleted_at ?? null,
+            payload: p.record.payload ?? null,
+          },
+        })
+      );
 
       // LOT 1 : notify confirm callbacks (pour dedupe optimistic)
       confirmCallbacksRef.current.forEach((cb) => cb(p as unknown as { record: { id: string; payload?: unknown } }));
@@ -326,6 +392,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       bumpUnreadNotifications,
 
       onMessageConfirm,
+      onNewMessage,
       onReactionChange,
     }),
     [
@@ -343,6 +410,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       bumpUnreadMessages,
       bumpUnreadNotifications,
       onMessageConfirm,
+      onNewMessage,
       onReactionChange,
     ]
   );

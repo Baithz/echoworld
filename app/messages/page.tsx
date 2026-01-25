@@ -2,11 +2,22 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-25)
- * Objet        : Page Messages — LOT 2 Réactions + Répondre + Header avatar/presence
+ * Version      : 2.4.0 (2026-01-25)
+ * Objet        : Page Messages — Live messages + LOT 2 Réactions + Répondre + Header avatar/presence
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Page conversations (sidebar + thread) avec optimistic send / retry / reply / reactions
+ * - Live : push des messages entrants via RealtimeProvider.onNewMessage (sans refresh)
+ * - Badges : unreadCounts fail-soft + tri par dernier message
+ * - SAFE : aucune régression UX (mark read, retry, reply, reactions conservés)
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.4.0 (2026-01-25)
+ * - [NEW] Live: écoute onNewMessage() et injecte les messages entrants dans l’UI (sans refresh)
+ * - [KEEP] LOT 2 : reply/reactions/optimistic/retry inchangés
+ * - [KEEP] Sidebar : unreadCounts + tri last message conservés
+ * - [SAFE] Dedupe anti-doublon (id) + update lastMsgByConv + clear badge si conv active
  * 2.3.0 (2026-01-25)
  * - [NEW] Header conversation : avatar (peer) + lien profil /u/[handle] (DM uniquement)
  * - [NEW] Header conversation : remplace "Direct" par "En ligne/Hors ligne" + point (fail-soft)
@@ -23,6 +34,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Mail, ArrowRight, Loader2, Check, Users as UsersIcon, User as UserIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
+import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 import {
   fetchConversationsForUser,
   fetchMessages,
@@ -50,6 +62,8 @@ function normalizeHandleForHref(handle: string | null | undefined): string | nul
 }
 
 export default function MessagesPage() {
+  const { onNewMessage } = useRealtime();
+
   const [authLoading, setAuthLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -76,8 +90,7 @@ export default function MessagesPage() {
   // last message timestamp per conversation (tri sidebar)
   const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
-  // NEW: online presence (fail-soft). Pour l’instant: vide => tout "Hors ligne".
-  // À connecter à RealtimeProvider plus tard (presence channel / heartbeat).
+  // Online presence (fail-soft). Pour l’instant: vide => tout "Hors ligne".
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -88,7 +101,9 @@ export default function MessagesPage() {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
 
+  // --------------------------------------------------------------------------
   // Auth bootstrap
+  // --------------------------------------------------------------------------
   useEffect(() => {
     let mounted = true;
 
@@ -123,7 +138,56 @@ export default function MessagesPage() {
     };
   }, []);
 
+  // --------------------------------------------------------------------------
+  // Live messages (RealtimeProvider -> UI push)
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    if (!userId) return;
+
+    const unsubscribe = onNewMessage((p) => {
+      const rec = p.record;
+      const convId = rec.conversation_id;
+
+      // 1) Always refresh ordering key (sidebar tri)
+      setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
+
+      // 2) If the user is currently viewing this conversation => append + clear badge
+      if (selectedId && selectedId === convId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === rec.id)) return prev;
+
+          const next: UiMessage = {
+            id: rec.id,
+            conversation_id: rec.conversation_id,
+            sender_id: rec.sender_id,
+            content: rec.content ?? '',
+            created_at: rec.created_at,
+            edited_at: rec.edited_at ?? null,
+            deleted_at: rec.deleted_at ?? null,
+            payload: rec.payload ?? null,
+            status: 'sent',
+          } as UiMessage;
+
+          return [...prev, next];
+        });
+
+        setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
+
+        // Fail-soft: on marque lu en DB (pas bloquant)
+        void markConversationRead(convId).catch(() => {});
+        return;
+      }
+
+      // 3) Otherwise => bump local unread badge (fail-soft)
+      setUnreadCounts((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
+    });
+
+    return unsubscribe;
+  }, [userId, selectedId, onNewMessage]);
+
+  // --------------------------------------------------------------------------
   // Load conversations
+  // --------------------------------------------------------------------------
   useEffect(() => {
     let mounted = true;
 

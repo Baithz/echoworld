@@ -2,17 +2,23 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-25)
- * Objet        : ChatDock (bulle) — LOT 2 complet + Sidebar tri last msg + unread badges
+ * Version      : 2.3.0 (2026-01-25)
+ * Objet        : ChatDock (bulle) — LOT 2 complet + LIVE messages + Sidebar tri last msg + unread badges
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Dock flottant : sidebar conversations + thread + composer
+ * - LOT 2 : reply / reactions / optimistic / retry conservés
+ * - LIVE : reçoit les messages entrants via RealtimeProvider.onNewMessage (sans refresh)
+ * - Fail-soft : si realtime indispo, le dock reste utilisable (fetch classiques)
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-25)
- * - [NEW] Sidebar: unreadCounts passés à ConversationList (badge non lus)
- * - [NEW] Tri conversations: last message (local) -> remonte en tête (fail-soft)
- * - [NEW] Clear badge instant au select + mark read (UX)
+ * 2.3.0 (2026-01-25)
+ * - [NEW] Live: écoute onNewMessage() et injecte les messages entrants dans l’UI
+ * - [NEW] Live: bump unreadCounts si conversation non active, sinon append + mark read
+ * - [KEEP] 2.2.0 : unread badges + tri last message + clear instant + mark read conservés
  * - [KEEP] LOT 2 : reply/reactions/optimistic/retry/realtime reactions inchangés
- * - [SAFE] Aucun prérequis SQL obligatoire (fallback si fetch échoue)
+ * - [SAFE] Dedupe anti-doublon (id) + update lastMsgByConv
  * =============================================================================
  */
 
@@ -67,6 +73,7 @@ export default function ChatDock() {
     openConversation,
     refreshCounts,
     onReactionChange,
+    onNewMessage,
   } = useRealtime();
 
   const [q, setQ] = useState('');
@@ -79,10 +86,10 @@ export default function ChatDock() {
   const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
   const [replyToSenderProfile, setReplyToSenderProfile] = useState<SenderProfile | null>(null);
 
-  // NEW: unread per conversation (badge sidebar)
+  // unread per conversation (badge sidebar)
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
-  // NEW: last message per conversation (tri sidebar)
+  // last message per conversation (tri sidebar)
   const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
   const mountedRef = useRef(true);
@@ -92,6 +99,11 @@ export default function ChatDock() {
       mountedRef.current = false;
     };
   }, []);
+
+  const activeConvRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeConvRef.current = activeConversationId;
+  }, [activeConversationId]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => {
@@ -129,6 +141,55 @@ export default function ChatDock() {
     setReplyToSenderProfile(null);
   }, [isChatDockOpen, userId]);
 
+  // --------------------------------------------------------------------------
+  // LIVE messages (RealtimeProvider -> Dock push)
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isChatDockOpen || !userId) return;
+
+    const unsubscribe = onNewMessage((p) => {
+      const rec = p.record;
+      const convId = rec.conversation_id;
+
+      // 1) Always bump last msg time for ordering
+      setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
+
+      const activeId = activeConvRef.current;
+
+      // 2) If active conversation => append (dedupe) + clear badge + mark read
+      if (activeId && activeId === convId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === rec.id)) return prev;
+
+          const next: UiMessage = {
+            id: rec.id,
+            conversation_id: rec.conversation_id,
+            sender_id: rec.sender_id,
+            content: rec.content ?? '',
+            created_at: rec.created_at,
+            edited_at: rec.edited_at ?? null,
+            deleted_at: rec.deleted_at ?? null,
+            payload: rec.payload ?? null,
+            status: 'sent',
+          } as UiMessage;
+
+          return [...prev, next];
+        });
+
+        setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
+        void markConversationRead(convId).catch(() => {});
+        void refreshCounts().catch(() => {});
+        return;
+      }
+
+      // 3) Otherwise bump local unread badge
+      setUnreadCounts((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
+      void refreshCounts().catch(() => {});
+    });
+
+    return unsubscribe;
+  }, [isChatDockOpen, userId, onNewMessage, refreshCounts]);
+
   // Load conversations when dock opens
   useEffect(() => {
     let cancelled = false;
@@ -160,8 +221,7 @@ export default function ChatDock() {
   }, [isChatDockOpen, userId, activeConversationId, openConversation]);
 
   /**
-   * NEW: hydrate last message per conversation (fail-soft)
-   * - 1 requête messages (in + order desc) puis map local
+   * Hydrate last message per conversation (fail-soft)
    */
   useEffect(() => {
     let cancelled = false;
@@ -204,8 +264,7 @@ export default function ChatDock() {
   }, [isChatDockOpen, userId, convs]);
 
   /**
-   * NEW: unreadCounts par conversation (fail-soft)
-   * - N+1 borné (max 40 convs) : count messages > last_read_at, sender != me
+   * unreadCounts par conversation (fail-soft)
    */
   useEffect(() => {
     let cancelled = false;
@@ -241,7 +300,6 @@ export default function ChatDock() {
           };
 
           const q = (supabase.from('messages').select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
-
           const base = q.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', userId);
 
           const res = lastRead
@@ -266,7 +324,7 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, userId, convs]);
 
-  // NEW: convs triées par dernier message (fallback updated_at)
+  // Convs triées par dernier message (fallback updated_at)
   const sortedConvs = useMemo(() => {
     const arr = [...convs];
     arr.sort((a, b) => {
@@ -299,7 +357,6 @@ export default function ChatDock() {
         await markConversationRead(activeConversationId);
         await refreshCounts();
 
-        // NEW: clear badge local
         setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
 
         setTimeout(() => {
@@ -354,16 +411,13 @@ export default function ChatDock() {
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
-    // NEW: bump last msg (tri sidebar)
     setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
   }, []);
 
-  // Confirm sent (replace optimistic by DB msg)
+  // Confirm sent
   const handleConfirmSent = useCallback(
     async (clientId: string, dbMsg: UiMessage) => {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
-
-      // NEW: bump last msg (DB created_at)
       setLastMsgByConv((prev) => ({ ...prev, [dbMsg.conversation_id]: dbMsg.created_at }));
 
       if (activeConversationId) {
@@ -404,7 +458,7 @@ export default function ChatDock() {
     [activeConversationId, handleConfirmSent, handleSendFailed]
   );
 
-  // LOT 2 : Reply
+  // Reply
   const handleReply = useCallback(
     async (msg: UiMessage) => {
       setReplyTo(msg);
@@ -429,12 +483,11 @@ export default function ChatDock() {
     setReplyToSenderProfile(null);
   }, []);
 
-  // LOT 2 : Reactions (optimistic + DB, Realtime handle la sync)
+  // Reactions (optimistic)
   const handleReactionToggle = useCallback(
     async (messageId: string, emoji: string) => {
       if (!userId) return;
 
-      // 1) Optimistic update
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== messageId) return m;
@@ -457,7 +510,6 @@ export default function ChatDock() {
         })
       );
 
-      // 2) DB call
       try {
         const result = await toggleReaction(messageId, emoji);
 
@@ -494,7 +546,6 @@ export default function ChatDock() {
 
   const onSelectConversation = useCallback(
     (id: string) => {
-      // UX: clear badge instant
       setUnreadCounts((prev) => ({ ...prev, [id]: 0 }));
       openConversation(id);
       setReplyTo(null);
