@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/ConversationList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
+ * Version      : 1.1.0 (2026-01-25)
  * Objet        : Liste conversations réutilisable — ChatDock + Page
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,20 +10,25 @@
  * - Support peer enrichment (handle/display_name pour DM)
  * - Loading + empty states
  * - Sélection active visuelle
+ * - AVATARS : affiche avatar_url si dispo (sinon fallback icône)
+ * - PROFIL : avatar cliquable vers /u/[handle] (DM uniquement)
+ * - LISTE : cache le #id (plus de "#xxxx")
+ * - UNREAD : badge par conv si unreadCounts fourni (fail-soft)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-25)
- * - [NEW] Composant réutilisable liste conversations
- * - [NEW] Support peer enrichment (DM)
- * - [NEW] Recherche inline (query state externe)
- * - [NEW] Loading + empty states
+ * 1.1.0 (2026-01-25)
+ * - [NEW] Props unreadCounts?: Record<string, number> (badge non lus par conversation)
+ * - [NEW] Avatar image si peer_avatar_url (DM), lien profil si peer_handle
+ * - [FIX] Suppression affichage "#id…" (page + dock)
+ * - [KEEP] Recherche, loading/empty states, sélection active inchangés
  * =============================================================================
  */
 
 'use client';
 
 import { useMemo } from 'react';
+import Link from 'next/link';
 import { Search, Loader2, Users, User as UserIcon } from 'lucide-react';
 import type { ConversationRowPlus } from './types';
 
@@ -35,6 +40,9 @@ type Props = {
   query: string;
   onQueryChange: (q: string) => void;
   variant?: 'dock' | 'page'; // dock = compact, page = spacieux
+
+  // NEW: counts non lus par conv (ex: fetchUnreadCountsByConversation)
+  unreadCounts?: Record<string, number>;
 };
 
 function convTitle(c: ConversationRowPlus): string {
@@ -53,6 +61,12 @@ function convTitle(c: ConversationRowPlus): string {
   return 'Direct';
 }
 
+function profileHrefFromHandle(handle: string | null | undefined): string | null {
+  const raw = (handle ?? '').trim().replace(/^@/, '');
+  if (!raw) return null;
+  return `/u/${raw}`;
+}
+
 export default function ConversationList({
   conversations,
   loading,
@@ -61,6 +75,7 @@ export default function ConversationList({
   query,
   onQueryChange,
   variant = 'page',
+  unreadCounts,
 }: Props) {
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -81,12 +96,18 @@ export default function ConversationList({
     <div className={isDock ? '' : 'overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur'}>
       {/* Search */}
       <div className={isDock ? 'p-2' : 'border-b border-slate-200 p-4'}>
-        <div className={`flex items-center gap-2 rounded-xl border border-slate-200 bg-white ${isDock ? 'px-2 py-1.5' : 'px-3 py-2'}`}>
+        <div
+          className={`flex items-center gap-2 rounded-xl border border-slate-200 bg-white ${
+            isDock ? 'px-2 py-1.5' : 'px-3 py-2'
+          }`}
+        >
           <Search className={`text-slate-500 ${isDock ? 'h-4 w-4' : 'h-4 w-4'}`} />
           <input
             value={query}
             onChange={(ev) => onQueryChange(ev.target.value)}
-            className={`w-full bg-transparent text-slate-900 outline-none placeholder:text-slate-400 ${isDock ? 'text-xs' : 'text-sm'}`}
+            className={`w-full bg-transparent text-slate-900 outline-none placeholder:text-slate-400 ${
+              isDock ? 'text-xs' : 'text-sm'
+            }`}
             placeholder="Rechercher…"
             aria-label="Search conversations"
           />
@@ -101,7 +122,11 @@ export default function ConversationList({
             Chargement…
           </div>
         ) : filtered.length === 0 ? (
-          <div className={`m-2 rounded-xl border border-dashed border-slate-200 bg-white/60 p-4 text-slate-600 ${isDock ? 'text-xs' : 'text-sm'}`}>
+          <div
+            className={`m-2 rounded-xl border border-dashed border-slate-200 bg-white/60 p-4 text-slate-600 ${
+              isDock ? 'text-xs' : 'text-sm'
+            }`}
+          >
             Aucune conversation.
           </div>
         ) : (
@@ -109,28 +134,75 @@ export default function ConversationList({
             const isActive = c.id === selectedId;
             const title = convTitle(c);
 
+            const unread = Math.max(0, Number(unreadCounts?.[c.id] ?? 0) || 0);
+            const showUnread = unread > 0;
+
+            const isDirect = c.type !== 'group';
+            const profileHref = isDirect ? profileHrefFromHandle(c.peer_handle ?? null) : null;
+            const avatarUrl = isDirect ? (c.peer_avatar_url ?? null) : null;
+
+            const Avatar = () => {
+              const baseClass = isDock
+                ? 'inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white overflow-hidden'
+                : 'flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white overflow-hidden';
+
+              const fallbackIcon = c.type === 'group' ? (
+                <Users className={isDock ? 'h-4 w-4 text-slate-700' : 'h-5 w-5 text-slate-700'} />
+              ) : (
+                <UserIcon className={isDock ? 'h-4 w-4 text-slate-700' : 'h-5 w-5 text-slate-700'} />
+              );
+
+              const content = avatarUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={avatarUrl} alt={title} className="h-full w-full object-cover" />
+              ) : (
+                fallbackIcon
+              );
+
+              // DM: avatar cliquable vers profil (ne doit pas déclencher onSelect)
+              if (profileHref) {
+                return (
+                  <Link
+                    href={profileHref}
+                    className={baseClass}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Voir le profil de ${title}`}
+                  >
+                    {content}
+                  </Link>
+                );
+              }
+
+              return <span className={baseClass}>{content}</span>;
+            };
+
             if (isDock) {
               return (
                 <button
                   key={c.id}
                   type="button"
                   onClick={() => onSelect(c.id)}
-                  className={`mb-2 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition ${
+                  className={`relative mb-2 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition ${
                     isActive ? 'border-slate-200 bg-white' : 'border-transparent hover:border-slate-200 hover:bg-white'
                   }`}
                   aria-label="Open conversation"
                 >
-                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white">
-                    {c.type === 'group' ? (
-                      <Users className="h-4 w-4 text-slate-700" />
-                    ) : (
-                      <UserIcon className="h-4 w-4 text-slate-700" />
-                    )}
-                  </span>
+                  <Avatar />
+
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-bold text-slate-900">{title}</span>
-                    <span className="block truncate text-[11px] text-slate-500">{c.id.slice(0, 6)}…</span>
+                    {/* ✅ plus de #id */}
+                    <span className="block truncate text-[11px] text-slate-500">
+                      {c.type === 'group' ? 'Groupe' : 'Direct'}
+                    </span>
                   </span>
+
+                  {/* Unread badge */}
+                  {showUnread && (
+                    <span className="absolute right-2 top-2 inline-flex min-w-4.5 items-center justify-center rounded-full bg-slate-900 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  )}
                 </button>
               );
             }
@@ -140,23 +212,24 @@ export default function ConversationList({
                 key={c.id}
                 type="button"
                 onClick={() => onSelect(c.id)}
-                className={`flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${
-                  isActive
-                    ? 'border border-slate-200 bg-white'
-                    : 'border border-transparent hover:border-slate-200 hover:bg-white'
+                className={`relative flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${
+                  isActive ? 'border border-slate-200 bg-white' : 'border border-transparent hover:border-slate-200 hover:bg-white'
                 }`}
               >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white">
-                  {c.type === 'group' ? (
-                    <Users className="h-5 w-5 text-slate-700" />
-                  ) : (
-                    <UserIcon className="h-5 w-5 text-slate-700" />
-                  )}
-                </div>
+                <Avatar />
+
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-bold text-slate-900">{title}</div>
-                  <div className="truncate text-xs text-slate-600">#{c.id.slice(0, 8)}</div>
+                  {/* ✅ plus de "#xxxx" */}
+                  <div className="truncate text-xs text-slate-600">{c.type === 'group' ? 'Groupe' : 'Direct'}</div>
                 </div>
+
+                {/* Unread badge */}
+                {showUnread && (
+                  <span className="inline-flex min-w-5.5items-center justify-center rounded-full bg-slate-900 px-2 py-1 text-[11px] font-extrabold text-white">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
               </button>
             );
           })

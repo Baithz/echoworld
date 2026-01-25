@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/messages/index.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.0.1 (2026-01-25)
+// Version      : 2.1.0 (2026-01-25)
 // Objet        : Queries Messages + sendMessage() (optimistic UI + reply parent_id) — LOT 1/2
 // -----------------------------------------------------------------------------
 // BDD (réelle) :
@@ -12,8 +12,9 @@
 //
 // CHANGELOG
 // -----------------------------------------------------------------------------
-// 2.0.1 (2026-01-25)
-// - [FIX] Reply: parent_id est désormais écrit dans la colonne messages.parent_id (pas seulement payload)
+// 2.1.0 (2026-01-25)
+// - [NEW] fetchUnreadCountsByConversation() : map conv_id -> count (pour badge par conv)
+// - [KEEP] Reply: parent_id écrit dans messages.parent_id
 // - [KEEP] Optimistic UI: payload.client_id conservé pour dedupe realtime
 // - [KEEP] fetchConversationsForUser enrichit peer_* inchangé
 // - [KEEP] fetchUnreadMessagesCount, markConversationRead inchangés
@@ -199,6 +200,59 @@ export async function fetchUnreadMessagesCount(userId: string): Promise<number> 
 }
 
 /* ============================================================================
+ * UNREAD (PAR CONVERSATION) — badge par conv
+ * ============================================================================
+ */
+
+export async function fetchUnreadCountsByConversation(userId: string): Promise<Record<string, number>> {
+  const uid = (userId ?? '').trim();
+  if (!uid) return {};
+
+  // 1) Mes memberships (conv + last_read_at)
+  const mineRes = (await (table('conversation_members')
+    .select('conversation_id,user_id,last_read_at')
+    .eq('user_id', uid) as unknown as Promise<PgRes<unknown>>)) as PgRes<unknown>;
+
+  if (mineRes.error) throw new Error(mineRes.error.message ?? 'Unread load error.');
+
+  const rows = Array.isArray(mineRes.data) ? (mineRes.data as ConvMemberLite[]) : [];
+  if (rows.length === 0) return {};
+
+  const out: Record<string, number> = {};
+
+  for (const r of rows) {
+    const convId = String(r.conversation_id ?? '').trim();
+    if (!convId) continue;
+
+    const lastRead = asIsoOrNull(r.last_read_at);
+
+    type CountQuery = {
+      eq: (c: string, v: unknown) => CountQuery;
+      is: (c: string, v: unknown) => CountQuery;
+      neq: (c: string, v: unknown) => CountQuery;
+      gt: (c: string, v: unknown) => Promise<MsgCountRes>;
+    };
+
+    const q = (supabase
+      .from('messages')
+      .select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
+
+    const base = q.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', uid);
+
+    const res = lastRead
+      ? await base.gt('created_at', lastRead)
+      : await base.gt('created_at', '1970-01-01T00:00:00.000Z');
+
+    if (res.error) continue;
+
+    const n = typeof res.count === 'number' && Number.isFinite(res.count) ? res.count : 0;
+    out[convId] = Math.max(0, n);
+  }
+
+  return out;
+}
+
+/* ============================================================================
  * CONVERSATIONS — aligné BDD + enrichissement peer pour DM
  * ============================================================================
  */
@@ -308,10 +362,7 @@ export async function fetchConversationMembers(conversationId: string): Promise<
   const cid = (conversationId ?? '').trim();
   if (!cid) return [];
 
-  const { data, error } = await supabase
-    .from('conversation_members')
-    .select('*')
-    .eq('conversation_id', cid);
+  const { data, error } = await supabase.from('conversation_members').select('*').eq('conversation_id', cid);
 
   if (error) throw error;
   return ((data as unknown) ?? []) as ConversationMemberRow[];
@@ -344,10 +395,7 @@ export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<stri
 
   if (ids.length === 0) return map;
 
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id,handle,display_name,avatar_url')
-    .in('id', ids);
+  const { data, error } = await supabase.from('profiles').select('id,handle,display_name,avatar_url').in('id', ids);
 
   if (error || !Array.isArray(data)) return map;
 
@@ -384,22 +432,16 @@ export async function sendMessage(
     conversation_id: cid,
     sender_id: senderId,
     content: clean,
-    parent_id: parentId, // ✅ FIX
+    parent_id: parentId,
   };
 
-  // ✅ LOT 1 : payload = dédié au dedupe (client_id). On ne stocke plus parent_id ici.
+  // ✅ LOT 1 : payload = dédié au dedupe (client_id)
   if (payload && typeof payload === 'object') {
     const clientId = typeof payload.client_id === 'string' ? payload.client_id.trim() : '';
-    if (clientId) {
-      insertPayload.payload = { client_id: clientId };
-    }
+    if (clientId) insertPayload.payload = { client_id: clientId };
   }
 
-  const { data, error } = await supabase
-    .from('messages')
-    .insert(insertPayload as unknown as never)
-    .select('*')
-    .single();
+  const { data, error } = await supabase.from('messages').insert(insertPayload as unknown as never).select('*').single();
 
   if (error) throw error;
   return data as unknown as MessageRow;

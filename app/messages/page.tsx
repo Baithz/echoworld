@@ -2,20 +2,17 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-25)
- * Objet        : Page Messages — LOT 2 Réactions + Répondre
+ * Version      : 2.2.0 (2026-01-25)
+ * Objet        : Page Messages — LOT 2 Réactions + Répondre + Sidebar avatars/unread/sort
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.0 (2026-01-25)
- * - [NEW] LOT 2 : State replyTo (UiMessage | null)
- * - [NEW] LOT 2 : Handler handleReply (set replyTo)
- * - [NEW] LOT 2 : Handler handleReactionToggle (optimistic + DB via toggleReaction)
- * - [NEW] LOT 2 : Fetch replyToSenderProfile (pour ReplyPreview)
- * - [KEEP] LOT 1 : Optimistic send + confirm + retry inchangés
- * 2.0.1 (2026-01-25)
- * - [FIX] ESLint react/no-unescaped-entities : apostrophe échappée (ligne 229)
- * - [FIX] TypeScript scrollRef : type RefObject<HTMLDivElement> (suppression | null)
+ * 2.2.0 (2026-01-25)
+ * - [NEW] Sidebar: passe unreadCounts à ConversationList (badge non lus par conv)
+ * - [NEW] Tri conversations: last message (local) -> remonte en tête (fail-soft)
+ * - [NEW] Suppression affichage "Conversation #id" dans l'entête (UX)
+ * - [KEEP] LOT 2 : reply/reactions/optimistic/retry inchangés
+ * - [SAFE] Aucune dépendance DB supplémentaire obligatoire (fallback si fetch échoue)
  * =============================================================================
  */
 
@@ -38,6 +35,13 @@ import MessageList from '@/components/messages/MessageList';
 import Composer from '@/components/messages/Composer';
 import type { ConversationRowPlus, UiMessage } from '@/components/messages/types';
 
+type MsgLite = { id: string; conversation_id: string; created_at: string };
+
+function safeTime(iso: string | null | undefined): number {
+  const t = iso ? new Date(iso).getTime() : 0;
+  return Number.isFinite(t) ? t : 0;
+}
+
 export default function MessagesPage() {
   const [authLoading, setAuthLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
@@ -58,6 +62,12 @@ export default function MessagesPage() {
     display_name: string | null;
     avatar_url: string | null;
   } | null>(null);
+
+  // NEW: unread per conversation (badge dans la sidebar)
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+
+  // NEW: last message timestamp per conversation (tri sidebar)
+  const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -90,6 +100,8 @@ export default function MessagesPage() {
       setConvs([]);
       setSelectedId(null);
       setMessages([]);
+      setUnreadCounts({});
+      setLastMsgByConv({});
       setAuthLoading(false);
     });
 
@@ -109,6 +121,7 @@ export default function MessagesPage() {
       try {
         const rows = (await fetchConversationsForUser(userId)) as unknown as ConversationRowPlus[];
         if (!mounted) return;
+
         setConvs(rows);
 
         if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
@@ -125,6 +138,130 @@ export default function MessagesPage() {
       mounted = false;
     };
   }, [userId, selectedId]);
+
+  /**
+   * NEW: hydrate last message per conversation (fail-soft)
+   * - On récupère les derniers messages des conversations en 1 requête (in + order desc).
+   * - On déduit le "dernier par conversation" côté client.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!userId) return;
+      const ids = convs.map((c) => c.id).filter(Boolean);
+      if (ids.length === 0) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id,conversation_id,created_at')
+          .in('conversation_id', ids)
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false })
+          .limit(Math.min(800, ids.length * 40)); // fail-soft: borne max
+
+        if (cancelled) return;
+        if (error || !Array.isArray(data)) return;
+
+        const map: Record<string, string> = {};
+        for (const r of data as unknown as MsgLite[]) {
+          const cid = String((r as MsgLite).conversation_id ?? '').trim();
+          const ca = String((r as MsgLite).created_at ?? '').trim();
+          if (!cid || !ca) continue;
+          if (!map[cid]) map[cid] = ca; // premier rencontré = plus récent (car tri desc)
+        }
+
+        setLastMsgByConv(map);
+      } catch {
+        // noop
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, convs]);
+
+  /**
+   * NEW: unreadCounts par conversation (fail-soft)
+   * - Implémentation sans fonction SQL / view obligatoire.
+   * - Approche: pour chaque conv, count messages > last_read_at et sender != me.
+   *   (C’est du N+1 "borne", acceptable au début; on optimisera ensuite via RPC/view si besoin.)
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!userId) return;
+      const ids = convs.map((c) => c.id).filter(Boolean);
+      if (ids.length === 0) return;
+
+      try {
+        const { data: mem, error: memErr } = await supabase
+          .from('conversation_members')
+          .select('conversation_id,last_read_at')
+          .eq('user_id', userId);
+
+        if (cancelled) return;
+        if (memErr || !Array.isArray(mem)) return;
+
+        const counts: Record<string, number> = {};
+        // Borne anti-tempête (fail-soft)
+        const slice = mem.slice(0, 50);
+
+        for (const row of slice as Array<{ conversation_id?: string; last_read_at?: string | null }>) {
+          const convId = String(row.conversation_id ?? '').trim();
+          if (!convId) continue;
+
+          const lastRead = (row.last_read_at ?? '') ? String(row.last_read_at) : null;
+
+          // supabase-js v2: count exact head true -> { count }
+          type CountRes = { count: number | null; error: { message?: string } | null };
+          type CountQuery = {
+            eq: (c: string, v: unknown) => CountQuery;
+            is: (c: string, v: unknown) => CountQuery;
+            neq: (c: string, v: unknown) => CountQuery;
+            gt: (c: string, v: unknown) => Promise<CountRes>;
+          };
+
+          const q = (supabase.from('messages').select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
+
+          const base = q.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', userId);
+
+          const res = lastRead
+            ? await base.gt('created_at', lastRead)
+            : await base.gt('created_at', '1970-01-01T00:00:00.000Z');
+
+          if (res.error) continue;
+
+          const n = typeof res.count === 'number' && Number.isFinite(res.count) ? res.count : 0;
+          counts[convId] = Math.max(0, n);
+        }
+
+        if (!cancelled) setUnreadCounts(counts);
+      } catch {
+        // noop
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, convs]);
+
+  // NEW: conversations triées par dernier message (fallback updated_at)
+  const sortedConvs = useMemo(() => {
+    const arr = [...convs];
+    arr.sort((a, b) => {
+      const ta = safeTime(lastMsgByConv[a.id] ?? a.updated_at);
+      const tb = safeTime(lastMsgByConv[b.id] ?? b.updated_at);
+      return tb - ta;
+    });
+    return arr;
+  }, [convs, lastMsgByConv]);
 
   // Load messages for selected conversation
   useEffect(() => {
@@ -145,6 +282,13 @@ export default function MessagesPage() {
         setMessages(uiMsgs);
 
         await markConversationRead(selectedId);
+
+        // NEW: local refresh unread for this conv (fail-soft)
+        setUnreadCounts((prev) => {
+          const next = { ...prev };
+          next[selectedId] = 0;
+          return next;
+        });
       } catch {
         if (mounted) setMessages([]);
       } finally {
@@ -163,12 +307,24 @@ export default function MessagesPage() {
     setSelectedId(id);
     setReplyTo(null);
     setReplyToSenderProfile(null);
+
+    // NEW: clear badge instant côté UI (la DB est marquée read au load messages)
+    setUnreadCounts((prev) => {
+      const next = { ...prev };
+      next[id] = 0;
+      return next;
+    });
   };
 
   const onMarkRead = async () => {
     if (!selectedId) return;
     try {
       await markConversationRead(selectedId);
+      setUnreadCounts((prev) => {
+        const next = { ...prev };
+        next[selectedId] = 0;
+        return next;
+      });
     } catch {
       // noop
     }
@@ -177,6 +333,11 @@ export default function MessagesPage() {
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
+
+    // NEW: bump last message for ordering
+    setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
+
+    // NEW: move conversation on top locally (sortedConvs handles it)
   }, []);
 
   // Confirm sent (replace optimistic by DB msg)
@@ -184,8 +345,16 @@ export default function MessagesPage() {
     async (clientId: string, dbMsg: UiMessage) => {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
 
+      // NEW: last message update (DB created_at)
+      setLastMsgByConv((prev) => ({ ...prev, [dbMsg.conversation_id]: dbMsg.created_at }));
+
       if (selectedId) {
         await markConversationRead(selectedId);
+        setUnreadCounts((prev) => {
+          const next = { ...prev };
+          next[selectedId] = 0;
+          return next;
+        });
       }
     },
     [selectedId]
@@ -233,6 +402,8 @@ export default function MessagesPage() {
         } catch {
           setReplyToSenderProfile(null);
         }
+      } else {
+        setReplyToSenderProfile(null);
       }
     },
     [userId]
@@ -303,6 +474,15 @@ export default function MessagesPage() {
     [userId]
   );
 
+  const headerTitle = useMemo(() => {
+    if (!selected) return '—';
+    if (selected.type === 'group') return selected.title ?? 'Groupe';
+    // direct
+    const dn = (selected.peer_display_name ?? '').trim();
+    const h = (selected.peer_handle ?? '').trim();
+    return dn || (h ? (h.startsWith('@') ? h : `@${h}`) : (selected.title ?? 'Direct'));
+  }, [selected]);
+
   return (
     <main className="mx-auto w-full max-w-6xl px-6 pb-16 pt-28">
       {/* Header */}
@@ -351,13 +531,14 @@ export default function MessagesPage() {
         <div className="mt-10 grid gap-6 lg:grid-cols-[380px_1fr]">
           {/* Sidebar */}
           <ConversationList
-            conversations={convs}
+            conversations={sortedConvs}
             loading={loadingConvs}
             selectedId={selectedId}
             onSelect={onSelectConv}
             query={q}
             onQueryChange={setQ}
             variant="page"
+            unreadCounts={unreadCounts}
           />
 
           {/* Conversation */}
@@ -365,11 +546,9 @@ export default function MessagesPage() {
             <div className="border-b border-slate-200 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-900">
-                    {selected ? selected.title ?? (selected.type === 'group' ? 'Groupe' : 'Direct') : '—'}
-                  </div>
+                  <div className="truncate text-sm font-semibold text-slate-900">{selected ? headerTitle : '—'}</div>
                   <div className="truncate text-xs text-slate-500">
-                    {selected ? `Conversation ${selected.id.slice(0, 8)}…` : 'Sélectionnez une conversation'}
+                    {selected ? (selected.type === 'group' ? 'Groupe' : 'Direct') : 'Sélectionnez une conversation'}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

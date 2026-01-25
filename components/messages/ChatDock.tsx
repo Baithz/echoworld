@@ -2,17 +2,17 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-25)
- * Objet        : ChatDock (bulle) — LOT 2 Réactions + Répondre complet
+ * Version      : 2.2.0 (2026-01-25)
+ * Objet        : ChatDock (bulle) — LOT 2 complet + Sidebar tri last msg + unread badges
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.0 (2026-01-25)
- * - [NEW] LOT 2 : State replyTo + replyToSenderProfile
- * - [NEW] LOT 2 : Handler handleReply + handleReplyCancel
- * - [NEW] LOT 2 : Handler handleReactionToggle (optimistic + DB + Realtime)
- * - [NEW] LOT 2 : Realtime reactions sync (onReactionChange)
- * - [KEEP] LOT 1 : Optimistic send + confirm + retry inchangés
+ * 2.2.0 (2026-01-25)
+ * - [NEW] Sidebar: unreadCounts passés à ConversationList (badge non lus)
+ * - [NEW] Tri conversations: last message (local) -> remonte en tête (fail-soft)
+ * - [NEW] Clear badge instant au select + mark read (UX)
+ * - [KEEP] LOT 2 : reply/reactions/optimistic/retry/realtime reactions inchangés
+ * - [SAFE] Aucun prérequis SQL obligatoire (fallback si fetch échoue)
  * =============================================================================
  */
 
@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { X, Mail } from 'lucide-react';
+import { supabase } from '@/lib/supabase/client';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 import {
   fetchConversationsForUser,
@@ -34,6 +35,13 @@ import ConversationList from './ConversationList';
 import MessageList from './MessageList';
 import Composer from './Composer';
 import type { ConversationRowPlus, UiMessage, SenderProfile } from './types';
+
+type MsgLite = { id: string; conversation_id: string; created_at: string };
+
+function safeTime(iso: string | null | undefined): number {
+  const t = iso ? new Date(iso).getTime() : 0;
+  return Number.isFinite(t) ? t : 0;
+}
 
 function convTitle(c: ConversationRowPlus): string {
   const t = (c.title ?? '').trim();
@@ -51,8 +59,15 @@ function convTitle(c: ConversationRowPlus): string {
 }
 
 export default function ChatDock() {
-  const { userId, isChatDockOpen, closeChatDock, activeConversationId, openConversation, refreshCounts, onReactionChange } =
-    useRealtime();
+  const {
+    userId,
+    isChatDockOpen,
+    closeChatDock,
+    activeConversationId,
+    openConversation,
+    refreshCounts,
+    onReactionChange,
+  } = useRealtime();
 
   const [q, setQ] = useState('');
   const [loadingConvs, setLoadingConvs] = useState(false);
@@ -63,6 +78,12 @@ export default function ChatDock() {
 
   const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
   const [replyToSenderProfile, setReplyToSenderProfile] = useState<SenderProfile | null>(null);
+
+  // NEW: unread per conversation (badge sidebar)
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+
+  // NEW: last message per conversation (tri sidebar)
+  const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -98,6 +119,8 @@ export default function ChatDock() {
       setMessages([]);
       setReplyTo(null);
       setReplyToSenderProfile(null);
+      setUnreadCounts({});
+      setLastMsgByConv({});
       return;
     }
 
@@ -136,6 +159,124 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, userId, activeConversationId, openConversation]);
 
+  /**
+   * NEW: hydrate last message per conversation (fail-soft)
+   * - 1 requête messages (in + order desc) puis map local
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!isChatDockOpen || !userId) return;
+      const ids = convs.map((c) => c.id).filter(Boolean);
+      if (ids.length === 0) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id,conversation_id,created_at')
+          .in('conversation_id', ids)
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false })
+          .limit(Math.min(500, ids.length * 35));
+
+        if (cancelled || !mountedRef.current) return;
+        if (error || !Array.isArray(data)) return;
+
+        const map: Record<string, string> = {};
+        for (const r of data as unknown as MsgLite[]) {
+          const cid = String((r as MsgLite).conversation_id ?? '').trim();
+          const ca = String((r as MsgLite).created_at ?? '').trim();
+          if (!cid || !ca) continue;
+          if (!map[cid]) map[cid] = ca;
+        }
+
+        setLastMsgByConv(map);
+      } catch {
+        // noop
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isChatDockOpen, userId, convs]);
+
+  /**
+   * NEW: unreadCounts par conversation (fail-soft)
+   * - N+1 borné (max 40 convs) : count messages > last_read_at, sender != me
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!isChatDockOpen || !userId) return;
+      if (convs.length === 0) return;
+
+      try {
+        const { data: mem, error: memErr } = await supabase
+          .from('conversation_members')
+          .select('conversation_id,last_read_at')
+          .eq('user_id', userId);
+
+        if (cancelled || !mountedRef.current) return;
+        if (memErr || !Array.isArray(mem)) return;
+
+        const counts: Record<string, number> = {};
+        const slice = mem.slice(0, 40);
+
+        for (const row of slice as Array<{ conversation_id?: string; last_read_at?: string | null }>) {
+          const convId = String(row.conversation_id ?? '').trim();
+          if (!convId) continue;
+
+          const lastRead = (row.last_read_at ?? '') ? String(row.last_read_at) : null;
+
+          type CountRes = { count: number | null; error: { message?: string } | null };
+          type CountQuery = {
+            eq: (c: string, v: unknown) => CountQuery;
+            is: (c: string, v: unknown) => CountQuery;
+            neq: (c: string, v: unknown) => CountQuery;
+            gt: (c: string, v: unknown) => Promise<CountRes>;
+          };
+
+          const q = (supabase.from('messages').select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
+
+          const base = q.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', userId);
+
+          const res = lastRead
+            ? await base.gt('created_at', lastRead)
+            : await base.gt('created_at', '1970-01-01T00:00:00.000Z');
+
+          if (res.error) continue;
+
+          const n = typeof res.count === 'number' && Number.isFinite(res.count) ? res.count : 0;
+          counts[convId] = Math.max(0, n);
+        }
+
+        if (!cancelled && mountedRef.current) setUnreadCounts(counts);
+      } catch {
+        // noop
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isChatDockOpen, userId, convs]);
+
+  // NEW: convs triées par dernier message (fallback updated_at)
+  const sortedConvs = useMemo(() => {
+    const arr = [...convs];
+    arr.sort((a, b) => {
+      const ta = safeTime(lastMsgByConv[a.id] ?? a.updated_at);
+      const tb = safeTime(lastMsgByConv[b.id] ?? b.updated_at);
+      return tb - ta;
+    });
+    return arr;
+  }, [convs, lastMsgByConv]);
+
   // Load messages for selected conversation
   useEffect(() => {
     let cancelled = false;
@@ -157,6 +298,9 @@ export default function ChatDock() {
 
         await markConversationRead(activeConversationId);
         await refreshCounts();
+
+        // NEW: clear badge local
+        setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
 
         setTimeout(() => {
           if (!cancelled && mountedRef.current) scrollToBottom();
@@ -194,12 +338,10 @@ export default function ChatDock() {
           const reactions = m.reactions ?? [];
 
           if (eventType === 'INSERT') {
-            // Check si pas déjà présent (avoid duplicate)
             const exists = reactions.find((r) => r.id === record.id);
             if (exists) return m;
             return { ...m, reactions: [...reactions, record] };
           } else {
-            // DELETE
             return { ...m, reactions: reactions.filter((r) => r.id !== record.id) };
           }
         })
@@ -212,6 +354,8 @@ export default function ChatDock() {
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
+    // NEW: bump last msg (tri sidebar)
+    setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
   }, []);
 
   // Confirm sent (replace optimistic by DB msg)
@@ -219,9 +363,13 @@ export default function ChatDock() {
     async (clientId: string, dbMsg: UiMessage) => {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
 
+      // NEW: bump last msg (DB created_at)
+      setLastMsgByConv((prev) => ({ ...prev, [dbMsg.conversation_id]: dbMsg.created_at }));
+
       if (activeConversationId) {
         await markConversationRead(activeConversationId);
         await refreshCounts();
+        setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
       }
     },
     [activeConversationId, refreshCounts]
@@ -269,6 +417,8 @@ export default function ChatDock() {
         } catch {
           setReplyToSenderProfile(null);
         }
+      } else {
+        setReplyToSenderProfile(null);
       }
     },
     [userId]
@@ -307,11 +457,10 @@ export default function ChatDock() {
         })
       );
 
-      // 2) DB call (Realtime sync se fait automatiquement via onReactionChange)
+      // 2) DB call
       try {
         const result = await toggleReaction(messageId, emoji);
 
-        // 3) Replace optimistic by real (si ajout)
         if (result.added && result.reaction) {
           setMessages((prev) =>
             prev.map((m) => {
@@ -324,7 +473,6 @@ export default function ChatDock() {
             })
           );
         } else {
-          // Cleanup optimistic
           setMessages((prev) =>
             prev.map((m) => {
               if (m.id !== messageId) return m;
@@ -333,7 +481,6 @@ export default function ChatDock() {
           );
         }
       } catch {
-        // Rollback optimistic on error
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
@@ -343,6 +490,17 @@ export default function ChatDock() {
       }
     },
     [userId]
+  );
+
+  const onSelectConversation = useCallback(
+    (id: string) => {
+      // UX: clear badge instant
+      setUnreadCounts((prev) => ({ ...prev, [id]: 0 }));
+      openConversation(id);
+      setReplyTo(null);
+      setReplyToSenderProfile(null);
+    },
+    [openConversation]
   );
 
   if (!isChatDockOpen) return null;
@@ -401,13 +559,14 @@ export default function ChatDock() {
             {/* Sidebar convs */}
             <div className="border-r border-slate-200">
               <ConversationList
-                conversations={convs}
+                conversations={sortedConvs}
                 loading={loadingConvs}
                 selectedId={activeConversationId}
-                onSelect={openConversation}
+                onSelect={onSelectConversation}
                 query={q}
                 onQueryChange={setQ}
                 variant="dock"
+                unreadCounts={unreadCounts}
               />
             </div>
 
