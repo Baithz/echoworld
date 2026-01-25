@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.0 (2026-01-25)
+ * Version      : 2.4.1 (2026-01-25)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,14 +14,14 @@
  * - LOT 2 : QuotedMessage si parent_id
  * - Reply toujours visible côté extérieur (received=right, mine=left)
  * - Badge réactions superposé coin extérieur (received=bottom-right, mine=bottom-left)
- * - Bouton emoji (hover) placé à gauche du badge (jamais écrasé), et inversé pour mine
+ * - Emoji hover toujours à gauche du badge (ancré sur le badge, jamais écrasé)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.4.0 (2026-01-25)
- * - [UX] Inversion mine/received : reply + badge + emoji côté extérieur (mine=left, received=right)
- * - [FIX] Bouton emoji (hover) apparaît à gauche du badge pour éviter l'écrasement
- * - [KEEP] Lot 1/2 : avatars, retry, quoted, callbacks, styles globaux inchangés
+ * 2.4.1 (2026-01-25)
+ * - [FIX] Position du bouton emoji : ancré au badge (à gauche), stable et non écrasé
+ * - [KEEP] Inversion mine/received (reply + badge côté extérieur) inchangée
+ * - [KEEP] Optimistic/retry/quoted/callbacks inchangés
  * =============================================================================
  */
 
@@ -114,16 +114,9 @@ export default function MessageBubble({
   const canReact = !isSending && !isFailed && !!onReactionToggle;
   const showBadges = !isSending && !isFailed && reactionGroups.length > 0;
 
-  // Positions "extérieur" : mine => LEFT, received => RIGHT
+  // “Extérieur” : mine => LEFT, received => RIGHT
   const replyPosClass = mine ? '-left-9' : '-right-9';
-  const badgePosClass = mine ? 'left-0' : 'right-0';
-
-  // Emoji doit être à gauche du badge :
-  // - received (badge right): emoji se place "avant" le badge => translateX(-100%) - margin
-  // - mine (badge left): emoji encore plus à gauche => translateX(-100%) - margin
-  // (les 2 cas utilisent -translate-x-full mais l'ancrage diffère via left/right)
-  const emojiAnchorClass = mine ? 'left-0' : 'right-0';
-  const emojiOffsetClass = mine ? '-ml-2' : '-mr-2';
+  const cornerPosClass = mine ? 'left-0' : 'right-0';
 
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
@@ -184,8 +177,8 @@ export default function MessageBubble({
 
           {/* Hover group stable */}
           <div className="group relative inline-block max-w-full">
-            {/* Bulle (ancrage overlays) */}
             <div className="relative overflow-visible">
+              {/* Bubble */}
               <div
                 className={`relative rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
                   mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
@@ -193,6 +186,7 @@ export default function MessageBubble({
               >
                 <div className="whitespace-pre-wrap">{safeText(message.content)}</div>
 
+                {/* Meta */}
                 <div
                   className={`mt-1 flex items-center gap-2 ${isDock ? 'text-[10px]' : 'text-[11px]'} ${
                     mine && !isFailed ? 'text-white/70' : 'text-slate-500'
@@ -217,6 +211,7 @@ export default function MessageBubble({
                   )}
                 </div>
 
+                {/* Retry */}
                 {isFailed && onRetry && (
                   <button
                     type="button"
@@ -231,7 +226,7 @@ export default function MessageBubble({
                 )}
               </div>
 
-              {/* Reply toujours visible, côté extérieur */}
+              {/* Reply toujours visible côté extérieur */}
               {canReply && (
                 <button
                   type="button"
@@ -245,26 +240,37 @@ export default function MessageBubble({
                 </button>
               )}
 
-              {/* Badge superposé coin extérieur */}
-              {showBadges && (
-                <div className={`absolute bottom-0 ${badgePosClass} translate-y-1/2 z-10`}>
-                  <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
-                </div>
-              )}
+              {/* ✅ Coin réactions (badge + emoji) : emoji ancré AU BADGE */}
+              {(showBadges || canReact) && (
+                <div className={`absolute bottom-0 ${cornerPosClass} translate-y-1/2 z-20`}>
+                  {/* Wrapper relatif pour positionner l'emoji par rapport au badge */}
+                  <div className="relative inline-flex items-center">
+                    {/* Emoji hover : toujours à gauche du badge, sans bouger le badge */}
+                    {canReact && showBadges && (
+                      <div
+                        className={`absolute top-1/2 -translate-y-1/2 -translate-x-full -left-2 opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
+                      >
+                        <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
+                      </div>
+                    )}
 
-              {/* Emoji (hover) : à gauche du badge, inversé mine/received */}
-              {canReact && (
-                <div
-                  className={`absolute bottom-0 ${emojiAnchorClass} translate-y-1/2 z-20 opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
-                >
-                  <div className={`-translate-x-full ${emojiOffsetClass}`}>
-                    <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
+                    {/* Cas sans badge : on affiche l'emoji seul (hover) au coin */}
+                    {canReact && !showBadges && (
+                      <div className="opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto">
+                        <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
+                      </div>
+                    )}
+
+                    {/* Badge */}
+                    {showBadges && (
+                      <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
+                    )}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Espace bas si badges (évite collision avec message suivant) */}
+            {/* Espace bas pour éviter collision message suivant */}
             {(showBadges || canReact) && <div className="h-4" />}
           </div>
         </div>
