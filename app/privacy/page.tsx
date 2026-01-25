@@ -2,13 +2,20 @@
  * =============================================================================
  * Fichier      : app/privacy/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
+ * Version      : 1.1.0 (2026-01-25)
  * Objet        : Page légale — Politique de confidentialité
  * -----------------------------------------------------------------------------
  * Description  :
- * - Politique RGPD-ready + clauses internationales (bases légales, droits, transferts)
- * - Structure lisible : sommaire + ancres
- * - Texte FR compatible “global”, sans dépendre d’un pays unique
+ * - Politique globale : RGPD-ready + standards internationaux (transferts, droits, sécurité)
+ * - Webdesign EchoWorld : max-w-7xl, sections glass, gradients, rounded-3xl
+ * - Sommaire + ancres, lisible, cohérent avec / (Home)
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.1.0 (2026-01-25)
+ * - [UI] Alignement design EchoWorld (largeur/couleurs/rythme/sections)
+ * - [CLEAN] Suppression des notes internes (ex: “Point bloquant…”)
+ * - [KEEP] Politique complète : finalités, bases légales, droits, transferts, cookies
  * =============================================================================
  */
 
@@ -30,7 +37,7 @@ const sections = [
   { id: 'purposes', label: '4. Finalités & bases légales' },
   { id: 'sharing', label: '5. Partage des données' },
   { id: 'transfers', label: '6. Transferts internationaux' },
-  { id: 'retention', label: '7. Durées de conservation' },
+  { id: 'retention', label: '7. Conservation' },
   { id: 'security', label: '8. Sécurité' },
   { id: 'rights', label: '9. Vos droits' },
   { id: 'children', label: '10. Mineurs' },
@@ -41,313 +48,306 @@ const sections = [
 
 function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/90">
+    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80 backdrop-blur-sm">
       {children}
     </span>
   );
 }
 
-function SectionTitle({ id, children }: { id: string; children: React.ReactNode }) {
-  return (
-    <h2 id={id} className="scroll-mt-24 text-xl font-semibold tracking-tight text-white">
-      {children}
-    </h2>
-  );
-}
-
-function Row({
+function Card({
+  id,
   title,
   children,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-      <div className="text-sm font-semibold text-white/90">{title}</div>
-      <div className="mt-2 text-sm leading-relaxed text-white/75 md:text-base">{children}</div>
-    </div>
+    <section
+      id={id}
+      className="scroll-mt-28 relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-emerald-950/18 via-slate-950/50 to-cyan-950/18 px-6 py-8 backdrop-blur-sm md:px-8"
+    >
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.10),transparent_70%)]" />
+      </div>
+
+      <div className="relative z-10">
+        <h2 className="text-xl font-bold text-white md:text-2xl">{title}</h2>
+        <div className="mt-4 space-y-3 text-sm leading-relaxed text-slate-300 md:text-base">
+          {children}
+        </div>
+      </div>
+    </section>
   );
+}
+
+function List({ children }: { children: React.ReactNode }) {
+  return <ul className="list-disc space-y-2 pl-5 text-slate-300">{children}</ul>;
 }
 
 export default function PrivacyPage() {
   return (
-    <main className="min-h-[calc(100vh-0px)] bg-slate-950 text-white">
-      {/* Hero */}
-      <div className="relative overflow-hidden border-b border-white/10">
-        <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -top-32 left-1/2 h-96 w-240 -translate-x-1/2 rounded-full bg-emerald-500/15 blur-3xl" />
-          <div className="absolute -bottom-40 left-1/4 h-80 w-200 -translate-x-1/2 rounded-full bg-cyan-500/10 blur-3xl" />
-        </div>
-
-        <div className="relative mx-auto max-w-4xl px-6 py-14">
-          <div className="flex flex-wrap items-center gap-2">
-            <Pill>Juridique</Pill>
-            <Pill>Confidentialité</Pill>
-            <Pill>Dernière mise à jour : {LAST_UPDATED}</Pill>
+    <main className="relative">
+      {/* Hero (aligné Home) */}
+      <section className="relative mx-auto max-w-7xl px-6 pt-32 pb-12 md:pt-36 md:pb-16">
+        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-emerald-950/30 via-slate-950/60 to-cyan-950/30 px-8 py-12 backdrop-blur-sm md:px-12 md:py-14">
+          <div className="pointer-events-none absolute inset-0">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.13),transparent_70%)]" />
           </div>
 
-          <h1 className="mt-5 text-3xl font-semibold tracking-tight md:text-4xl">
-            Politique de confidentialité
-          </h1>
+          <div className="relative z-10">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill>Juridique</Pill>
+              <Pill>Confidentialité</Pill>
+              <Pill>Mis à jour : {LAST_UPDATED}</Pill>
+            </div>
 
-          <p className="mt-4 max-w-3xl text-sm text-white/70 md:text-base">
-            Cette politique explique quelles données EchoWorld collecte, pourquoi, comment elles sont utilisées,
-            avec qui elles peuvent être partagées, et quels sont vos droits.
-          </p>
+            <h1 className="mt-5 text-3xl font-bold text-white md:text-4xl">
+              Politique de confidentialité
+            </h1>
 
-          <p className="mt-4 max-w-3xl text-xs text-white/55">
-            EchoWorld vise une conformité internationale (RGPD/UE, standards de transparence et de sécurité).
-            Certaines règles peuvent varier selon votre pays (droits consommateurs, mineurs, transfert, etc.).
-          </p>
+            <p className="mt-4 max-w-3xl text-base text-slate-300">
+              Cette politique explique quelles données EchoWorld traite, pourquoi, comment elles sont protégées,
+              et quels sont vos droits.
+            </p>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Link
+                href="/terms"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/5 px-6 py-3 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20"
+              >
+                Conditions d’utilisation
+              </Link>
+
+              <a
+                href="#toc"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-slate-950 shadow-lg transition-all hover:scale-[1.01] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/30"
+              >
+                Lire le sommaire
+              </a>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div className="mx-auto max-w-4xl px-6 py-10">
-        <div className="grid gap-8 md:grid-cols-[280px_1fr]">
-          {/* TOC */}
-          <aside className="md:sticky md:top-20 md:h-fit">
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="text-sm font-semibold text-white/90">Sommaire</div>
-              <nav className="mt-3 space-y-1">
-                {sections.map((s) => (
-                  <a
-                    key={s.id}
-                    href={`#${s.id}`}
-                    className="block rounded-lg px-2 py-1.5 text-sm text-white/70 hover:bg-white/5 hover:text-white"
-                  >
-                    {s.label}
-                  </a>
-                ))}
-              </nav>
-              <div className="mt-4 border-t border-white/10 pt-4 text-xs text-white/55">
-                <div>
-                  Voir aussi :{' '}
-                  <Link href="/terms" className="font-semibold text-emerald-300 hover:text-emerald-200">
-                    Conditions d’utilisation
-                  </Link>
+      {/* Corps (aligné Home) */}
+      <section className="relative mx-auto max-w-7xl px-6 pb-32">
+        <div className="grid gap-8 lg:grid-cols-[340px_1fr]">
+          {/* Sommaire */}
+          <aside className="lg:sticky lg:top-24 lg:h-fit">
+            <div
+              id="toc"
+              className="relative overflow-hidden rounded-3xl border border-white/10 bg-linear-to-br from-emerald-950/16 via-slate-950/45 to-cyan-950/16 p-6 backdrop-blur-sm"
+            >
+              <div className="pointer-events-none absolute inset-0">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.10),transparent_70%)]" />
+              </div>
+
+              <div className="relative z-10">
+                <div className="text-sm font-bold text-white">Sommaire</div>
+
+                <nav className="mt-4 space-y-1.5">
+                  {sections.map((s) => (
+                    <a
+                      key={s.id}
+                      href={`#${s.id}`}
+                      className="block rounded-2xl px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                      {s.label}
+                    </a>
+                  ))}
+                </nav>
+
+                <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-slate-300">
+                  <div className="font-semibold text-white/90">Liens utiles</div>
+                  <div className="mt-2 space-y-2">
+                    <Link href="/terms" className="block hover:text-white">
+                      Conditions d’utilisation
+                    </Link>
+                    <Link href="/account" className="block hover:text-white">
+                      Mon compte
+                    </Link>
+                    <Link href="/settings" className="block hover:text-white">
+                      Paramètres
+                    </Link>
+                  </div>
                 </div>
               </div>
             </div>
           </aside>
 
-          {/* Body */}
-          <article className="space-y-10">
-            <section className="space-y-3">
-              <SectionTitle id="scope">1. Champ d’application</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                Cette politique s’applique à l’utilisation de la Plateforme EchoWorld (site web et fonctionnalités),
-                y compris la création de compte, la publication d’Échos, les interactions (réactions, réponses),
-                et la messagerie lorsque disponible.
+          {/* Contenu */}
+          <article className="space-y-8">
+            <Card id="scope" title="1. Champ d’application">
+              <p>
+                Cette politique s’applique à l’utilisation d’EchoWorld (site web et fonctionnalités), incluant
+                l’authentification, la publication d’Échos, les interactions (réactions, réponses), et la messagerie
+                lorsqu’elle est disponible.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="controller">2. Responsable du traitement</SectionTitle>
-              <Row title="Qui traite vos données ?">
-                EchoWorld agit en tant que responsable du traitement pour les données nécessaires au fonctionnement de
-                la Plateforme. L’identité juridique exacte et les coordonnées officielles doivent être publiées dans la
-                Plateforme (page contact/mentions) dès que l’entité opératrice est finalisée.
-              </Row>
-              <p className="text-xs text-white/55">
-                Pour une conformité “sans faille”, il faudra renseigner : entité légale, adresse, email DPO/Privacy, et
-                représentant UE/RU si requis.
+            <Card id="controller" title="2. Responsable du traitement">
+              <p>
+                EchoWorld traite les données nécessaires au fonctionnement de la plateforme. Les demandes liées à la
+                confidentialité peuvent être adressées via les canaux de support disponibles dans EchoWorld.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="data">3. Données collectées</SectionTitle>
+            <Card id="data" title="3. Données collectées">
               <div className="space-y-4">
-                <Row title="Données que vous fournissez">
-                  <ul className="list-disc space-y-2 pl-5">
-                    <li>Informations de compte : email, identifiants, éventuellement pseudo/handle.</li>
-                    <li>Profil : photo/avatar, bio, préférences, paramètres de visibilité.</li>
-                    <li>Contenus : Échos (texte), médias (images) si vous en publiez, réactions/réponses/messages.</li>
-                    <li>Signalements/support : contenus transmis via formulaires de support/signalement.</li>
-                  </ul>
-                </Row>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                  <div className="text-sm font-bold text-white">Données fournies par vous</div>
+                  <div className="mt-2 text-slate-300">
+                    <List>
+                      <li>Compte : email, identifiants, éventuellement pseudo/handle.</li>
+                      <li>Profil : avatar, bio, préférences, paramètres de visibilité.</li>
+                      <li>Contenus : Échos (texte), médias (images), réactions/réponses/messages.</li>
+                      <li>Support/signalements : informations transmises lors d’une demande ou d’un signalement.</li>
+                    </List>
+                  </div>
+                </div>
 
-                <Row title="Données collectées automatiquement">
-                  <ul className="list-disc space-y-2 pl-5">
-                    <li>Données techniques : logs, adresse IP, user-agent, identifiants d’appareil (selon contexte).</li>
-                    <li>Données d’usage : pages consultées, actions (création, clics, interactions) pour sécurité/qualité.</li>
-                    <li>Cookies/traceurs : nécessaires au login, préférences, mesures anti-abus (voir section cookies).</li>
-                  </ul>
-                </Row>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                  <div className="text-sm font-bold text-white">Données techniques</div>
+                  <div className="mt-2 text-slate-300">
+                    <List>
+                      <li>Journaux de sécurité et diagnostics (ex. IP, user-agent, horodatages, événements).</li>
+                      <li>Données d’usage nécessaires à la qualité et à la sécurité du service.</li>
+                      <li>Cookies/traceurs strictement nécessaires (voir section 11).</li>
+                    </List>
+                  </div>
+                </div>
 
-                <Row title="Données de localisation">
-                  La Plateforme peut traiter des données de localisation si vous activez des fonctionnalités de géolocalisation
-                  (ex. associer un Écho à un lieu). Selon votre choix, la localisation peut être précise (GPS) ou approximée.
-                  Vous pouvez refuser la géolocalisation via les réglages de votre navigateur/appareil.
-                </Row>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                  <div className="text-sm font-bold text-white">Localisation</div>
+                  <p className="mt-2 text-slate-300">
+                    EchoWorld peut traiter une localisation si vous associez un Écho à un lieu ou activez une
+                    fonctionnalité de géolocalisation. Vous pouvez refuser la géolocalisation via les réglages
+                    de votre navigateur/appareil.
+                  </p>
+                </div>
               </div>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="purposes">4. Finalités & bases légales</SectionTitle>
-              <Row title="Pourquoi EchoWorld traite vos données">
-                <ul className="list-disc space-y-2 pl-5">
-                  <li>
-                    <span className="font-semibold">Fournir le service</span> : création de compte, authentification,
-                    publication, affichage des contenus, interactions, messagerie.
-                  </li>
-                  <li>
-                    <span className="font-semibold">Sécurité & prévention des abus</span> : détection fraude/spam, protection
-                    des utilisateurs, intégrité de la Plateforme.
-                  </li>
-                  <li>
-                    <span className="font-semibold">Amélioration & support</span> : diagnostics, correction de bugs, assistance.
-                  </li>
-                  <li>
-                    <span className="font-semibold">Obligations légales</span> : conformité, réponses aux demandes légitimes,
-                    conservation imposée par la loi.
-                  </li>
-                </ul>
-              </Row>
+            <Card id="purposes" title="4. Finalités & bases légales">
+              <p>EchoWorld traite les données pour :</p>
+              <List>
+                <li>fournir le service (authentification, publication, affichage, interactions, messagerie) ;</li>
+                <li>assurer la sécurité et prévenir les abus (fraude, spam, comportements malveillants) ;</li>
+                <li>améliorer le service et fournir le support ;</li>
+                <li>respecter des obligations légales applicables.</li>
+              </List>
 
-              <Row title="Bases légales (cadre international, RGPD-ready)">
-                Selon votre pays, le traitement repose notamment sur :
-                <ul className="mt-2 list-disc space-y-2 pl-5">
-                  <li><span className="font-semibold">Exécution du contrat</span> : fournir la Plateforme et ses fonctionnalités.</li>
-                  <li><span className="font-semibold">Intérêt légitime</span> : sécurité, prévention des abus, amélioration du service.</li>
-                  <li><span className="font-semibold">Consentement</span> : certains cookies/traceurs, géolocalisation, communications optionnelles.</li>
-                  <li><span className="font-semibold">Obligation légale</span> : conservation/coopération lorsque requis.</li>
-                </ul>
-              </Row>
-            </section>
-
-            <section className="space-y-3">
-              <SectionTitle id="sharing">5. Partage des données</SectionTitle>
-              <Row title="Avec qui partageons-nous vos données ?">
-                <ul className="list-disc space-y-2 pl-5">
-                  <li>
-                    <span className="font-semibold">Sous-traitants techniques</span> (hébergement, base de données, stockage,
-                    envoi d’emails, monitoring). Ils agissent sur instruction d’EchoWorld et avec des engagements de sécurité.
-                  </li>
-                  <li>
-                    <span className="font-semibold">Autres utilisateurs</span> : selon vos paramètres (profil public, échos publics,
-                    interactions).
-                  </li>
-                  <li>
-                    <span className="font-semibold">Autorités</span> : si la loi l’exige (demande valable, prévention d’abus graves).
-                  </li>
-                  <li>
-                    <span className="font-semibold">Changement d’activité</span> : en cas de fusion/cession, dans la mesure permise.
-                  </li>
-                </ul>
-              </Row>
-              <p className="text-xs text-white/55">
-                Nous ne vendons pas vos données personnelles.
+              <p className="mt-4">
+                Les bases légales varient selon les juridictions et peuvent inclure : exécution du contrat (fourniture
+                du service), intérêt légitime (sécurité/qualité), consentement (lorsque requis), et obligations légales.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="transfers">6. Transferts internationaux</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                EchoWorld peut traiter des données dans différents pays (infrastructures cloud). Lorsque la loi l’exige,
-                nous mettons en place des garanties appropriées (ex. clauses contractuelles types, mesures de sécurité,
-                minimisation). Les transferts sont effectués uniquement pour opérer la Plateforme.
+            <Card id="sharing" title="5. Partage des données">
+              <p>EchoWorld ne vend pas vos données personnelles. Elles peuvent être partagées avec :</p>
+              <List>
+                <li>des prestataires techniques (hébergement, stockage, email, monitoring) agissant sur instruction ;</li>
+                <li>les autres utilisateurs, selon vos paramètres de visibilité (profil/échos/interactions) ;</li>
+                <li>les autorités compétentes lorsque la loi l’exige.</li>
+              </List>
+            </Card>
+
+            <Card id="transfers" title="6. Transferts internationaux">
+              <p>
+                EchoWorld peut traiter des données via des infrastructures situées dans différents pays. Lorsque la loi
+                l’exige, des garanties appropriées sont appliquées (clauses contractuelles, mesures de sécurité,
+                minimisation), afin d’assurer un niveau de protection adéquat.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="retention">7. Durées de conservation</SectionTitle>
-              <Row title="Combien de temps conservons-nous vos données ?">
-                <ul className="list-disc space-y-2 pl-5">
-                  <li><span className="font-semibold">Compte</span> : tant que votre compte est actif.</li>
-                  <li><span className="font-semibold">Contenus</span> : jusqu’à suppression par vous, ou selon vos réglages, et dans la limite des contraintes légales/techniques.</li>
-                  <li><span className="font-semibold">Logs sécurité</span> : conservés pour une durée limitée (prévention fraude, diagnostics), puis supprimés/agrégés.</li>
-                  <li><span className="font-semibold">Obligations légales</span> : conservation plus longue si la loi l’exige.</li>
-                </ul>
-              </Row>
-            </section>
+            <Card id="retention" title="7. Conservation">
+              <List>
+                <li>Compte : tant que le compte est actif.</li>
+                <li>Contenus : jusqu’à suppression par vous, sous réserve de contraintes légales/techniques.</li>
+                <li>Journaux de sécurité : durées limitées, puis suppression/agrégation lorsque possible.</li>
+                <li>Obligations légales : conservation plus longue si la loi l’exige.</li>
+              </List>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="security">8. Sécurité</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                Nous mettons en place des mesures techniques et organisationnelles raisonnables : contrôle d’accès,
-                chiffrement en transit, durcissement des services, surveillance, journaux de sécurité, et principes de
-                minimisation. Aucune méthode n’est infaillible : vous devez aussi protéger vos identifiants.
+            <Card id="security" title="8. Sécurité">
+              <p>
+                EchoWorld met en place des mesures techniques et organisationnelles raisonnables (contrôles d’accès,
+                chiffrement en transit, durcissement, surveillance). Vous devez également protéger vos identifiants.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="rights">9. Vos droits</SectionTitle>
-              <Row title="Droits principaux (selon la loi applicable)">
-                Vous pouvez disposer, selon votre pays, de droits tels que :
-                <ul className="mt-2 list-disc space-y-2 pl-5">
-                  <li>Accès à vos données</li>
-                  <li>Rectification</li>
-                  <li>Suppression</li>
-                  <li>Opposition</li>
-                  <li>Limitation</li>
-                  <li>Portabilité</li>
-                  <li>Retrait du consentement (si applicable)</li>
-                </ul>
-              </Row>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                Pour exercer vos droits, contactez EchoWorld via les canaux de contact publiés dans la Plateforme.
-                Nous pourrons demander une vérification d’identité raisonnable pour protéger vos données.
+            <Card id="rights" title="9. Vos droits">
+              <p>
+                Selon la loi applicable (ex. RGPD, lois locales équivalentes), vous pouvez disposer de droits tels que :
+                accès, rectification, suppression, opposition, limitation, portabilité, et retrait du consentement lorsqu’il
+                s’applique.
               </p>
-            </section>
+              <p className="mt-3">
+                Pour exercer vos droits, utilisez les canaux de support disponibles dans EchoWorld. Une vérification
+                d’identité raisonnable peut être demandée afin de protéger vos données.
+              </p>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="children">10. Mineurs</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
+            <Card id="children" title="10. Mineurs">
+              <p>
                 EchoWorld n’est pas destiné aux enfants en dessous de l’âge minimum légal applicable dans leur pays.
-                Si nous découvrons qu’un compte ne respecte pas l’âge requis, nous pouvons prendre des mesures (restriction,
-                suppression, demande de consentement parental si requis).
+                En cas de non-respect, des mesures peuvent être prises (restriction, suppression, demandes de consentement
+                lorsque requis).
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="cookies">11. Cookies & traceurs</SectionTitle>
-              <Row title="Cookies nécessaires">
-                Cookies indispensables au fonctionnement : authentification, sécurité, préférences essentielles, prévention
-                des abus. Ils ne peuvent généralement pas être désactivés sans impacter le service.
-              </Row>
-              <Row title="Cookies optionnels (si utilisés)">
-                Certains cookies/traceurs peuvent être utilisés pour mesure d’audience, amélioration produit, ou fonctionnalités
-                avancées. Lorsque la loi l’exige, ils sont soumis à consentement. Un bandeau de gestion des préférences peut
-                être ajouté si tu actives des outils d’analytics/marketing.
-              </Row>
-              <p className="text-xs text-white/55">
-                Si EchoWorld n’utilise pas de traceurs optionnels, cette section reste informative et peut être simplifiée.
+            <Card id="cookies" title="11. Cookies & traceurs">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <div className="text-sm font-bold text-white">Cookies nécessaires</div>
+                <p className="mt-2 text-slate-300">
+                  Cookies indispensables au fonctionnement : authentification, sécurité, préférences essentielles, prévention
+                  des abus. Ils sont requis pour fournir le service.
+                </p>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-5">
+                <div className="text-sm font-bold text-white">Cookies optionnels</div>
+                <p className="mt-2 text-slate-300">
+                  Si EchoWorld utilise des cookies optionnels (ex. mesure d’audience), ils seront soumis au consentement
+                  lorsque la loi l’exige, via une gestion des préférences.
+                </p>
+              </div>
+            </Card>
+
+            <Card id="changes" title="12. Modifications">
+              <p>
+                EchoWorld peut mettre à jour cette politique pour refléter l’évolution du service, de la sécurité ou des
+                exigences légales. En cas de changement substantiel, une information sera affichée sur la plateforme et/ou
+                une acceptation pourra être requise lorsque nécessaire.
               </p>
-            </section>
+            </Card>
 
-            <section className="space-y-3">
-              <SectionTitle id="changes">12. Modifications</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                Nous pouvons mettre à jour cette politique pour refléter l’évolution du service, de la sécurité ou des
-                exigences légales. En cas de changements significatifs, nous afficherons une information sur la Plateforme
-                et/ou demanderons votre consentement si requis.
+            <Card id="contact" title="13. Contact">
+              <p>
+                Pour toute question relative à la confidentialité ou aux données personnelles, contactez-nous via les canaux
+                de support disponibles dans EchoWorld.
               </p>
-            </section>
 
-            <section className="space-y-3">
-              <SectionTitle id="contact">13. Contact</SectionTitle>
-              <p className="text-sm leading-relaxed text-white/75 md:text-base">
-                Pour toute question relative à la confidentialité ou aux données personnelles, contactez EchoWorld via les
-                moyens indiqués dans la Plateforme (support/contact). Pour les règles d’usage, voir{' '}
-                <Link href="/terms" className="font-semibold text-emerald-300 hover:text-emerald-200">
+              <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                <Link
+                  href="/terms"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/5 px-6 py-3 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20"
+                >
                   Conditions d’utilisation
                 </Link>
-                .
-              </p>
-            </section>
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 text-xs text-white/55">
-              <div className="font-semibold text-white/80">Point bloquant à corriger pour être “ultra carré”</div>
-              <p className="mt-2 leading-relaxed">
-                Pour une conformité mondiale totalement verrouillée, il manque une donnée objective : l’entité juridique
-                opératrice (raison sociale, pays, adresse), et un contact “privacy/DPO”. Dès que tu me donnes ces infos,
-                je te fournis une version finale qui remplace toutes les mentions génériques par des données exactes.
-              </p>
-            </div>
+                <Link
+                  href="/account"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-slate-950 shadow-lg transition-all hover:scale-[1.01] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-white/30"
+                >
+                  Mon compte
+                </Link>
+              </div>
+            </Card>
           </article>
         </div>
-      </div>
+      </section>
     </main>
   );
 }
