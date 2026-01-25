@@ -64,6 +64,44 @@ function convTitle(c: ConversationRowPlus): string {
   return 'Direct';
 }
 
+function toUiMessageFromLiveRecord(
+  rec: {
+    id: string;
+    conversation_id: string;
+    sender_id: string;
+    content: string;
+    created_at: string;
+    edited_at: string | null;
+    deleted_at: string | null;
+    payload: unknown | null;
+  },
+  existing?: UiMessage
+): UiMessage {
+  // SAFE: ne touche pas aux props éventuelles déjà présentes (ex: reactions) si on a déjà le message
+  if (existing) {
+    return {
+      ...existing,
+      content: rec.content ?? existing.content,
+      edited_at: rec.edited_at ?? existing.edited_at ?? null,
+      deleted_at: rec.deleted_at ?? existing.deleted_at ?? null,
+      payload: rec.payload ?? existing.payload ?? null,
+      status: 'sent',
+    };
+  }
+
+  return {
+    id: rec.id,
+    conversation_id: rec.conversation_id,
+    sender_id: rec.sender_id,
+    content: rec.content ?? '',
+    created_at: rec.created_at,
+    edited_at: rec.edited_at ?? null,
+    deleted_at: rec.deleted_at ?? null,
+    payload: rec.payload ?? null,
+    status: 'sent',
+  } as UiMessage;
+}
+
 export default function ChatDock() {
   const {
     userId,
@@ -149,40 +187,38 @@ export default function ChatDock() {
 
     const unsubscribe = onNewMessage((p) => {
       const rec = p.record;
-      const convId = rec.conversation_id;
+      const convId = String(rec.conversation_id ?? '').trim();
+      if (!convId) return;
 
-      // 1) Always bump last msg time for ordering
-      setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
+      // 1) Toujours bump last msg (tri sidebar)
+      if (rec.created_at) {
+        setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
+      }
 
       const activeId = activeConvRef.current;
 
-      // 2) If active conversation => append (dedupe) + clear badge + mark read
+      // 2) Si conversation active => append (dedupe) + clear badge + mark read
       if (activeId && activeId === convId) {
         setMessages((prev) => {
-          if (prev.some((m) => m.id === rec.id)) return prev;
-
-          const next: UiMessage = {
-            id: rec.id,
-            conversation_id: rec.conversation_id,
-            sender_id: rec.sender_id,
-            content: rec.content ?? '',
-            created_at: rec.created_at,
-            edited_at: rec.edited_at ?? null,
-            deleted_at: rec.deleted_at ?? null,
-            payload: rec.payload ?? null,
-            status: 'sent',
-          } as UiMessage;
-
-          return [...prev, next];
+          const idx = prev.findIndex((m) => m.id === rec.id);
+          if (idx >= 0) {
+            const updated = toUiMessageFromLiveRecord(rec, prev[idx]);
+            const nextArr = [...prev];
+            nextArr[idx] = updated;
+            return nextArr;
+          }
+          return [...prev, toUiMessageFromLiveRecord(rec)];
         });
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
+
+        // fail-soft : si ça échoue, l'UI reste correcte
         void markConversationRead(convId).catch(() => {});
         void refreshCounts().catch(() => {});
         return;
       }
 
-      // 3) Otherwise bump local unread badge
+      // 3) Sinon : bump badge local (sans spam) + refresh counts global
       setUnreadCounts((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
       void refreshCounts().catch(() => {});
     });

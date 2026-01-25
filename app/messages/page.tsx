@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.0 (2026-01-25)
+ * Version      : 2.4.1 (2026-01-25)
  * Objet        : Page Messages — Live messages + LOT 2 Réactions + Répondre + Header avatar/presence
  * -----------------------------------------------------------------------------
  * Description  :
@@ -13,18 +13,12 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.4.1 (2026-01-25)
+ * - [FIX] Live: supprime stale-closure sur selectedId (ref) + dedupe stable par message id
+ * - [FIX] Live: update unreadCounts/lastMsgByConv même quand la conv n’est pas encore hydratée
+ * - [SAFE] Aucune régression : fetch, retry, reply, reactions, mark read conservés
  * 2.4.0 (2026-01-25)
  * - [NEW] Live: écoute onNewMessage() et injecte les messages entrants dans l’UI (sans refresh)
- * - [KEEP] LOT 2 : reply/reactions/optimistic/retry inchangés
- * - [KEEP] Sidebar : unreadCounts + tri last message conservés
- * - [SAFE] Dedupe anti-doublon (id) + update lastMsgByConv + clear badge si conv active
- * 2.3.0 (2026-01-25)
- * - [NEW] Header conversation : avatar (peer) + lien profil /u/[handle] (DM uniquement)
- * - [NEW] Header conversation : remplace "Direct" par "En ligne/Hors ligne" + point (fail-soft)
- * - [NEW] Sidebar : passe onlineUserIds à ConversationList (présence list)
- * - [KEEP] 2.2.0 : unreadCounts + tri last message + UX header (pas de #id) conservés
- * - [KEEP] LOT 2 : reply/reactions/optimistic/retry inchangés
- * - [SAFE] Sans dépendance DB obligatoire : onlineUserIds reste vide => tout "Hors ligne"
  * =============================================================================
  */
 
@@ -59,6 +53,29 @@ function normalizeHandleForHref(handle: string | null | undefined): string | nul
   const raw = (handle ?? '').trim().replace(/^@/, '');
   if (!raw) return null;
   return raw;
+}
+
+function toUiMessageFromRealtime(rec: {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+  edited_at: string | null;
+  deleted_at: string | null;
+  payload: unknown | null;
+}): UiMessage {
+  return {
+    id: rec.id,
+    conversation_id: rec.conversation_id,
+    sender_id: rec.sender_id,
+    content: rec.content ?? '',
+    created_at: rec.created_at,
+    edited_at: rec.edited_at ?? null,
+    deleted_at: rec.deleted_at ?? null,
+    payload: rec.payload ?? null,
+    status: 'sent' as const,
+  } as UiMessage;
 }
 
 export default function MessagesPage() {
@@ -100,6 +117,24 @@ export default function MessagesPage() {
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
+
+  // Refs anti stale-closure
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  const userIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
+
+  // Dedupe global minimal (évite double append si multi events)
+  const seenMsgIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    // reset quand user change
+    seenMsgIdsRef.current = new Set();
+  }, [userId]);
 
   // --------------------------------------------------------------------------
   // Auth bootstrap
@@ -145,35 +180,38 @@ export default function MessagesPage() {
     if (!userId) return;
 
     const unsubscribe = onNewMessage((p) => {
+      const uid = userIdRef.current;
+      if (!uid) return;
+
       const rec = p.record;
-      const convId = rec.conversation_id;
+      const convId = String(rec.conversation_id ?? '').trim();
+      const msgId = String(rec.id ?? '').trim();
+      if (!convId || !msgId) return;
+
+      // Dedupe global (évite re-append si event doublonné)
+      const seen = seenMsgIdsRef.current;
+      if (seen.has(msgId)) {
+        // Même si déjà vu: on peut quand même refresh ordering (safe)
+        setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
+        return;
+      }
+      seen.add(msgId);
 
       // 1) Always refresh ordering key (sidebar tri)
       setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
 
+      const currentSelected = selectedIdRef.current;
+
       // 2) If the user is currently viewing this conversation => append + clear badge
-      if (selectedId && selectedId === convId) {
+      if (currentSelected && currentSelected === convId) {
         setMessages((prev) => {
-          if (prev.some((m) => m.id === rec.id)) return prev;
-
-          const next: UiMessage = {
-            id: rec.id,
-            conversation_id: rec.conversation_id,
-            sender_id: rec.sender_id,
-            content: rec.content ?? '',
-            created_at: rec.created_at,
-            edited_at: rec.edited_at ?? null,
-            deleted_at: rec.deleted_at ?? null,
-            payload: rec.payload ?? null,
-            status: 'sent',
-          } as UiMessage;
-
-          return [...prev, next];
+          if (prev.some((m) => m.id === msgId)) return prev;
+          return [...prev, toUiMessageFromRealtime(rec)];
         });
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
 
-        // Fail-soft: on marque lu en DB (pas bloquant)
+        // Fail-soft: mark read
         void markConversationRead(convId).catch(() => {});
         return;
       }
@@ -183,7 +221,7 @@ export default function MessagesPage() {
     });
 
     return unsubscribe;
-  }, [userId, selectedId, onNewMessage]);
+  }, [userId, onNewMessage]);
 
   // --------------------------------------------------------------------------
   // Load conversations
@@ -246,7 +284,7 @@ export default function MessagesPage() {
           if (!map[cid]) map[cid] = ca;
         }
 
-        setLastMsgByConv(map);
+        setLastMsgByConv((prev) => ({ ...prev, ...map }));
       } catch {
         // noop
       }
@@ -309,7 +347,7 @@ export default function MessagesPage() {
           counts[convId] = Math.max(0, n);
         }
 
-        if (!cancelled) setUnreadCounts(counts);
+        if (!cancelled) setUnreadCounts((prev) => ({ ...prev, ...counts }));
       } catch {
         // noop
       }
@@ -343,6 +381,13 @@ export default function MessagesPage() {
         const rows = await fetchMessages(selectedId, 80);
         if (!mounted) return;
 
+        // reset dedupe set with loaded messages (évite re-append live immédiat)
+        const nextSeen = new Set(seenMsgIdsRef.current);
+        for (const r of rows) {
+          if (r?.id) nextSeen.add(String(r.id));
+        }
+        seenMsgIdsRef.current = nextSeen;
+
         const uiMsgs: UiMessage[] = rows.map((r) => ({
           ...r,
           status: 'sent' as const,
@@ -352,11 +397,7 @@ export default function MessagesPage() {
 
         await markConversationRead(selectedId);
 
-        setUnreadCounts((prev) => {
-          const next = { ...prev };
-          next[selectedId] = 0;
-          return next;
-        });
+        setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
       } catch {
         if (mounted) setMessages([]);
       } finally {
@@ -376,22 +417,14 @@ export default function MessagesPage() {
     setReplyTo(null);
     setReplyToSenderProfile(null);
 
-    setUnreadCounts((prev) => {
-      const next = { ...prev };
-      next[id] = 0;
-      return next;
-    });
+    setUnreadCounts((prev) => ({ ...prev, [id]: 0 }));
   };
 
   const onMarkRead = async () => {
     if (!selectedId) return;
     try {
       await markConversationRead(selectedId);
-      setUnreadCounts((prev) => {
-        const next = { ...prev };
-        next[selectedId] = 0;
-        return next;
-      });
+      setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
     } catch {
       // noop
     }
@@ -399,6 +432,12 @@ export default function MessagesPage() {
 
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
+    // register into dedupe immediately (évite double si realtime arrive vite)
+    if (msg.id) {
+      const id = String(msg.id);
+      seenMsgIdsRef.current.add(id);
+    }
+
     setMessages((prev) => [...prev, msg]);
     setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
   }, []);
@@ -406,16 +445,14 @@ export default function MessagesPage() {
   // Confirm sent
   const handleConfirmSent = useCallback(
     async (clientId: string, dbMsg: UiMessage) => {
+      if (dbMsg?.id) seenMsgIdsRef.current.add(String(dbMsg.id));
+
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
       setLastMsgByConv((prev) => ({ ...prev, [dbMsg.conversation_id]: dbMsg.created_at }));
 
       if (selectedId) {
         await markConversationRead(selectedId);
-        setUnreadCounts((prev) => {
-          const next = { ...prev };
-          next[selectedId] = 0;
-          return next;
-        });
+        setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
       }
     },
     [selectedId]
