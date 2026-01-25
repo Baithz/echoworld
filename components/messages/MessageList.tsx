@@ -2,18 +2,16 @@
  * =============================================================================
  * Fichier      : components/messages/MessageList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-25)
- * Objet        : Liste messages avec reactions + parents — LOT 2
+ * Version      : 2.2.0 (2026-01-25)
+ * Objet        : Liste messages avec reactions + parents — LOT 2 (+ avatars self) — ESLint set-state-in-effect OK
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.0 (2026-01-25)
- * - [NEW] LOT 2 : Fetch reactions batch (fetchMessageReactionsBatch)
- * - [NEW] LOT 2 : Fetch parent messages batch (pour QuotedMessage)
- * - [NEW] LOT 2 : Enrichit UiMessage avec reactions + parentMessage
- * - [NEW] LOT 2 : Callbacks onReply + onReactionToggle + onQuoteClick
- * - [NEW] LOT 2 : Scroll to message + highlight 2s (onQuoteClick)
- * - [KEEP] LOT 1 : Batch sender profiles inchangé
+ * 2.2.0 (2026-01-25)
+ * - [FIX] ESLint react-hooks/set-state-in-effect : plus aucun setState synchrone dans l'effet
+ * - [FIX] Avatars : senderProfiles inclut aussi l'utilisateur courant (plus de fallback "PO")
+ * - [KEEP] LOT 2 : reactions batch + parents batch + quote scroll/highlight inchangés
+ * - [SAFE] Fail-soft conservé (si fetch échoue => messages visibles, reactions vides, parents null)
  * =============================================================================
  */
 
@@ -38,6 +36,14 @@ type Props = {
   variant?: 'dock' | 'page';
 };
 
+type ReactionRow = {
+  id: string;
+  message_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+};
+
 export default function MessageList({
   messages,
   loading,
@@ -50,9 +56,10 @@ export default function MessageList({
   variant = 'page',
 }: Props) {
   const [senderProfiles, setSenderProfiles] = useState<Map<string, SenderProfile>>(new Map());
-  const [enrichedMessages, setEnrichedMessages] = useState<UiMessage[]>([]);
+  const [reactionsByMsg, setReactionsByMsg] = useState<Map<string, ReactionRow[]>>(new Map());
+  const [parentsById, setParentsById] = useState<Map<string, UiMessage>>(new Map());
   const [highlightId, setHighlightId] = useState<string | null>(null);
-  
+
   const messageRefsMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const isDock = variant === 'dock';
 
@@ -60,59 +67,45 @@ export default function MessageList({
     return messages.filter((m) => !(m as { deleted_at?: string | null }).deleted_at);
   }, [messages]);
 
-  // Batch fetch sender profiles + reactions + parents
+  /**
+   * Batch fetch sender profiles + reactions + parents (async only)
+   * - Aucun setState synchrone dans le body de l'effet (ESLint OK)
+   */
   useEffect(() => {
-    if (!userId || visibleMessages.length === 0) {
-      return;
-    }
+    if (!userId || visibleMessages.length === 0) return;
 
     let cancelled = false;
 
     const load = async () => {
       try {
-        // 1) Sender profiles
-        const senderIds = Array.from(
-          new Set(visibleMessages.filter((m) => m.sender_id !== userId).map((m) => m.sender_id))
-        );
+        // 1) Sender profiles (inclut aussi l'utilisateur courant => avatar pour "mine")
+        const senderIds = Array.from(new Set(visibleMessages.map((m) => m.sender_id).filter(Boolean)));
         const profiles = senderIds.length > 0 ? await fetchSenderProfiles(senderIds) : new Map();
 
-        // 2) Reactions
-        const messageIds = visibleMessages.map((m) => m.id).filter(Boolean);
-        const reactions = messageIds.length > 0 ? await fetchMessageReactionsBatch(messageIds) : new Map();
+        // 2) Reactions batch
+        const msgIds = visibleMessages.map((m) => m.id).filter(Boolean);
+        const reactions = msgIds.length > 0 ? await fetchMessageReactionsBatch(msgIds) : new Map();
 
-        // 3) Parent messages
-        const parentIds = Array.from(
-          new Set(visibleMessages.map((m) => m.parent_id).filter(Boolean) as string[])
-        );
-        const parentsData =
-          parentIds.length > 0 && conversationId
-            ? await fetchMessages(conversationId, 200)
-            : [];
-        const parentsMap = new Map(parentsData.map((p) => [p.id, p as UiMessage]));
+        // 3) Parents: on fetch la conv (fail-soft) puis on mappe uniquement les IDs utiles
+        const parentIds = Array.from(new Set(visibleMessages.map((m) => m.parent_id).filter(Boolean) as string[]));
+        const parentsData = parentIds.length > 0 && conversationId ? await fetchMessages(conversationId, 200) : [];
+        const parentsMap = new Map<string, UiMessage>();
+        for (const p of parentsData as UiMessage[]) {
+          const pid = String(p?.id ?? '').trim();
+          if (pid && parentIds.includes(pid)) parentsMap.set(pid, p);
+        }
 
-        // 4) Parent sender profiles
-        const parentSenderIds = Array.from(
-          new Set(parentsData.filter((p) => p.sender_id !== userId).map((p) => p.sender_id))
-        );
-        const parentProfiles =
-          parentSenderIds.length > 0 ? await fetchSenderProfiles(parentSenderIds) : new Map();
+        // 4) Parent sender profiles (merge)
+        const parentSenderIds = Array.from(new Set(parentsData.map((p) => p.sender_id).filter(Boolean)));
+        const parentProfiles = parentSenderIds.length > 0 ? await fetchSenderProfiles(parentSenderIds) : new Map();
 
         if (cancelled) return;
 
-        // Merge profiles
-        const allProfiles = new Map([...profiles, ...parentProfiles]);
-        setSenderProfiles(allProfiles);
-
-        // Enrich messages
-        const enriched = visibleMessages.map((m) => ({
-          ...m,
-          reactions: reactions.get(m.id) ?? [],
-          parentMessage: m.parent_id ? parentsMap.get(m.parent_id) ?? null : null,
-        }));
-
-        setEnrichedMessages(enriched);
+        setSenderProfiles(new Map<string, SenderProfile>([...profiles, ...parentProfiles]));
+        setReactionsByMsg(reactions as unknown as Map<string, ReactionRow[]>);
+        setParentsById(parentsMap);
       } catch {
-        if (!cancelled) setEnrichedMessages(visibleMessages);
+        // fail-soft: on garde ce qu'on a (messages non enrichis, maps éventuellement vides)
       }
     };
 
@@ -121,7 +114,19 @@ export default function MessageList({
     return () => {
       cancelled = true;
     };
-  }, [visibleMessages, userId, conversationId]);
+  }, [userId, conversationId, visibleMessages]);
+
+  /**
+   * Enrichissement en render (pas de state "enrichedMessages")
+   * - Si maps pas prêtes => reactions=[], parentMessage=null
+   */
+  const enrichedMessages = useMemo<UiMessage[]>(() => {
+    return visibleMessages.map((m) => ({
+      ...m,
+      reactions: reactionsByMsg.get(m.id) ?? (m.reactions ?? []),
+      parentMessage: m.parent_id ? parentsById.get(m.parent_id) ?? null : null,
+    }));
+  }, [visibleMessages, reactionsByMsg, parentsById]);
 
   // Scroll to message + highlight
   const handleQuoteClick = useCallback((parentId: string) => {
@@ -179,9 +184,12 @@ export default function MessageList({
     <div className={isDock ? 'space-y-2' : 'space-y-3'}>
       {enrichedMessages.map((m) => {
         const mine = m.sender_id === userId;
-        const senderProfile = mine ? null : senderProfiles.get(m.sender_id) ?? null;
+
+        // ✅ on passe le profil même pour "mine" (avatar image au lieu "PO")
+        const senderProfile = senderProfiles.get(m.sender_id) ?? null;
+
         const parentSenderProfile =
-          m.parentMessage && m.parentMessage.sender_id !== userId
+          m.parentMessage && m.parentMessage.sender_id
             ? senderProfiles.get(m.parentMessage.sender_id) ?? null
             : null;
 
