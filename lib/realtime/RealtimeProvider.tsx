@@ -2,49 +2,48 @@
  * =============================================================================
  * Fichier      : lib/realtime/RealtimeProvider.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.4.1 (2026-01-25)
- * Objet        : Provider global Realtime + état badges + ChatDock (open/close) — LOT 1 dedupe
+ * Version      : 1.5.0 (2026-01-25)
+ * Objet        : Provider global Realtime — LOT 2 Broadcast reactions
  * -----------------------------------------------------------------------------
  * Description  :
  * - Se branche sur Supabase auth
  * - Fetch initial : v_unread_counts (via helpers)
  * - Realtime : incrémente badges sur INSERT messages/notifications
  * - API context : unread counts + open/close dock + open/close conversation
- *
- * Règle auto-open :
- * - Si ChatDock OUVERT : auto-switch vers la conversation du message entrant (sans ouvrir/fermer le dock)
- * - Si ChatDock FERMÉ : n'ouvre rien, badge uniquement (non intrusif)
- * - Si l'utilisateur est déjà sur la conversation active + dock ouvert : pas de bump badge
+ * - LOT 2 : Broadcast reactions (INSERT/DELETE message_reactions)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.5.0 (2026-01-25)
+ * - [NEW] LOT 2 : Event onReactionChange(callback) pour broadcast reactions
+ * - [NEW] LOT 2 : Subscribe table message_reactions (INSERT/DELETE)
+ * - [KEEP] LOT 1 : onMessageConfirm + callbacks stables inchangés
  * 1.4.1 (2026-01-25)
- * - [FIX] TypeScript payload type : MessageConfirmCallback accept unknown payload (compatible RealtimeMessagePayload)
- * 1.4.0 (2026-01-25)
- * - [NEW] Event onMessageConfirm(callback) pour confirm optimistic (dedupe via client_id)
- * - [KEEP] Callbacks realtime stables (refs)
- * - [KEEP] Auto-open conditionnel inchangé
- * - [KEEP] API context inchangée
+ * - [FIX] TypeScript payload type : MessageConfirmCallback accept unknown payload
  * =============================================================================
  */
 
 'use client';
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase/client';
 import { initRealtime, destroyRealtime, onMessage, onNotification } from '@/lib/realtime/realtime';
 import { fetchUnreadMessagesCount } from '@/lib/messages';
 import { fetchUnreadNotificationsCount } from '@/lib/notifications';
 
 type MessageConfirmCallback = (payload: { record: { id: string; payload?: unknown } }) => void;
+
+// LOT 2 : Reaction change callback
+type ReactionChangeCallback = (payload: {
+  eventType: 'INSERT' | 'DELETE';
+  record: {
+    id: string;
+    message_id: string;
+    user_id: string;
+    emoji: string;
+    created_at: string;
+  };
+}) => void;
 
 type RealtimeContextValue = {
   userId: string | null;
@@ -71,6 +70,9 @@ type RealtimeContextValue = {
 
   // LOT 1 : confirm optimistic
   onMessageConfirm: (callback: MessageConfirmCallback) => () => void;
+
+  // LOT 2 : reactions broadcast
+  onReactionChange: (callback: ReactionChangeCallback) => () => void;
 };
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
@@ -97,6 +99,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   // LOT 1 : callbacks confirm optimistic
   const confirmCallbacksRef = useRef<Set<MessageConfirmCallback>>(new Set());
+
+  // LOT 2 : callbacks reactions
+  const reactionCallbacksRef = useRef<Set<ReactionChangeCallback>>(new Set());
 
   useEffect(() => {
     userIdRef.current = userId;
@@ -125,10 +130,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     refreshingRef.current = true;
 
     try {
-      const [m, n] = await Promise.all([
-        fetchUnreadMessagesCount(uid),
-        fetchUnreadNotificationsCount(uid),
-      ]);
+      const [m, n] = await Promise.all([fetchUnreadMessagesCount(uid), fetchUnreadNotificationsCount(uid)]);
       setUnreadMessagesCount(m);
       setUnreadNotificationsCount(n);
     } finally {
@@ -164,6 +166,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     confirmCallbacksRef.current.add(callback);
     return () => {
       confirmCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
+  // LOT 2 : subscribe to reaction changes
+  const onReactionChange = useCallback((callback: ReactionChangeCallback) => {
+    reactionCallbacksRef.current.add(callback);
+    return () => {
+      reactionCallbacksRef.current.delete(callback);
     };
   }, []);
 
@@ -238,9 +248,59 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       if (p.record.read_at == null) bumpUnreadNotifications(1);
     });
 
+    // LOT 2 : Subscribe message_reactions (INSERT/DELETE)
+    const reactionChannel = supabase
+      .channel('message_reactions_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'message_reactions',
+        },
+        (payload) => {
+          reactionCallbacksRef.current.forEach((cb) =>
+            cb({
+              eventType: 'INSERT',
+              record: payload.new as {
+                id: string;
+                message_id: string;
+                user_id: string;
+                emoji: string;
+                created_at: string;
+              },
+            })
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'message_reactions',
+        },
+        (payload) => {
+          reactionCallbacksRef.current.forEach((cb) =>
+            cb({
+              eventType: 'DELETE',
+              record: payload.old as {
+                id: string;
+                message_id: string;
+                user_id: string;
+                emoji: string;
+                created_at: string;
+              },
+            })
+          );
+        }
+      )
+      .subscribe();
+
     return () => {
       offMsg();
       offNotif();
+      void reactionChannel.unsubscribe();
     };
   }, [userId, refreshCounts, bumpUnreadMessages, bumpUnreadNotifications]);
 
@@ -266,6 +326,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       bumpUnreadNotifications,
 
       onMessageConfirm,
+      onReactionChange,
     }),
     [
       userId,
@@ -282,6 +343,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       bumpUnreadMessages,
       bumpUnreadNotifications,
       onMessageConfirm,
+      onReactionChange,
     ]
   );
 

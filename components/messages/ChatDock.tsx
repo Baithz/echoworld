@@ -2,21 +2,17 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.1 (2026-01-25)
- * Objet        : ChatDock (bulle) — LOT 1 optimistic UI + composants mutualisés
+ * Version      : 2.1.0 (2026-01-25)
+ * Objet        : ChatDock (bulle) — LOT 2 Réactions + Répondre complet
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.1 (2026-01-25)
- * - [FIX] ESLint no-unused-vars : suppression import MessageRow (jamais utilisé)
- * - [FIX] TypeScript scrollRef : type RefObject<HTMLDivElement> (suppression | null)
- * 2.0.0 (2026-01-25)
- * - [REFACTOR] Utilise composants mutualisés (ConversationList, MessageList, Composer)
- * - [NEW] Optimistic UI : envoi immédiat + confirm Realtime + dedupe
- * - [NEW] Retry intelligent : max 3 "sending" simultanés (Q3=B)
- * - [NEW] Avatars + pseudo cliquables (initiales fallback Q2=B)
- * - [KEEP] Auto-scroll, mark read, refreshCounts inchangés
- * - [KEEP] UX dock (compact) inchangée
+ * 2.1.0 (2026-01-25)
+ * - [NEW] LOT 2 : State replyTo + replyToSenderProfile
+ * - [NEW] LOT 2 : Handler handleReply + handleReplyCancel
+ * - [NEW] LOT 2 : Handler handleReactionToggle (optimistic + DB + Realtime)
+ * - [NEW] LOT 2 : Realtime reactions sync (onReactionChange)
+ * - [KEEP] LOT 1 : Optimistic send + confirm + retry inchangés
  * =============================================================================
  */
 
@@ -31,11 +27,13 @@ import {
   fetchMessages,
   markConversationRead,
   sendMessage,
+  fetchSenderProfiles,
 } from '@/lib/messages';
+import { toggleReaction } from '@/lib/messages/reactions';
 import ConversationList from './ConversationList';
 import MessageList from './MessageList';
 import Composer from './Composer';
-import type { ConversationRowPlus, UiMessage } from './types';
+import type { ConversationRowPlus, UiMessage, SenderProfile } from './types';
 
 function convTitle(c: ConversationRowPlus): string {
   const t = (c.title ?? '').trim();
@@ -53,7 +51,8 @@ function convTitle(c: ConversationRowPlus): string {
 }
 
 export default function ChatDock() {
-  const { userId, isChatDockOpen, closeChatDock, activeConversationId, openConversation, refreshCounts } = useRealtime();
+  const { userId, isChatDockOpen, closeChatDock, activeConversationId, openConversation, refreshCounts, onReactionChange } =
+    useRealtime();
 
   const [q, setQ] = useState('');
   const [loadingConvs, setLoadingConvs] = useState(false);
@@ -61,6 +60,9 @@ export default function ChatDock() {
 
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+
+  const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
+  const [replyToSenderProfile, setReplyToSenderProfile] = useState<SenderProfile | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -94,10 +96,14 @@ export default function ChatDock() {
       setLoadingMsgs(false);
       setConvs([]);
       setMessages([]);
+      setReplyTo(null);
+      setReplyToSenderProfile(null);
       return;
     }
 
     setMessages([]);
+    setReplyTo(null);
+    setReplyToSenderProfile(null);
   }, [isChatDockOpen, userId]);
 
   // Load conversations when dock opens
@@ -174,30 +180,58 @@ export default function ChatDock() {
     scrollToBottom();
   }, [messages.length, isChatDockOpen]);
 
+  // LOT 2 : Realtime reactions sync
+  useEffect(() => {
+    if (!isChatDockOpen) return;
+
+    const unsubscribe = onReactionChange((payload) => {
+      const { eventType, record } = payload;
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== record.message_id) return m;
+
+          const reactions = m.reactions ?? [];
+
+          if (eventType === 'INSERT') {
+            // Check si pas déjà présent (avoid duplicate)
+            const exists = reactions.find((r) => r.id === record.id);
+            if (exists) return m;
+            return { ...m, reactions: [...reactions, record] };
+          } else {
+            // DELETE
+            return { ...m, reactions: reactions.filter((r) => r.id !== record.id) };
+          }
+        })
+      );
+    });
+
+    return unsubscribe;
+  }, [isChatDockOpen, onReactionChange]);
+
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
   // Confirm sent (replace optimistic by DB msg)
-  const handleConfirmSent = useCallback(async (clientId: string, dbMsg: UiMessage) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m))
-    );
+  const handleConfirmSent = useCallback(
+    async (clientId: string, dbMsg: UiMessage) => {
+      setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
 
-    if (activeConversationId) {
-      await markConversationRead(activeConversationId);
-      await refreshCounts();
-    }
-  }, [activeConversationId, refreshCounts]);
+      if (activeConversationId) {
+        await markConversationRead(activeConversationId);
+        await refreshCounts();
+      }
+    },
+    [activeConversationId, refreshCounts]
+  );
 
   // Send failed
   const handleSendFailed = useCallback((clientId: string, error: string) => {
     setMessages((prev) =>
       prev.map((m) =>
-        m.client_id === clientId
-          ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 }
-          : m
+        m.client_id === clientId ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 } : m
       )
     );
   }, []);
@@ -207,7 +241,6 @@ export default function ChatDock() {
     async (msg: UiMessage) => {
       if (!activeConversationId || !msg.client_id) return;
 
-      // Replace failed by sending
       setMessages((prev) =>
         prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
       );
@@ -216,11 +249,100 @@ export default function ChatDock() {
         const dbMsg = await sendMessage(activeConversationId, msg.content, { client_id: msg.client_id });
         handleConfirmSent(msg.client_id, dbMsg as UiMessage);
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Erreur d\'envoi';
+        const errMsg = err instanceof Error ? err.message : "Erreur d'envoi";
         handleSendFailed(msg.client_id, errMsg);
       }
     },
     [activeConversationId, handleConfirmSent, handleSendFailed]
+  );
+
+  // LOT 2 : Reply
+  const handleReply = useCallback(
+    async (msg: UiMessage) => {
+      setReplyTo(msg);
+
+      if (userId && msg.sender_id !== userId) {
+        try {
+          const profiles = await fetchSenderProfiles([msg.sender_id]);
+          const profile = profiles.get(msg.sender_id);
+          if (profile) setReplyToSenderProfile(profile);
+        } catch {
+          setReplyToSenderProfile(null);
+        }
+      }
+    },
+    [userId]
+  );
+
+  const handleReplyCancel = useCallback(() => {
+    setReplyTo(null);
+    setReplyToSenderProfile(null);
+  }, []);
+
+  // LOT 2 : Reactions (optimistic + DB, Realtime handle la sync)
+  const handleReactionToggle = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!userId) return;
+
+      // 1) Optimistic update
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== messageId) return m;
+
+          const reactions = m.reactions ?? [];
+          const existing = reactions.find((r) => r.emoji === emoji && r.user_id === userId);
+
+          if (existing) {
+            return { ...m, reactions: reactions.filter((r) => r.id !== existing.id) };
+          } else {
+            const newReaction = {
+              id: `optimistic-${Date.now()}`,
+              message_id: messageId,
+              user_id: userId,
+              emoji,
+              created_at: new Date().toISOString(),
+            };
+            return { ...m, reactions: [...reactions, newReaction] };
+          }
+        })
+      );
+
+      // 2) DB call (Realtime sync se fait automatiquement via onReactionChange)
+      try {
+        const result = await toggleReaction(messageId, emoji);
+
+        // 3) Replace optimistic by real (si ajout)
+        if (result.added && result.reaction) {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== messageId) return m;
+              const reactions = m.reactions ?? [];
+              return {
+                ...m,
+                reactions: reactions.filter((r) => !r.id.startsWith('optimistic-')).concat([result.reaction!]),
+              };
+            })
+          );
+        } else {
+          // Cleanup optimistic
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== messageId) return m;
+              return { ...m, reactions: (m.reactions ?? []).filter((r) => !r.id.startsWith('optimistic-')) };
+            })
+          );
+        }
+      } catch {
+        // Rollback optimistic on error
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            return { ...m, reactions: (m.reactions ?? []).filter((r) => !r.id.startsWith('optimistic-')) };
+          })
+        );
+      }
+    },
+    [userId]
   );
 
   if (!isChatDockOpen) return null;
@@ -298,6 +420,8 @@ export default function ChatDock() {
                   userId={userId}
                   conversationId={activeConversationId}
                   onRetry={handleRetry}
+                  onReply={handleReply}
+                  onReactionToggle={handleReactionToggle}
                   scrollRef={messagesEndRef}
                   variant="dock"
                 />
@@ -307,6 +431,9 @@ export default function ChatDock() {
               <Composer
                 conversationId={activeConversationId}
                 userId={userId}
+                replyTo={replyTo}
+                replyToSenderProfile={replyToSenderProfile}
+                onReplyCancel={handleReplyCancel}
                 onOptimisticSend={handleOptimisticSend}
                 onConfirmSent={handleConfirmSent}
                 onSendFailed={handleSendFailed}

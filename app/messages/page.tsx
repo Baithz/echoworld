@@ -2,21 +2,20 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.1 (2026-01-25)
- * Objet        : Page Messages — LOT 1 optimistic UI + composants mutualisés
+ * Version      : 2.1.0 (2026-01-25)
+ * Objet        : Page Messages — LOT 2 Réactions + Répondre
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.1.0 (2026-01-25)
+ * - [NEW] LOT 2 : State replyTo (UiMessage | null)
+ * - [NEW] LOT 2 : Handler handleReply (set replyTo)
+ * - [NEW] LOT 2 : Handler handleReactionToggle (optimistic + DB via toggleReaction)
+ * - [NEW] LOT 2 : Fetch replyToSenderProfile (pour ReplyPreview)
+ * - [KEEP] LOT 1 : Optimistic send + confirm + retry inchangés
  * 2.0.1 (2026-01-25)
  * - [FIX] ESLint react/no-unescaped-entities : apostrophe échappée (ligne 229)
  * - [FIX] TypeScript scrollRef : type RefObject<HTMLDivElement> (suppression | null)
- * 2.0.0 (2026-01-25)
- * - [REFACTOR] Utilise composants mutualisés (ConversationList, MessageList, Composer)
- * - [NEW] Optimistic UI : envoi immédiat + confirm + dedupe
- * - [NEW] Retry intelligent : max 3 "sending" simultanés (Q3=B)
- * - [NEW] Avatars + pseudo cliquables (initiales fallback Q2=B)
- * - [KEEP] Mark read, auth bootstrap inchangés
- * - [KEEP] Layout page premium inchangé
  * =============================================================================
  */
 
@@ -31,7 +30,9 @@ import {
   fetchMessages,
   markConversationRead,
   sendMessage,
+  fetchSenderProfiles,
 } from '@/lib/messages';
+import { toggleReaction } from '@/lib/messages/reactions';
 import ConversationList from '@/components/messages/ConversationList';
 import MessageList from '@/components/messages/MessageList';
 import Composer from '@/components/messages/Composer';
@@ -50,12 +51,17 @@ export default function MessagesPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>([]);
 
+  const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
+  const [replyToSenderProfile, setReplyToSenderProfile] = useState<{
+    id: string;
+    handle: string | null;
+    display_name: string | null;
+    avatar_url: string | null;
+  } | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const selected = useMemo(
-    () => convs.find((c) => c.id === selectedId) ?? null,
-    [convs, selectedId]
-  );
+  const selected = useMemo(() => convs.find((c) => c.id === selectedId) ?? null, [convs, selectedId]);
 
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
@@ -155,6 +161,8 @@ export default function MessagesPage() {
 
   const onSelectConv = (id: string) => {
     setSelectedId(id);
+    setReplyTo(null);
+    setReplyToSenderProfile(null);
   };
 
   const onMarkRead = async () => {
@@ -172,23 +180,22 @@ export default function MessagesPage() {
   }, []);
 
   // Confirm sent (replace optimistic by DB msg)
-  const handleConfirmSent = useCallback(async (clientId: string, dbMsg: UiMessage) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m))
-    );
+  const handleConfirmSent = useCallback(
+    async (clientId: string, dbMsg: UiMessage) => {
+      setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
 
-    if (selectedId) {
-      await markConversationRead(selectedId);
-    }
-  }, [selectedId]);
+      if (selectedId) {
+        await markConversationRead(selectedId);
+      }
+    },
+    [selectedId]
+  );
 
   // Send failed
   const handleSendFailed = useCallback((clientId: string, error: string) => {
     setMessages((prev) =>
       prev.map((m) =>
-        m.client_id === clientId
-          ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 }
-          : m
+        m.client_id === clientId ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 } : m
       )
     );
   }, []);
@@ -198,7 +205,6 @@ export default function MessagesPage() {
     async (msg: UiMessage) => {
       if (!selectedId || !msg.client_id) return;
 
-      // Replace failed by sending
       setMessages((prev) =>
         prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
       );
@@ -207,11 +213,94 @@ export default function MessagesPage() {
         const dbMsg = await sendMessage(selectedId, msg.content, { client_id: msg.client_id });
         handleConfirmSent(msg.client_id, dbMsg as UiMessage);
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Erreur d&apos;envoi';
+        const errMsg = err instanceof Error ? err.message : "Erreur d'envoi";
         handleSendFailed(msg.client_id, errMsg);
       }
     },
     [selectedId, handleConfirmSent, handleSendFailed]
+  );
+
+  // LOT 2 : Reply
+  const handleReply = useCallback(
+    async (msg: UiMessage) => {
+      setReplyTo(msg);
+
+      if (userId && msg.sender_id !== userId) {
+        try {
+          const profiles = await fetchSenderProfiles([msg.sender_id]);
+          const profile = profiles.get(msg.sender_id);
+          if (profile) setReplyToSenderProfile(profile);
+        } catch {
+          setReplyToSenderProfile(null);
+        }
+      }
+    },
+    [userId]
+  );
+
+  const handleReplyCancel = useCallback(() => {
+    setReplyTo(null);
+    setReplyToSenderProfile(null);
+  }, []);
+
+  // LOT 2 : Reactions (optimistic)
+  const handleReactionToggle = useCallback(
+    async (messageId: string, emoji: string) => {
+      // 1) Optimistic update
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== messageId) return m;
+
+          const reactions = m.reactions ?? [];
+          const existing = reactions.find((r) => r.emoji === emoji && r.user_id === userId);
+
+          if (existing) {
+            return { ...m, reactions: reactions.filter((r) => r.id !== existing.id) };
+          } else {
+            const newReaction = {
+              id: `optimistic-${Date.now()}`,
+              message_id: messageId,
+              user_id: userId ?? '',
+              emoji,
+              created_at: new Date().toISOString(),
+            };
+            return { ...m, reactions: [...reactions, newReaction] };
+          }
+        })
+      );
+
+      // 2) DB call
+      try {
+        const result = await toggleReaction(messageId, emoji);
+
+        // 3) Replace optimistic by real
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+
+            const reactions = m.reactions ?? [];
+
+            if (result.added && result.reaction) {
+              return {
+                ...m,
+                reactions: reactions.filter((r) => !r.id.startsWith('optimistic-')).concat([result.reaction]),
+              };
+            } else {
+              return { ...m, reactions: reactions.filter((r) => r.emoji !== emoji || r.user_id !== userId) };
+            }
+          })
+        );
+      } catch {
+        // Rollback optimistic on error
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            return { ...m, reactions: (m.reactions ?? []).filter((r) => !r.id.startsWith('optimistic-')) };
+          })
+        );
+      }
+    },
+    [userId]
   );
 
   return (
@@ -223,9 +312,7 @@ export default function MessagesPage() {
             <Mail className="h-4 w-4 opacity-70" />
             Messages privés
           </div>
-          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-slate-900">
-            Vos conversations
-          </h1>
+          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-slate-900">Vos conversations</h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
             Discussions privées en temps réel. RLS protège l&apos;accès aux conversations.
           </p>
@@ -306,6 +393,8 @@ export default function MessagesPage() {
                 userId={userId}
                 conversationId={selectedId}
                 onRetry={handleRetry}
+                onReply={handleReply}
+                onReactionToggle={handleReactionToggle}
                 scrollRef={messagesEndRef}
                 variant="page"
               />
@@ -315,6 +404,9 @@ export default function MessagesPage() {
             <Composer
               conversationId={selectedId}
               userId={userId}
+              replyTo={replyTo}
+              replyToSenderProfile={replyToSenderProfile}
+              onReplyCancel={handleReplyCancel}
               onOptimisticSend={handleOptimisticSend}
               onConfirmSent={handleConfirmSent}
               onSendFailed={handleSendFailed}
