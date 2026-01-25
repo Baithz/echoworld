@@ -247,11 +247,17 @@ export default function MessageBubble({
                   <div className="relative inline-flex items-center">
                     {/* Emoji hover : toujours à gauche du badge, sans bouger le badge */}
                     {canReact && showBadges && (
-                      <div
-                        className={`absolute top-1/2 -translate-y-1/2 -translate-x-full -left-2 opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
-                      >
+                        <div
+                        className={`absolute top-1/2 -translate-y-1/2 opacity-0 pointer-events-none transition
+                            group-hover:opacity-100 group-hover:pointer-events-auto
+                            ${
+                            mine
+                                ? 'left-full ml-2'        // mine → emoji à DROITE du badge
+                                : '-left-2 -translate-x-full' // received → emoji à GAUCHE du badge
+                            }`}
+                        >
                         <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />
-                      </div>
+                        </div>
                     )}
 
                     {/* Cas sans badge : on affiche l'emoji seul (hover) au coin */}
