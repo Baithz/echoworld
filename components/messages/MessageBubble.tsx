@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.0 (2026-01-25)
+ * Version      : 2.2.0 (2026-01-25)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,12 +12,15 @@
  * - Support optimistic UI (status: sending/sent/failed)
  * - Bouton Retry si failed
  * - LOT 2 : QuotedMessage si parent_id
- * - LOT 2 : Actions "Répondre" + "Emoji" sous le message
- * - LOT 2 : Actions visibles uniquement au hover (bulle + zone actions)
- * - LOT 2 : ReactionBadges groupées
+ * - LOT 2 : Actions "Répondre" + "Emoji" sous le message (hover stable)
+ * - LOT 2 : ReactionBadges superposées en bas de bulle (ancrées, pas dans le flux)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.2.0 (2026-01-25)
+ * - [FIX] ReactionBadges ancrées à la bulle (superposition bottom-corner) au lieu d'être sous le message
+ * - [UX] Déborde visuellement de la bulle (effet Slack/Discord) sans casser layout
+ * - [KEEP] Lot 1/2 : avatars, retry, quoted, actions hover, callbacks inchangés
  * 2.1.0 (2026-01-25)
  * - [FIX] Actions ne disparaissent plus lors du déplacement souris vers le picker
  * - [UX] Actions placées sous la bulle + visibles uniquement au hover
@@ -118,9 +121,17 @@ export default function MessageBubble({
   // Actions affichées uniquement si message stable (pas sending/failed)
   const canShowActions = !isSending && !isFailed && (onReply || onReactionToggle);
 
+  // Réactions superposées uniquement si message "stable"
+  // (évite un empilement visuel pendant l'optimistic sending / failed UI)
+  const canShowReactionsOverlay = !isSending && !isFailed && reactionGroups.length > 0;
+
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div className={`flex gap-2 ${mine ? 'flex-row-reverse' : 'flex-row'} ${isDock ? 'max-w-[85%]' : 'max-w-[80%]'}`}>
+      <div
+        className={`flex gap-2 ${mine ? 'flex-row-reverse' : 'flex-row'} ${
+          isDock ? 'max-w-[85%]' : 'max-w-[80%]'
+        }`}
+      >
         {/* Avatar (received only) */}
         {!mine && (
           <div className="shrink-0">
@@ -171,11 +182,11 @@ export default function MessageBubble({
             />
           )}
 
-          {/* Bubble + Actions are a "group" to keep hover stable */}
-          <div className="group">
-            {/* Content bubble */}
+          {/* Bubble + Overlays + Actions : group hover stable */}
+          <div className="group relative">
+            {/* Content bubble (relative = ancrage overlays) */}
             <div
-              className={`rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
+              className={`relative rounded-2xl border px-3 py-2 shadow-sm ${isDock ? 'text-xs' : 'text-sm'} ${
                 mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
               } ${isFailed ? 'border-red-300 bg-red-50' : ''}`}
             >
@@ -221,12 +232,20 @@ export default function MessageBubble({
               )}
             </div>
 
+            {/* ✅ LOT 2 : ReactionBadges superposées (ancrées à la bulle) */}
+            {canShowReactionsOverlay && (
+              <div
+                className={`absolute ${mine ? 'right-2' : 'left-2'} -bottom-3 z-10`}
+                // -bottom-3 => moitié sur la bulle / moitié hors bulle
+              >
+                <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
+              </div>
+            )}
+
             {/* LOT 2 : Actions (sous la bulle, visibles au hover) */}
             {canShowActions && (
               <div
-                className={`mt-1 flex items-center gap-1 ${
-                  mine ? 'justify-start' : 'justify-end'
-                } opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
+                className={`mt-1 flex items-center gap-1 ${mine ? 'justify-start' : 'justify-end'} opacity-0 pointer-events-none transition group-hover:opacity-100 group-hover:pointer-events-auto`}
               >
                 {onReply && (
                   <button
@@ -244,12 +263,10 @@ export default function MessageBubble({
                 {onReactionToggle && <ReactionPicker onEmojiSelect={handleReactionToggle} variant={variant} />}
               </div>
             )}
-          </div>
 
-          {/* LOT 2 : ReactionBadges */}
-          {reactionGroups.length > 0 && (
-            <ReactionBadges groups={reactionGroups} onToggle={handleReactionToggle} variant={variant} />
-          )}
+            {/* Espace pour éviter que l'overlay réaction chevauche le message suivant */}
+            {canShowReactionsOverlay && <div className="h-3" />}
+          </div>
         </div>
       </div>
     </div>
