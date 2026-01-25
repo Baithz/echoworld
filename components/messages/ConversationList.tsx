@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/ConversationList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-25)
+ * Version      : 1.2.0 (2026-01-25)
  * Objet        : Liste conversations réutilisable — ChatDock + Page
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,14 +14,14 @@
  * - PROFIL : avatar cliquable vers /u/[handle] (DM uniquement)
  * - LISTE : cache le #id (plus de "#xxxx")
  * - UNREAD : badge par conv si unreadCounts fourni (fail-soft)
+ * - PRESENCE : remplace "Direct" par "En ligne / Hors ligne" + point vert/gris (fail-soft)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.1.0 (2026-01-25)
- * - [NEW] Props unreadCounts?: Record<string, number> (badge non lus par conversation)
- * - [NEW] Avatar image si peer_avatar_url (DM), lien profil si peer_handle
- * - [FIX] Suppression affichage "#id…" (page + dock)
- * - [KEEP] Recherche, loading/empty states, sélection active inchangés
+ * 1.2.0 (2026-01-25)
+ * - [NEW] Presence fail-soft : props onlineUserIds?: string[] (DM) -> statut "En ligne"/"Hors ligne"
+ * - [CHANGE] Remplace le libellé "Direct" par présence + point (vert/gris)
+ * - [KEEP] Avatars cliquables, unread badges, recherche, states inchangés
  * =============================================================================
  */
 
@@ -41,8 +41,12 @@ type Props = {
   onQueryChange: (q: string) => void;
   variant?: 'dock' | 'page'; // dock = compact, page = spacieux
 
-  // NEW: counts non lus par conv (ex: fetchUnreadCountsByConversation)
+  // counts non lus par conv (ex: fetchUnreadCountsByConversation)
   unreadCounts?: Record<string, number>;
+
+  // NEW: présence "online" (fail-soft). Si non fourni -> tout "Hors ligne".
+  // Idéalement: liste d'user_id actuellement en ligne (peer_user_id).
+  onlineUserIds?: string[];
 };
 
 function convTitle(c: ConversationRowPlus): string {
@@ -51,7 +55,6 @@ function convTitle(c: ConversationRowPlus): string {
 
   if (c.type === 'group') return 'Groupe';
 
-  // Direct: fallback profil peer si dispo
   const h = (c.peer_handle ?? '').trim();
   if (h) return h.startsWith('@') ? h : `@${h}`;
 
@@ -76,6 +79,7 @@ export default function ConversationList({
   onQueryChange,
   variant = 'page',
   unreadCounts,
+  onlineUserIds,
 }: Props) {
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -90,7 +94,37 @@ export default function ConversationList({
     });
   }, [conversations, query]);
 
+  const onlineSet = useMemo(() => {
+    const ids = Array.isArray(onlineUserIds) ? onlineUserIds : [];
+    return new Set(ids.map((s) => String(s ?? '').trim()).filter(Boolean));
+  }, [onlineUserIds]);
+
   const isDock = variant === 'dock';
+
+  const PresenceLine = ({
+    isGroup,
+    peerUserId,
+  }: {
+    isGroup: boolean;
+    peerUserId: string | null | undefined;
+  }) => {
+    if (isGroup) {
+      return <span className="block truncate text-[11px] text-slate-500">Groupe</span>;
+    }
+
+    const pid = String(peerUserId ?? '').trim();
+    const isOnline = pid ? onlineSet.has(pid) : false;
+
+    return (
+      <span className="flex items-center gap-1.5 truncate text-[11px] text-slate-500">
+        <span
+          className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-slate-300'}`}
+          aria-label={isOnline ? 'En ligne' : 'Hors ligne'}
+        />
+        {isOnline ? 'En ligne' : 'Hors ligne'}
+      </span>
+    );
+  };
 
   return (
     <div className={isDock ? '' : 'overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur'}>
@@ -137,7 +171,9 @@ export default function ConversationList({
             const unread = Math.max(0, Number(unreadCounts?.[c.id] ?? 0) || 0);
             const showUnread = unread > 0;
 
-            const isDirect = c.type !== 'group';
+            const isGroup = c.type === 'group';
+            const isDirect = !isGroup;
+
             const profileHref = isDirect ? profileHrefFromHandle(c.peer_handle ?? null) : null;
             const avatarUrl = isDirect ? (c.peer_avatar_url ?? null) : null;
 
@@ -146,7 +182,7 @@ export default function ConversationList({
                 ? 'inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white overflow-hidden'
                 : 'flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white overflow-hidden';
 
-              const fallbackIcon = c.type === 'group' ? (
+              const fallbackIcon = isGroup ? (
                 <Users className={isDock ? 'h-4 w-4 text-slate-700' : 'h-5 w-5 text-slate-700'} />
               ) : (
                 <UserIcon className={isDock ? 'h-4 w-4 text-slate-700' : 'h-5 w-5 text-slate-700'} />
@@ -159,7 +195,6 @@ export default function ConversationList({
                 fallbackIcon
               );
 
-              // DM: avatar cliquable vers profil (ne doit pas déclencher onSelect)
               if (profileHref) {
                 return (
                   <Link
@@ -191,13 +226,9 @@ export default function ConversationList({
 
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-bold text-slate-900">{title}</span>
-                    {/* ✅ plus de #id */}
-                    <span className="block truncate text-[11px] text-slate-500">
-                      {c.type === 'group' ? 'Groupe' : 'Direct'}
-                    </span>
+                    <PresenceLine isGroup={isGroup} peerUserId={c.peer_user_id} />
                   </span>
 
-                  {/* Unread badge */}
                   {showUnread && (
                     <span className="absolute right-2 top-2 inline-flex min-w-4.5 items-center justify-center rounded-full bg-slate-900 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
                       {unread > 99 ? '99+' : unread}
@@ -220,13 +251,13 @@ export default function ConversationList({
 
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-bold text-slate-900">{title}</div>
-                  {/* ✅ plus de "#xxxx" */}
-                  <div className="truncate text-xs text-slate-600">{c.type === 'group' ? 'Groupe' : 'Direct'}</div>
+                  <div className="truncate text-xs text-slate-600">
+                    {isGroup ? 'Groupe' : <PresenceLine isGroup={false} peerUserId={c.peer_user_id} />}
+                  </div>
                 </div>
 
-                {/* Unread badge */}
                 {showUnread && (
-                  <span className="inline-flex min-w-5.5items-center justify-center rounded-full bg-slate-900 px-2 py-1 text-[11px] font-extrabold text-white">
+                  <span className="inline-flex min-w-5.5 items-center justify-center rounded-full bg-slate-900 px-2 py-1 text-[11px] font-extrabold text-white">
                     {unread > 99 ? '99+' : unread}
                   </span>
                 )}

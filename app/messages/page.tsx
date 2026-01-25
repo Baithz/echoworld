@@ -2,17 +2,18 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-25)
- * Objet        : Page Messages — LOT 2 Réactions + Répondre + Sidebar avatars/unread/sort
+ * Version      : 2.3.0 (2026-01-25)
+ * Objet        : Page Messages — LOT 2 Réactions + Répondre + Header avatar/presence
  * -----------------------------------------------------------------------------
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-25)
- * - [NEW] Sidebar: passe unreadCounts à ConversationList (badge non lus par conv)
- * - [NEW] Tri conversations: last message (local) -> remonte en tête (fail-soft)
- * - [NEW] Suppression affichage "Conversation #id" dans l'entête (UX)
+ * 2.3.0 (2026-01-25)
+ * - [NEW] Header conversation : avatar (peer) + lien profil /u/[handle] (DM uniquement)
+ * - [NEW] Header conversation : remplace "Direct" par "En ligne/Hors ligne" + point (fail-soft)
+ * - [NEW] Sidebar : passe onlineUserIds à ConversationList (présence list)
+ * - [KEEP] 2.2.0 : unreadCounts + tri last message + UX header (pas de #id) conservés
  * - [KEEP] LOT 2 : reply/reactions/optimistic/retry inchangés
- * - [SAFE] Aucune dépendance DB supplémentaire obligatoire (fallback si fetch échoue)
+ * - [SAFE] Sans dépendance DB obligatoire : onlineUserIds reste vide => tout "Hors ligne"
  * =============================================================================
  */
 
@@ -20,7 +21,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Mail, ArrowRight, Loader2, Check } from 'lucide-react';
+import { Mail, ArrowRight, Loader2, Check, Users as UsersIcon, User as UserIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import {
   fetchConversationsForUser,
@@ -40,6 +41,12 @@ type MsgLite = { id: string; conversation_id: string; created_at: string };
 function safeTime(iso: string | null | undefined): number {
   const t = iso ? new Date(iso).getTime() : 0;
   return Number.isFinite(t) ? t : 0;
+}
+
+function normalizeHandleForHref(handle: string | null | undefined): string | null {
+  const raw = (handle ?? '').trim().replace(/^@/, '');
+  if (!raw) return null;
+  return raw;
 }
 
 export default function MessagesPage() {
@@ -63,11 +70,15 @@ export default function MessagesPage() {
     avatar_url: string | null;
   } | null>(null);
 
-  // NEW: unread per conversation (badge dans la sidebar)
+  // unread per conversation (badge sidebar)
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
-  // NEW: last message timestamp per conversation (tri sidebar)
+  // last message timestamp per conversation (tri sidebar)
   const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
+
+  // NEW: online presence (fail-soft). Pour l’instant: vide => tout "Hors ligne".
+  // À connecter à RealtimeProvider plus tard (presence channel / heartbeat).
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -102,6 +113,7 @@ export default function MessagesPage() {
       setMessages([]);
       setUnreadCounts({});
       setLastMsgByConv({});
+      setOnlineUserIds([]);
       setAuthLoading(false);
     });
 
@@ -140,9 +152,7 @@ export default function MessagesPage() {
   }, [userId, selectedId]);
 
   /**
-   * NEW: hydrate last message per conversation (fail-soft)
-   * - On récupère les derniers messages des conversations en 1 requête (in + order desc).
-   * - On déduit le "dernier par conversation" côté client.
+   * Hydrate last message per conversation (fail-soft)
    */
   useEffect(() => {
     let cancelled = false;
@@ -159,7 +169,7 @@ export default function MessagesPage() {
           .in('conversation_id', ids)
           .is('deleted_at', null)
           .order('created_at', { ascending: false })
-          .limit(Math.min(800, ids.length * 40)); // fail-soft: borne max
+          .limit(Math.min(800, ids.length * 40));
 
         if (cancelled) return;
         if (error || !Array.isArray(data)) return;
@@ -169,7 +179,7 @@ export default function MessagesPage() {
           const cid = String((r as MsgLite).conversation_id ?? '').trim();
           const ca = String((r as MsgLite).created_at ?? '').trim();
           if (!cid || !ca) continue;
-          if (!map[cid]) map[cid] = ca; // premier rencontré = plus récent (car tri desc)
+          if (!map[cid]) map[cid] = ca;
         }
 
         setLastMsgByConv(map);
@@ -185,10 +195,7 @@ export default function MessagesPage() {
   }, [userId, convs]);
 
   /**
-   * NEW: unreadCounts par conversation (fail-soft)
-   * - Implémentation sans fonction SQL / view obligatoire.
-   * - Approche: pour chaque conv, count messages > last_read_at et sender != me.
-   *   (C’est du N+1 "borne", acceptable au début; on optimisera ensuite via RPC/view si besoin.)
+   * unreadCounts par conversation (fail-soft)
    */
   useEffect(() => {
     let cancelled = false;
@@ -208,7 +215,6 @@ export default function MessagesPage() {
         if (memErr || !Array.isArray(mem)) return;
 
         const counts: Record<string, number> = {};
-        // Borne anti-tempête (fail-soft)
         const slice = mem.slice(0, 50);
 
         for (const row of slice as Array<{ conversation_id?: string; last_read_at?: string | null }>) {
@@ -217,7 +223,6 @@ export default function MessagesPage() {
 
           const lastRead = (row.last_read_at ?? '') ? String(row.last_read_at) : null;
 
-          // supabase-js v2: count exact head true -> { count }
           type CountRes = { count: number | null; error: { message?: string } | null };
           type CountQuery = {
             eq: (c: string, v: unknown) => CountQuery;
@@ -252,7 +257,7 @@ export default function MessagesPage() {
     };
   }, [userId, convs]);
 
-  // NEW: conversations triées par dernier message (fallback updated_at)
+  // Conversations triées par dernier message (fallback updated_at)
   const sortedConvs = useMemo(() => {
     const arr = [...convs];
     arr.sort((a, b) => {
@@ -283,7 +288,6 @@ export default function MessagesPage() {
 
         await markConversationRead(selectedId);
 
-        // NEW: local refresh unread for this conv (fail-soft)
         setUnreadCounts((prev) => {
           const next = { ...prev };
           next[selectedId] = 0;
@@ -308,7 +312,6 @@ export default function MessagesPage() {
     setReplyTo(null);
     setReplyToSenderProfile(null);
 
-    // NEW: clear badge instant côté UI (la DB est marquée read au load messages)
     setUnreadCounts((prev) => {
       const next = { ...prev };
       next[id] = 0;
@@ -333,19 +336,13 @@ export default function MessagesPage() {
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
-
-    // NEW: bump last message for ordering
     setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
-
-    // NEW: move conversation on top locally (sortedConvs handles it)
   }, []);
 
-  // Confirm sent (replace optimistic by DB msg)
+  // Confirm sent
   const handleConfirmSent = useCallback(
     async (clientId: string, dbMsg: UiMessage) => {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
-
-      // NEW: last message update (DB created_at)
       setLastMsgByConv((prev) => ({ ...prev, [dbMsg.conversation_id]: dbMsg.created_at }));
 
       if (selectedId) {
@@ -389,7 +386,7 @@ export default function MessagesPage() {
     [selectedId, handleConfirmSent, handleSendFailed]
   );
 
-  // LOT 2 : Reply
+  // Reply
   const handleReply = useCallback(
     async (msg: UiMessage) => {
       setReplyTo(msg);
@@ -414,10 +411,9 @@ export default function MessagesPage() {
     setReplyToSenderProfile(null);
   }, []);
 
-  // LOT 2 : Reactions (optimistic)
+  // Reactions (optimistic)
   const handleReactionToggle = useCallback(
     async (messageId: string, emoji: string) => {
-      // 1) Optimistic update
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== messageId) return m;
@@ -440,11 +436,9 @@ export default function MessagesPage() {
         })
       );
 
-      // 2) DB call
       try {
         const result = await toggleReaction(messageId, emoji);
 
-        // 3) Replace optimistic by real
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
@@ -462,7 +456,6 @@ export default function MessagesPage() {
           })
         );
       } catch {
-        // Rollback optimistic on error
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
@@ -474,14 +467,55 @@ export default function MessagesPage() {
     [userId]
   );
 
+  // Header title for selected conversation
   const headerTitle = useMemo(() => {
     if (!selected) return '—';
     if (selected.type === 'group') return selected.title ?? 'Groupe';
-    // direct
+
     const dn = (selected.peer_display_name ?? '').trim();
     const h = (selected.peer_handle ?? '').trim();
     return dn || (h ? (h.startsWith('@') ? h : `@${h}`) : (selected.title ?? 'Direct'));
   }, [selected]);
+
+  // Header avatar/presence
+  const headerIsGroup = !!selected && selected.type === 'group';
+  const headerHandle = !headerIsGroup ? normalizeHandleForHref(selected?.peer_handle ?? null) : null;
+  const headerProfileHref = headerHandle ? `/u/${headerHandle}` : null;
+  const headerAvatarUrl = !headerIsGroup ? (selected?.peer_avatar_url ?? null) : null;
+  const headerPeerUserId = !headerIsGroup ? (selected?.peer_user_id ?? null) : null;
+
+  const headerOnline = useMemo(() => {
+    const pid = String(headerPeerUserId ?? '').trim();
+    if (!pid) return false;
+    return onlineUserIds.includes(pid);
+  }, [headerPeerUserId, onlineUserIds]);
+
+  const HeaderAvatar = () => {
+    const baseClass = 'flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white';
+
+    const fallback = headerIsGroup ? (
+      <UsersIcon className="h-5 w-5 text-slate-700" />
+    ) : (
+      <UserIcon className="h-5 w-5 text-slate-700" />
+    );
+
+    const content = headerAvatarUrl ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={headerAvatarUrl} alt={headerTitle} className="h-full w-full object-cover" />
+    ) : (
+      fallback
+    );
+
+    if (headerProfileHref && !headerIsGroup) {
+      return (
+        <Link href={headerProfileHref} className={baseClass} aria-label={`Voir le profil de ${headerTitle}`}>
+          {content}
+        </Link>
+      );
+    }
+
+    return <span className={baseClass}>{content}</span>;
+  };
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 pb-16 pt-28">
@@ -539,18 +573,34 @@ export default function MessagesPage() {
             onQueryChange={setQ}
             variant="page"
             unreadCounts={unreadCounts}
+            onlineUserIds={onlineUserIds}
           />
 
           {/* Conversation */}
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur">
             <div className="border-b border-slate-200 p-5">
               <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-900">{selected ? headerTitle : '—'}</div>
-                  <div className="truncate text-xs text-slate-500">
-                    {selected ? (selected.type === 'group' ? 'Groupe' : 'Direct') : 'Sélectionnez une conversation'}
+                <div className="flex min-w-0 items-center gap-3">
+                  {selected ? <HeaderAvatar /> : null}
+
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-slate-900">{selected ? headerTitle : '—'}</div>
+
+                    <div className="truncate text-xs text-slate-500">
+                      {!selected ? (
+                        'Sélectionnez une conversation'
+                      ) : selected.type === 'group' ? (
+                        'Groupe'
+                      ) : (
+                        <span className="inline-flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${headerOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          {headerOnline ? 'En ligne' : 'Hors ligne'}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
+
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
