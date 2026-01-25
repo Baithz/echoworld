@@ -2,249 +2,165 @@
  * =============================================================================
  * Fichier      : app/api/conversations/create/route.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.2 (2026-01-25)
- * Objet        : API Route pour créer des conversations directes (RLS garanti)
+ * Version      : 1.1.0 (2026-01-25)
+ * Objet        : API Route création conversations directes — SERVICE ROLE blindé (prod-safe)
  * -----------------------------------------------------------------------------
  * Description  :
- * - Crée une conversation directe entre 2 users via client Supabase serveur
- * - Session serveur (cookies) OU token Authorization header
- * - RLS policy conversations_insert_auth respectée (created_by = auth.uid())
- * - Cherche conversation existante avant de créer
- * - Ajoute les 2 membres dans conversation_members
- * 
+ * - Authentifie l’appel via Bearer token (Authorization header) en utilisant l'ANON key
+ * - Écrit en base avec SERVICE ROLE (bypass RLS) pour éliminer les soucis SSR/cookies/localStorage
+ * - Sécurité garantie côté serveur :
+ *    - refuse si pas de token / token invalide
+ *    - impose created_by = me (issu du token)
+ *    - empêche conversation avec soi-même
+ * - Cherche une conversation directe existante avant de créer
+ * - Ajoute les 2 membres dans conversation_members (idempotent via upsert)
+ *
+ * IMPORTANT
+ * - Requiert SUPABASE_SERVICE_ROLE_KEY côté serveur (Vercel/ENV)
+ * - Ne dépend plus des cookies SSR pour DM : stable en prod
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.2 (2026-01-25)
- * - [FIX] RLS 500: Ajoute created_by = me dans TOUS les INSERT (session serveur ET Authorization header)
- * - [CRITICAL] Sans created_by explicite, policy conversations_insert_auth refuse (created_by = auth.uid())
- * - [KEEP] Logique création/recherche conversation inchangée
- * 1.0.1 (2026-01-25)
- * - [FIX] Accepte access_token dans Authorization header (fallback si pas de cookies)
- * - [SAFE] Priorité: cookies serveur > Authorization header
- * - [KEEP] Logique création/recherche conversation inchangée
- * 1.0.0 (2026-01-25)
- * - [NEW] Route API serveur pour contourner problème JWT client expiré
- * - [SAFE] Session serveur (cookies) → auth.uid() valide dans DEFAULT DB
- * - [KEEP] Logique identique à startDirectConversation (cherche existante puis crée)
+ * 1.1.0 (2026-01-25)
+ * - [RECO] Mode "service-role blindé" : write DB via service role (bypass RLS)
+ * - [SECURITY] Vérifie Bearer token (anon) puis force created_by = me
+ * - [SAFE] Recherche existante conservée + ajout membres via upsert (idempotent)
+ * - [FIX] Élimine définitivement les erreurs RLS (500/403) liées au contexte SSR
  * =============================================================================
  */
 
 import { NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 type RequestBody = {
   otherUserId: string;
   echoId?: string | null;
 };
 
+function debugLog(message: string, data?: unknown) {
+  try {
+    if (process.env.NEXT_PUBLIC_EW_DEBUG !== '1') return;
+    console.log(`[API conversations/create] ${message}`, data ?? '');
+  } catch {
+    /* noop */
+  }
+}
+
+function debugError(message: string, err?: unknown) {
+  try {
+    if (process.env.NEXT_PUBLIC_EW_DEBUG !== '1') return;
+    console.error(`[API conversations/create] ERROR: ${message}`, err ?? '');
+  } catch {
+    /* noop */
+  }
+}
+
+function getBearerToken(req: Request): string | null {
+  const h = req.headers.get('Authorization') ?? req.headers.get('authorization');
+  if (!h) return null;
+  const v = h.trim();
+  if (!v.toLowerCase().startsWith('bearer ')) return null;
+  const token = v.slice(7).trim();
+  return token || null;
+}
+
 export async function POST(req: Request) {
   try {
-    // 1. Client Supabase serveur
-    const supabase = await createSupabaseServerClient();
-
-    // 2. Essayer d'abord la session serveur (cookies)
-    let userData;
-    const { data: userDataTemp, error: authError } = await supabase.auth.getUser();
-    userData = userDataTemp;
-    
-    // Si pas de session serveur, essayer le token dans Authorization header
-    if (authError || !userData?.user) {
-      const authHeader = req.headers.get('Authorization');
-      
-      if (authHeader?.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
-        
-        // Créer un client avec le token explicite
-        const { createClient } = await import('@supabase/supabase-js');
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-        const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-        
-        const supabaseWithToken = createClient(supabaseUrl, supabaseAnonKey, {
-          global: {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          },
-        });
-        
-        const { data: tokenUserData, error: tokenError } = await supabaseWithToken.auth.getUser();
-        
-        if (tokenError || !tokenUserData?.user) {
-          return NextResponse.json(
-            { ok: false, error: 'Token invalide ou expiré' },
-            { status: 401 }
-          );
-        }
-        
-        // Utiliser ce client pour le reste de la requête
-        userData = tokenUserData;
-        
-        // Refaire l'INSERT avec le client authentifié par token
-        const me = userData.user.id;
-        const body = (await req.json().catch(() => ({}))) as RequestBody;
-        const other = body.otherUserId?.trim();
-        const echoId = body.echoId || null;
-
-        if (!other) {
-          return NextResponse.json(
-            { ok: false, error: 'otherUserId requis' },
-            { status: 400 }
-          );
-        }
-
-        if (me === other) {
-          return NextResponse.json(
-            { ok: false, error: 'Impossible de créer une conversation avec soi-même' },
-            { status: 400 }
-          );
-        }
-
-        // Chercher conversation existante
-        const { data: myMemberships } = await supabaseWithToken
-          .from('conversation_members')
-          .select('conversation_id')
-          .eq('user_id', me);
-
-        if (myMemberships && myMemberships.length > 0) {
-          const myConvIds = myMemberships.map((m) => m.conversation_id);
-
-          const { data: commonMemberships } = await supabaseWithToken
-            .from('conversation_members')
-            .select('conversation_id')
-            .eq('user_id', other)
-            .in('conversation_id', myConvIds);
-
-          if (commonMemberships && commonMemberships.length > 0) {
-            const commonConvIds = commonMemberships.map((m) => m.conversation_id);
-
-            const { data: existingConv } = await supabaseWithToken
-              .from('conversations')
-              .select('id')
-              .in('id', commonConvIds)
-              .eq('type', 'direct')
-              .eq('echo_id', echoId)
-              .order('updated_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
-            if (existingConv) {
-              return NextResponse.json({
-                ok: true,
-                conversationId: existingConv.id,
-                created: false,
-              });
-            }
-
-            const { data: fallbackConv } = await supabaseWithToken
-              .from('conversations')
-              .select('id')
-              .in('id', commonConvIds)
-              .eq('type', 'direct')
-              .order('updated_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
-            if (fallbackConv) {
-              return NextResponse.json({
-                ok: true,
-                conversationId: fallbackConv.id,
-                created: false,
-              });
-            }
-          }
-        }
-
-        // Créer nouvelle conversation
-        const { data: newConv, error: convError } = await supabaseWithToken
-          .from('conversations')
-          .insert({
-            type: 'direct',
-            title: null,
-            created_by: me, // ✅ CRITICAL: requis pour RLS policy
-            echo_id: echoId,
-          })
-          .select('id')
-          .single();
-
-        if (convError || !newConv) {
-          console.error('[API conversations/create] Insert error:', convError);
-          return NextResponse.json(
-            { ok: false, error: convError?.message || 'Erreur création conversation' },
-            { status: 500 }
-          );
-        }
-
-        const conversationId = newConv.id;
-
-        const { error: membersError } = await supabaseWithToken
-          .from('conversation_members')
-          .insert([
-            { conversation_id: conversationId, user_id: me, role: 'member' },
-            { conversation_id: conversationId, user_id: other, role: 'member' },
-          ]);
-
-        if (membersError) {
-          console.error('[API conversations/create] Members error:', membersError);
-          return NextResponse.json(
-            { ok: false, error: 'Erreur ajout membres' },
-            { status: 500 }
-          );
-        }
-
-        return NextResponse.json({
-          ok: true,
-          conversationId,
-          created: true,
-        });
-      }
-      
-      return NextResponse.json(
-        { ok: false, error: 'Non authentifié' },
-        { status: 401 }
-      );
-    }
-
-    const me = userData.user.id;
-
-    // 3. Parse body
+    // -------------------------------------------------------------------------
+    // 0) Parse body
+    // -------------------------------------------------------------------------
     const body = (await req.json().catch(() => ({}))) as RequestBody;
-    const other = body.otherUserId?.trim();
-    const echoId = body.echoId || null;
+    const other = (body.otherUserId ?? '').trim();
+    const echoId = (body.echoId ?? null) as string | null;
 
     if (!other) {
-      return NextResponse.json(
-        { ok: false, error: 'otherUserId requis' },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: 'otherUserId requis' }, { status: 400 });
+    }
+
+    // -------------------------------------------------------------------------
+    // 1) Auth: Bearer token obligatoire (source of truth)
+    // -------------------------------------------------------------------------
+    const token = getBearerToken(req);
+    if (!token) {
+      return NextResponse.json({ ok: false, error: 'Non authentifié (token manquant)' }, { status: 401 });
+    }
+
+    const { createClient } = await import('@supabase/supabase-js');
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      debugError('Missing NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY', {});
+      return NextResponse.json({ ok: false, error: 'Configuration serveur manquante' }, { status: 500 });
+    }
+
+    if (!serviceRoleKey) {
+      debugError('Missing SUPABASE_SERVICE_ROLE_KEY', {});
+      return NextResponse.json({ ok: false, error: 'Configuration serveur manquante (service role)' }, { status: 500 });
+    }
+
+    // Client "auth" (ANON) pour valider le token
+    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    const { data: userData, error: tokenErr } = await supabaseAuth.auth.getUser();
+    const me = (userData?.user?.id ?? '').trim();
+
+    debugLog('auth.getUser()', { ok: !tokenErr, hasUser: Boolean(me), error: tokenErr?.message ?? null });
+
+    if (tokenErr || !me) {
+      return NextResponse.json({ ok: false, error: 'Token invalide ou expiré' }, { status: 401 });
     }
 
     if (me === other) {
-      return NextResponse.json(
-        { ok: false, error: 'Impossible de créer une conversation avec soi-même' },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: 'Impossible de créer une conversation avec soi-même' }, { status: 400 });
     }
 
-    // 4. Chercher conversation existante
-    const { data: myMemberships } = await supabase
+    // -------------------------------------------------------------------------
+    // 2) Client "write" (SERVICE ROLE) — bypass RLS
+    // -------------------------------------------------------------------------
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    // -------------------------------------------------------------------------
+    // 3) Chercher conversation existante (direct entre me & other)
+    //    - priorité : echo_id match
+    //    - fallback : direct sans echo match
+    // -------------------------------------------------------------------------
+    // convIds où me est membre
+    const { data: mine, error: mineErr } = await supabaseAdmin
       .from('conversation_members')
       .select('conversation_id')
       .eq('user_id', me);
 
-    if (myMemberships && myMemberships.length > 0) {
-      const myConvIds = myMemberships.map((m) => m.conversation_id);
+    if (mineErr) {
+      debugError('Load my memberships failed', mineErr);
+      return NextResponse.json({ ok: false, error: 'Erreur chargement conversations' }, { status: 500 });
+    }
 
-      const { data: commonMemberships } = await supabase
+    const myConvIds = Array.isArray(mine) ? mine.map((m) => m.conversation_id).filter(Boolean) : [];
+
+    if (myConvIds.length > 0) {
+      const { data: common, error: commonErr } = await supabaseAdmin
         .from('conversation_members')
         .select('conversation_id')
         .eq('user_id', other)
         .in('conversation_id', myConvIds);
 
-      if (commonMemberships && commonMemberships.length > 0) {
-        const commonConvIds = commonMemberships.map((m) => m.conversation_id);
+      if (commonErr) {
+        debugError('Load common memberships failed', commonErr);
+        return NextResponse.json({ ok: false, error: 'Erreur chargement conversations' }, { status: 500 });
+      }
 
-        // Chercher conv direct avec echo_id match
-        const { data: existingConv } = await supabase
+      const commonConvIds = Array.isArray(common) ? common.map((m) => m.conversation_id).filter(Boolean) : [];
+
+      if (commonConvIds.length > 0) {
+        // exact match (echo_id)
+        const exact = await supabaseAdmin
           .from('conversations')
           .select('id')
           .in('id', commonConvIds)
@@ -254,16 +170,12 @@ export async function POST(req: Request) {
           .limit(1)
           .maybeSingle();
 
-        if (existingConv) {
-          return NextResponse.json({
-            ok: true,
-            conversationId: existingConv.id,
-            created: false,
-          });
+        if (!exact.error && exact.data?.id) {
+          return NextResponse.json({ ok: true, conversationId: exact.data.id, created: false });
         }
 
-        // Fallback: chercher conv direct sans echo match
-        const { data: fallbackConv } = await supabase
+        // fallback (no echo match)
+        const fb = await supabaseAdmin
           .from('conversations')
           .select('id')
           .in('id', commonConvIds)
@@ -272,30 +184,28 @@ export async function POST(req: Request) {
           .limit(1)
           .maybeSingle();
 
-        if (fallbackConv) {
-          return NextResponse.json({
-            ok: true,
-            conversationId: fallbackConv.id,
-            created: false,
-          });
+        if (!fb.error && fb.data?.id) {
+          return NextResponse.json({ ok: true, conversationId: fb.data.id, created: false });
         }
       }
     }
 
-    // 5. Créer nouvelle conversation
-    const { data: newConv, error: convError } = await supabase
+    // -------------------------------------------------------------------------
+    // 4) Créer conversation (service role) + membres (upsert idempotent)
+    // -------------------------------------------------------------------------
+    const { data: newConv, error: convError } = await supabaseAdmin
       .from('conversations')
       .insert({
         type: 'direct',
         title: null,
-        created_by: me, // ✅ CRITICAL: requis pour RLS policy
+        created_by: me, // sécurité: imposé côté serveur
         echo_id: echoId,
       })
       .select('id')
       .single();
 
-    if (convError || !newConv) {
-      console.error('[API conversations/create] Insert error:', convError);
+    if (convError || !newConv?.id) {
+      debugError('Insert conversations failed', convError);
       return NextResponse.json(
         { ok: false, error: convError?.message || 'Erreur création conversation' },
         { status: 500 }
@@ -304,32 +214,25 @@ export async function POST(req: Request) {
 
     const conversationId = newConv.id;
 
-    // 6. Ajouter les membres
-    const { error: membersError } = await supabase
+    // Upsert membres (évite doublons si double-clic / retry)
+    const { error: membersError } = await supabaseAdmin
       .from('conversation_members')
-      .insert([
-        { conversation_id: conversationId, user_id: me, role: 'member' },
-        { conversation_id: conversationId, user_id: other, role: 'member' },
-      ]);
+      .upsert(
+        [
+          { conversation_id: conversationId, user_id: me, role: 'member' },
+          { conversation_id: conversationId, user_id: other, role: 'member' },
+        ],
+        { onConflict: 'conversation_id,user_id' }
+      );
 
     if (membersError) {
-      console.error('[API conversations/create] Members error:', membersError);
-      return NextResponse.json(
-        { ok: false, error: 'Erreur ajout membres' },
-        { status: 500 }
-      );
+      debugError('Upsert conversation_members failed', membersError);
+      return NextResponse.json({ ok: false, error: 'Erreur ajout membres' }, { status: 500 });
     }
 
-    return NextResponse.json({
-      ok: true,
-      conversationId,
-      created: true,
-    });
+    return NextResponse.json({ ok: true, conversationId, created: true });
   } catch (error) {
-    console.error('[API conversations/create] Exception:', error);
-    return NextResponse.json(
-      { ok: false, error: 'Erreur serveur' },
-      { status: 500 }
-    );
+    debugError('Exception', error);
+    return NextResponse.json({ ok: false, error: 'Erreur serveur' }, { status: 500 });
   }
 }
