@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : lib/messages/useTyping.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
+ * Version      : 1.0.2 (2026-01-25)
  * Objet        : Hook typing indicator (Supabase Presence) — LOT 2.6
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,6 +12,12 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.0.2 (2026-01-25)
+ * - [FIX] ESLint set-state-in-effect: supprime setTypingUsers([]) dans guard
+ * - [SAFE] State se vide naturellement au cleanup (pas de setState synchrone)
+ * 1.0.1 (2026-01-25)
+ * - [FIX] ESLint: stopTyping déclaré avant startTyping (ordre callbacks)
+ * - [FIX] Deps exhaustive: stopTyping ajouté dans deps startTyping
  * 1.0.0 (2026-01-25)
  * - [NEW] useTyping(conversationId, userId, displayName, handle)
  * - [NEW] startTyping() / stopTyping()
@@ -56,6 +62,15 @@ export function useTyping(
     }
   }, []);
 
+  // Stop typing (untrack)
+  const stopTyping = useCallback(() => {
+    if (!channelRef.current) return;
+
+    clearTypingTimeout();
+
+    void channelRef.current.untrack();
+  }, [clearTypingTimeout]);
+
   // Start typing (broadcast)
   const startTyping = useCallback(() => {
     if (!channelRef.current || !userId) return;
@@ -74,21 +89,13 @@ export function useTyping(
     typingTimeoutRef.current = setTimeout(() => {
       stopTyping();
     }, 3000);
-  }, [userId, displayName, handle, clearTypingTimeout]);
-
-  // Stop typing (untrack)
-  const stopTyping = useCallback(() => {
-    if (!channelRef.current) return;
-
-    clearTypingTimeout();
-
-    void channelRef.current.untrack();
-  }, [clearTypingTimeout]);
+  }, [userId, displayName, handle, clearTypingTimeout, stopTyping]);
 
   // Setup presence channel
   useEffect(() => {
+    // ✅ ESLint fix: pas de setState synchrone dans guard
+    // Le state se vide naturellement au cleanup ou reste vide par défaut
     if (!conversationId || !userId) {
-      setTypingUsers([]);
       return;
     }
 
@@ -138,6 +145,9 @@ export function useTyping(
       void channel.untrack();
       void channel.unsubscribe();
       channelRef.current = null;
+      
+      // ✅ Cleanup: vide le state au démontage
+      setTypingUsers([]);
     };
   }, [conversationId, userId, clearTypingTimeout]);
 

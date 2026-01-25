@@ -2,23 +2,25 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-25)
- * Objet        : ChatDock (bulle) — LOT 2 complet + LIVE messages + Sidebar tri last msg + unread badges
+ * Version      : 2.4.0 (2026-01-25)
+ * Objet        : ChatDock (bulle) — LOT 2 + LIVE + Auto-scroll + Typing + RichComposer
  * -----------------------------------------------------------------------------
  * Description  :
  * - Dock flottant : sidebar conversations + thread + composer
  * - LOT 2 : reply / reactions / optimistic / retry conservés
  * - LIVE : reçoit les messages entrants via RealtimeProvider.onNewMessage (sans refresh)
- * - Fail-soft : si realtime indispo, le dock reste utilisable (fetch classiques)
+ * - LOT 2.6 : Auto-scroll après réception message
+ * - LOT 2.6 : Typing indicator (start/stop typing + affichage)
+ * - Remplace Composer par RichComposer (callbacks typing), sans régression UI/UX
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.3.0 (2026-01-25)
- * - [NEW] Live: écoute onNewMessage() et injecte les messages entrants dans l’UI
- * - [NEW] Live: bump unreadCounts si conversation non active, sinon append + mark read
- * - [KEEP] 2.2.0 : unread badges + tri last message + clear instant + mark read conservés
- * - [KEEP] LOT 2 : reply/reactions/optimistic/retry/realtime reactions inchangés
- * - [SAFE] Dedupe anti-doublon (id) + update lastMsgByConv
+ * 2.4.0 (2026-01-25)
+ * - [NEW] LOT 2.6: Typing indicator (useTyping + TypingIndicator) dans le thread
+ * - [NEW] LOT 2.6: RichComposer (remplace Composer) + callbacks onTypingStart/onTypingStop
+ * - [KEEP] 2.3.1: Auto-scroll après réception message (setTimeout 100ms)
+ * - [KEEP] 2.3.0: Live messages + unread badges + tri + dedupe inchangés
+ * - [KEEP] LOT 2: reply/reactions/optimistic/retry inchangés
  * =============================================================================
  */
 
@@ -37,9 +39,11 @@ import {
   fetchSenderProfiles,
 } from '@/lib/messages';
 import { toggleReaction } from '@/lib/messages/reactions';
+import { useTyping } from '@/lib/messages/useTyping';
 import ConversationList from './ConversationList';
 import MessageList from './MessageList';
-import Composer from './Composer';
+import TypingIndicator from './TypingIndicator';
+import RichComposer from './RichComposer';
 import type { ConversationRowPlus, UiMessage, SenderProfile } from './types';
 
 type MsgLite = { id: string; conversation_id: string; created_at: string };
@@ -77,7 +81,6 @@ function toUiMessageFromLiveRecord(
   },
   existing?: UiMessage
 ): UiMessage {
-  // SAFE: ne touche pas aux props éventuelles déjà présentes (ex: reactions) si on a déjà le message
   if (existing) {
     return {
       ...existing,
@@ -124,10 +127,7 @@ export default function ChatDock() {
   const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
   const [replyToSenderProfile, setReplyToSenderProfile] = useState<SenderProfile | null>(null);
 
-  // unread per conversation (badge sidebar)
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
-
-  // last message per conversation (tri sidebar)
   const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
   const mountedRef = useRef(true);
@@ -150,6 +150,9 @@ export default function ChatDock() {
     el.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
 
+  // LOT 2.6: Typing indicator
+  const { typingUsers, startTyping, stopTyping } = useTyping(activeConversationId, userId, null, null);
+
   const selected = useMemo(
     () => convs.find((c) => c.id === activeConversationId) ?? null,
     [convs, activeConversationId]
@@ -159,7 +162,6 @@ export default function ChatDock() {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
 
-  // Reset local state when dock closes or user changes
   useEffect(() => {
     if (!isChatDockOpen) {
       setQ('');
@@ -179,9 +181,7 @@ export default function ChatDock() {
     setReplyToSenderProfile(null);
   }, [isChatDockOpen, userId]);
 
-  // --------------------------------------------------------------------------
-  // LIVE messages (RealtimeProvider -> Dock push)
-  // --------------------------------------------------------------------------
+  // LIVE messages
   useEffect(() => {
     if (!isChatDockOpen || !userId) return;
 
@@ -190,14 +190,12 @@ export default function ChatDock() {
       const convId = String(rec.conversation_id ?? '').trim();
       if (!convId) return;
 
-      // 1) Toujours bump last msg (tri sidebar)
       if (rec.created_at) {
         setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
       }
 
       const activeId = activeConvRef.current;
 
-      // 2) Si conversation active => append (dedupe) + clear badge + mark read
       if (activeId && activeId === convId) {
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === rec.id);
@@ -212,13 +210,14 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
 
-        // fail-soft : si ça échoue, l'UI reste correcte
+        // ✅ LOT 2.6: Auto-scroll après réception message
+        setTimeout(() => scrollToBottom(), 100);
+
         void markConversationRead(convId).catch(() => {});
         void refreshCounts().catch(() => {});
         return;
       }
 
-      // 3) Sinon : bump badge local (sans spam) + refresh counts global
       setUnreadCounts((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
       void refreshCounts().catch(() => {});
     });
@@ -226,7 +225,7 @@ export default function ChatDock() {
     return unsubscribe;
   }, [isChatDockOpen, userId, onNewMessage, refreshCounts]);
 
-  // Load conversations when dock opens
+  // Load conversations
   useEffect(() => {
     let cancelled = false;
 
@@ -256,9 +255,7 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, userId, activeConversationId, openConversation]);
 
-  /**
-   * Hydrate last message per conversation (fail-soft)
-   */
+  // Hydrate last message
   useEffect(() => {
     let cancelled = false;
 
@@ -299,9 +296,7 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, userId, convs]);
 
-  /**
-   * unreadCounts par conversation (fail-soft)
-   */
+  // unreadCounts
   useEffect(() => {
     let cancelled = false;
 
@@ -360,7 +355,6 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, userId, convs]);
 
-  // Convs triées par dernier message (fallback updated_at)
   const sortedConvs = useMemo(() => {
     const arr = [...convs];
     arr.sort((a, b) => {
@@ -371,7 +365,7 @@ export default function ChatDock() {
     return arr;
   }, [convs, lastMsgByConv]);
 
-  // Load messages for selected conversation
+  // Load messages
   useEffect(() => {
     let cancelled = false;
 
@@ -417,7 +411,7 @@ export default function ChatDock() {
     scrollToBottom();
   }, [messages.length, isChatDockOpen]);
 
-  // LOT 2 : Realtime reactions sync
+  // Realtime reactions
   useEffect(() => {
     if (!isChatDockOpen) return;
 
@@ -444,13 +438,11 @@ export default function ChatDock() {
     return unsubscribe;
   }, [isChatDockOpen, onReactionChange]);
 
-  // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
     setMessages((prev) => [...prev, msg]);
     setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
   }, []);
 
-  // Confirm sent
   const handleConfirmSent = useCallback(
     async (clientId: string, dbMsg: UiMessage) => {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m)));
@@ -465,7 +457,6 @@ export default function ChatDock() {
     [activeConversationId, refreshCounts]
   );
 
-  // Send failed
   const handleSendFailed = useCallback((clientId: string, error: string) => {
     setMessages((prev) =>
       prev.map((m) =>
@@ -474,7 +465,6 @@ export default function ChatDock() {
     );
   }, []);
 
-  // Retry
   const handleRetry = useCallback(
     async (msg: UiMessage) => {
       if (!activeConversationId || !msg.client_id) return;
@@ -494,7 +484,6 @@ export default function ChatDock() {
     [activeConversationId, handleConfirmSent, handleSendFailed]
   );
 
-  // Reply
   const handleReply = useCallback(
     async (msg: UiMessage) => {
       setReplyTo(msg);
@@ -519,7 +508,6 @@ export default function ChatDock() {
     setReplyToSenderProfile(null);
   }, []);
 
-  // Reactions (optimistic)
   const handleReactionToggle = useCallback(
     async (messageId: string, emoji: string) => {
       if (!userId) return;
@@ -595,7 +583,6 @@ export default function ChatDock() {
   return (
     <div className="fixed bottom-6 right-6 z-60 w-95 max-w-[92vw]">
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-2xl shadow-black/15 backdrop-blur-xl">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
@@ -643,7 +630,6 @@ export default function ChatDock() {
           </div>
         ) : (
           <div className="grid grid-cols-[150px_1fr]">
-            {/* Sidebar convs */}
             <div className="border-r border-slate-200">
               <ConversationList
                 conversations={sortedConvs}
@@ -657,7 +643,6 @@ export default function ChatDock() {
               />
             </div>
 
-            {/* Messages */}
             <div className="flex flex-col">
               <div className="h-80 overflow-auto p-3">
                 <MessageList
@@ -671,10 +656,12 @@ export default function ChatDock() {
                   scrollRef={messagesEndRef}
                   variant="dock"
                 />
+
+                {/* ✅ LOT 2.6: Typing indicator */}
+                <TypingIndicator typingUsers={typingUsers} currentUserId={userId} variant="dock" />
               </div>
 
-              {/* Composer */}
-              <Composer
+              <RichComposer
                 conversationId={activeConversationId}
                 userId={userId}
                 replyTo={replyTo}
@@ -685,6 +672,8 @@ export default function ChatDock() {
                 onSendFailed={handleSendFailed}
                 pendingSendingCount={pendingSendingCount}
                 variant="dock"
+                onTypingStart={startTyping}
+                onTypingStop={stopTyping}
               />
             </div>
           </div>

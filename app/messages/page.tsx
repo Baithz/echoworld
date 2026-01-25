@@ -2,23 +2,25 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.1 (2026-01-25)
- * Objet        : Page Messages — Live messages + LOT 2 Réactions + Répondre + Header avatar/presence
+ * Version      : 2.5.0 (2026-01-25)
+ * Objet        : Page Messages — Live messages + LOT 2 + Header avatar/presence + Typing + RichComposer
  * -----------------------------------------------------------------------------
  * Description  :
  * - Page conversations (sidebar + thread) avec optimistic send / retry / reply / reactions
  * - Live : push des messages entrants via RealtimeProvider.onNewMessage (sans refresh)
  * - Badges : unreadCounts fail-soft + tri par dernier message
- * - SAFE : aucune régression UX (mark read, retry, reply, reactions conservés)
+ * - LOT 2.6 : Typing indicator (start/stop typing + affichage)
+ * - Remplace Composer par RichComposer (callbacks typing) sans régression
+ * - SAFE : mark read, retry, reply, reactions, fetch conservés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.4.1 (2026-01-25)
- * - [FIX] Live: supprime stale-closure sur selectedId (ref) + dedupe stable par message id
- * - [FIX] Live: update unreadCounts/lastMsgByConv même quand la conv n’est pas encore hydratée
+ * 2.5.0 (2026-01-25)
+ * - [NEW] LOT 2.6: Typing indicator (useTyping + TypingIndicator) dans le thread
+ * - [NEW] LOT 2.6: RichComposer (remplace Composer) + callbacks onTypingStart/onTypingStop
+ * - [KEEP] 2.4.1: Live (anti stale-closure selectedId ref) + dedupe stable message id conservés
+ * - [KEEP] 2.4.1: Update unreadCounts/lastMsgByConv même si conv pas hydratée conservé
  * - [SAFE] Aucune régression : fetch, retry, reply, reactions, mark read conservés
- * 2.4.0 (2026-01-25)
- * - [NEW] Live: écoute onNewMessage() et injecte les messages entrants dans l’UI (sans refresh)
  * =============================================================================
  */
 
@@ -37,9 +39,11 @@ import {
   fetchSenderProfiles,
 } from '@/lib/messages';
 import { toggleReaction } from '@/lib/messages/reactions';
+import { useTyping } from '@/lib/messages/useTyping';
 import ConversationList from '@/components/messages/ConversationList';
 import MessageList from '@/components/messages/MessageList';
-import Composer from '@/components/messages/Composer';
+import TypingIndicator from '@/components/messages/TypingIndicator';
+import RichComposer from '@/components/messages/RichComposer';
 import type { ConversationRowPlus, UiMessage } from '@/components/messages/types';
 
 type MsgLite = { id: string; conversation_id: string; created_at: string };
@@ -117,6 +121,9 @@ export default function MessagesPage() {
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
+
+  // LOT 2.6: Typing indicator
+  const { typingUsers, startTyping, stopTyping } = useTyping(selectedId, userId, null, null);
 
   // Refs anti stale-closure
   const selectedIdRef = useRef<string | null>(null);
@@ -592,7 +599,8 @@ export default function MessagesPage() {
   }, [headerPeerUserId, onlineUserIds]);
 
   const HeaderAvatar = () => {
-    const baseClass = 'flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white';
+    const baseClass =
+      'flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white';
 
     const fallback = headerIsGroup ? (
       <UsersIcon className="h-5 w-5 text-slate-700" />
@@ -728,10 +736,13 @@ export default function MessagesPage() {
                 scrollRef={messagesEndRef}
                 variant="page"
               />
+
+              {/* ✅ LOT 2.6: Typing indicator */}
+              <TypingIndicator typingUsers={typingUsers} currentUserId={userId} variant="page" />
             </div>
 
             {/* Composer */}
-            <Composer
+            <RichComposer
               conversationId={selectedId}
               userId={userId}
               replyTo={replyTo}
@@ -742,6 +753,8 @@ export default function MessagesPage() {
               onSendFailed={handleSendFailed}
               pendingSendingCount={pendingSendingCount}
               variant="page"
+              onTypingStart={startTyping}
+              onTypingStop={stopTyping}
             />
           </section>
         </div>
