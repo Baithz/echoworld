@@ -2,66 +2,40 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-24)
- * Objet        : ChatDock (bulle) - Conversations + messages — aligné BDD réelle
+ * Version      : 2.0.1 (2026-01-25)
+ * Objet        : ChatDock (bulle) — LOT 1 optimistic UI + composants mutualisés
  * -----------------------------------------------------------------------------
- * BDD (réelle) :
- * - public.conversations(id, type conversation_type, title?, created_by?, echo_id?, created_at, updated_at)
- * - public.conversation_members(conversation_id, user_id, role, joined_at, last_read_at, muted)
- * - public.messages(id, conversation_id, sender_id, content, payload?, created_at, edited_at?, deleted_at?)
- *
- * PHASE 5 — Mirror & DM (alignés BDD réelle)
- * - [PHASE5] Affiche correctement “Direct” : titre fallback = profil du peer si fourni par fetchConversationsForUser()
- * - [PHASE5] Ignore les messages soft-deleted (deleted_at) en affichage (safe)
- * - [PHASE5] Mark read : conserve l’appel markConversationRead(), supposé setter conversation_members.last_read_at
- * - [KEEP] UX / auto-scroll / reset state / refreshCounts inchangés
- * - [SAFE] Aucun `any`
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.0.1 (2026-01-25)
+ * - [FIX] ESLint no-unused-vars : suppression import MessageRow (jamais utilisé)
+ * - [FIX] TypeScript scrollRef : type RefObject<HTMLDivElement> (suppression | null)
+ * 2.0.0 (2026-01-25)
+ * - [REFACTOR] Utilise composants mutualisés (ConversationList, MessageList, Composer)
+ * - [NEW] Optimistic UI : envoi immédiat + confirm Realtime + dedupe
+ * - [NEW] Retry intelligent : max 3 "sending" simultanés (Q3=B)
+ * - [NEW] Avatars + pseudo cliquables (initiales fallback Q2=B)
+ * - [KEEP] Auto-scroll, mark read, refreshCounts inchangés
+ * - [KEEP] UX dock (compact) inchangée
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { X, Mail, Search, Loader2, Send, Users, User as UserIcon } from 'lucide-react';
+import { X, Mail } from 'lucide-react';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
 import {
   fetchConversationsForUser,
   fetchMessages,
   markConversationRead,
   sendMessage,
-  type ConversationRow,
-  type MessageRow,
 } from '@/lib/messages';
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(undefined, { timeStyle: 'short' });
-}
-
-function safeText(text: string): string {
-  const clean = (text ?? '').trim().replace(/\s+/g, ' ');
-  return clean || '…';
-}
-
-// Extension non bloquante : si fetchConversationsForUser enrichit (Phase 5), on en profite
-type ConversationRowPlus = ConversationRow & {
-  // pour direct, “peer” (l’autre membre) — optionnel
-  peer_handle?: string | null;
-  peer_display_name?: string | null;
-  peer_avatar_url?: string | null;
-
-  // BDD réelle
-  echo_id?: string | null;
-  updated_at?: string | null;
-};
-
-type MessageRowPlus = MessageRow & {
-  deleted_at?: string | null;
-  edited_at?: string | null;
-  payload?: unknown;
-};
+import ConversationList from './ConversationList';
+import MessageList from './MessageList';
+import Composer from './Composer';
+import type { ConversationRowPlus, UiMessage } from './types';
 
 function convTitle(c: ConversationRowPlus): string {
   const t = (c.title ?? '').trim();
@@ -69,7 +43,6 @@ function convTitle(c: ConversationRowPlus): string {
 
   if (c.type === 'group') return 'Groupe';
 
-  // Direct: fallback profil peer si dispo
   const h = (c.peer_handle ?? '').trim();
   if (h) return h.startsWith('@') ? h : `@${h}`;
 
@@ -87,12 +60,8 @@ export default function ChatDock() {
   const [convs, setConvs] = useState<ConversationRowPlus[]>([]);
 
   const [loadingMsgs, setLoadingMsgs] = useState(false);
-  const [messages, setMessages] = useState<MessageRowPlus[]>([]);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
 
-  const [composer, setComposer] = useState('');
-  const [sending, setSending] = useState(false);
-
-  // Evite setState après close rapide
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -101,35 +70,20 @@ export default function ChatDock() {
     };
   }, []);
 
-  // Scroll bas messages
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => {
     const el = messagesEndRef.current;
     if (!el) return;
     el.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
 
-  const filteredConvs = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return convs;
-
-    return convs.filter((c) => {
-      const title = convTitle(c).toLowerCase();
-      const id = (c.id ?? '').toLowerCase();
-      const handle = (c.peer_handle ?? '').toLowerCase();
-      const dn = (c.peer_display_name ?? '').toLowerCase();
-      return title.includes(term) || id.includes(term) || handle.includes(term) || dn.includes(term);
-    });
-  }, [convs, q]);
-
   const selected = useMemo(
     () => convs.find((c) => c.id === activeConversationId) ?? null,
     [convs, activeConversationId]
   );
 
-  const visibleMessages = useMemo(() => {
-    // BDD réelle : soft delete
-    return messages.filter((m) => !m.deleted_at);
+  const pendingSendingCount = useMemo(() => {
+    return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
 
   // Reset local state when dock closes or user changes
@@ -140,14 +94,10 @@ export default function ChatDock() {
       setLoadingMsgs(false);
       setConvs([]);
       setMessages([]);
-      setComposer('');
-      setSending(false);
       return;
     }
 
-    // Dock opened: keep inputs but clear message list until a conv loads
     setMessages([]);
-    setComposer('');
   }, [isChatDockOpen, userId]);
 
   // Load conversations when dock opens
@@ -164,7 +114,6 @@ export default function ChatDock() {
 
         setConvs(rows);
 
-        // Auto select first if none
         if (!activeConversationId && rows.length > 0) {
           openConversation(rows[0].id);
         }
@@ -190,16 +139,19 @@ export default function ChatDock() {
 
       setLoadingMsgs(true);
       try {
-        const rows = (await fetchMessages(activeConversationId, 60)) as unknown as MessageRowPlus[];
+        const rows = await fetchMessages(activeConversationId, 60);
         if (cancelled || !mountedRef.current) return;
 
-        setMessages(rows);
+        const uiMsgs: UiMessage[] = rows.map((r) => ({
+          ...r,
+          status: 'sent' as const,
+        }));
 
-        // Mark read + resync badges
+        setMessages(uiMsgs);
+
         await markConversationRead(activeConversationId);
         await refreshCounts();
 
-        // Scroll after paint
         setTimeout(() => {
           if (!cancelled && mountedRef.current) scrollToBottom();
         }, 0);
@@ -216,33 +168,61 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, activeConversationId, refreshCounts]);
 
-  // Scroll on new messages append (send)
+  // Scroll on new messages
   useEffect(() => {
-    if (!isChatDockOpen) return;
-    if (visibleMessages.length === 0) return;
+    if (!isChatDockOpen || messages.length === 0) return;
     scrollToBottom();
-  }, [visibleMessages.length, isChatDockOpen]);
+  }, [messages.length, isChatDockOpen]);
 
-  const onSend = async () => {
-    const clean = composer.trim();
-    if (!userId || !activeConversationId || !clean || sending) return;
+  // Optimistic send
+  const handleOptimisticSend = useCallback((msg: UiMessage) => {
+    setMessages((prev) => [...prev, msg]);
+  }, []);
 
-    setSending(true);
-    try {
-      const msg = (await sendMessage(activeConversationId, clean)) as unknown as MessageRowPlus;
-      if (!mountedRef.current) return;
+  // Confirm sent (replace optimistic by DB msg)
+  const handleConfirmSent = useCallback(async (clientId: string, dbMsg: UiMessage) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m))
+    );
 
-      setComposer('');
-      setMessages((prev) => [...prev, msg]);
-
+    if (activeConversationId) {
       await markConversationRead(activeConversationId);
       await refreshCounts();
-    } finally {
-      if (mountedRef.current) setSending(false);
     }
-  };
+  }, [activeConversationId, refreshCounts]);
 
-  // Hidden when closed
+  // Send failed
+  const handleSendFailed = useCallback((clientId: string, error: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.client_id === clientId
+          ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 }
+          : m
+      )
+    );
+  }, []);
+
+  // Retry
+  const handleRetry = useCallback(
+    async (msg: UiMessage) => {
+      if (!activeConversationId || !msg.client_id) return;
+
+      // Replace failed by sending
+      setMessages((prev) =>
+        prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
+      );
+
+      try {
+        const dbMsg = await sendMessage(activeConversationId, msg.content, { client_id: msg.client_id });
+        handleConfirmSent(msg.client_id, dbMsg as UiMessage);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Erreur d\'envoi';
+        handleSendFailed(msg.client_id, errMsg);
+      }
+    },
+    [activeConversationId, handleConfirmSent, handleSendFailed]
+  );
+
   if (!isChatDockOpen) return null;
 
   return (
@@ -298,129 +278,41 @@ export default function ChatDock() {
           <div className="grid grid-cols-[150px_1fr]">
             {/* Sidebar convs */}
             <div className="border-r border-slate-200">
-              <div className="p-2">
-                <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5">
-                  <Search className="h-4 w-4 text-slate-500" />
-                  <input
-                    value={q}
-                    onChange={(ev) => setQ(ev.target.value)}
-                    className="w-full bg-transparent text-xs text-slate-900 outline-none placeholder:text-slate-400"
-                    placeholder="Rechercher…"
-                    aria-label="Search conversations"
-                  />
-                </div>
-              </div>
-
-              <div className="max-h-90 overflow-auto px-2 pb-2">
-                {loadingConvs ? (
-                  <div className="flex items-center gap-2 p-2 text-xs text-slate-600">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Chargement…
-                  </div>
-                ) : filteredConvs.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-white p-2 text-xs text-slate-600">
-                    Aucune conv.
-                  </div>
-                ) : (
-                  filteredConvs.map((c) => {
-                    const isActive = c.id === activeConversationId;
-                    return (
-                      <button
-                        key={c.id}
-                        type="button"
-                        onClick={() => openConversation(c.id)}
-                        className={`mb-2 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition ${
-                          isActive ? 'border-slate-200 bg-white' : 'border-transparent hover:border-slate-200 hover:bg-white'
-                        }`}
-                        aria-label="Open conversation"
-                      >
-                        <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white">
-                          {c.type === 'group' ? (
-                            <Users className="h-4 w-4 text-slate-700" />
-                          ) : (
-                            <UserIcon className="h-4 w-4 text-slate-700" />
-                          )}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-bold text-slate-900">{convTitle(c)}</span>
-                          <span className="block truncate text-[11px] text-slate-500">{c.id.slice(0, 6)}…</span>
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
+              <ConversationList
+                conversations={convs}
+                loading={loadingConvs}
+                selectedId={activeConversationId}
+                onSelect={openConversation}
+                query={q}
+                onQueryChange={setQ}
+                variant="dock"
+              />
             </div>
 
             {/* Messages */}
             <div className="flex flex-col">
               <div className="h-80 overflow-auto p-3">
-                {!activeConversationId ? (
-                  <div className="text-xs text-slate-600">Sélectionne une conversation.</div>
-                ) : loadingMsgs ? (
-                  <div className="flex items-center gap-2 text-xs text-slate-600">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Chargement…
-                  </div>
-                ) : visibleMessages.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-white p-2 text-xs text-slate-600">
-                    Aucun message.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {visibleMessages.map((m) => {
-                      const mine = m.sender_id === userId;
-                      return (
-                        <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                          <div
-                            className={`max-w-[85%] rounded-2xl border px-3 py-2 text-xs shadow-sm ${
-                              mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
-                            }`}
-                          >
-                            <div className="whitespace-pre-wrap">{safeText(m.content)}</div>
-                            <div className={`mt-1 text-[10px] ${mine ? 'text-white/70' : 'text-slate-500'}`}>
-                              {formatTime(m.created_at)}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div ref={messagesEndRef} />
-                  </div>
-                )}
+                <MessageList
+                  messages={messages}
+                  loading={loadingMsgs}
+                  userId={userId}
+                  conversationId={activeConversationId}
+                  onRetry={handleRetry}
+                  scrollRef={messagesEndRef}
+                  variant="dock"
+                />
               </div>
 
               {/* Composer */}
-              <div className="border-t border-slate-200 p-3">
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-2 py-1.5">
-                  <input
-                    value={composer}
-                    onChange={(ev) => setComposer(ev.target.value)}
-                    onKeyDown={(ev) => {
-                      if (ev.key === 'Enter' && !ev.shiftKey) {
-                        ev.preventDefault();
-                        void onSend();
-                      }
-                    }}
-                    className="w-full bg-transparent text-xs text-slate-900 outline-none placeholder:text-slate-400"
-                    placeholder={activeConversationId ? 'Écrire…' : 'Sélectionne une conv…'}
-                    aria-label="Write a message"
-                    disabled={!activeConversationId || sending}
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() => void onSend()}
-                    className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition-opacity disabled:opacity-50"
-                    disabled={!activeConversationId || sending || !composer.trim()}
-                    aria-label="Send message"
-                  >
-                    <Send className="h-4 w-4" />
-                    Envoyer
-                  </button>
-                </div>
-                <div className="mt-1 text-[11px] text-slate-500">Entrée = envoyer • Shift+Entrée = ligne</div>
-              </div>
+              <Composer
+                conversationId={activeConversationId}
+                userId={userId}
+                onOptimisticSend={handleOptimisticSend}
+                onConfirmSent={handleConfirmSent}
+                onSendFailed={handleSendFailed}
+                pendingSendingCount={pendingSendingCount}
+                variant="dock"
+              />
             </div>
           </div>
         )}

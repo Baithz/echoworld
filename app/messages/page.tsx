@@ -2,43 +2,40 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.1 (2026-01-22)
- * Objet        : Page Messages - Liste conversations + messages (Client + RLS)
+ * Version      : 2.0.1 (2026-01-25)
+ * Objet        : Page Messages — LOT 1 optimistic UI + composants mutualisés
  * -----------------------------------------------------------------------------
- * Description  :
- * - Client component: auth browser + fetch conversations/messages via lib/messages
- * - UI premium + loading + empty states
- * - Sélection conversation -> affiche messages + envoi (sendMessage)
- * - Mark read (markConversationRead)
- * - FIX ESLint no-unused-vars : suppression variable évènement non utilisée
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.0.1 (2026-01-25)
+ * - [FIX] ESLint react/no-unescaped-entities : apostrophe échappée (ligne 229)
+ * - [FIX] TypeScript scrollRef : type RefObject<HTMLDivElement> (suppression | null)
+ * 2.0.0 (2026-01-25)
+ * - [REFACTOR] Utilise composants mutualisés (ConversationList, MessageList, Composer)
+ * - [NEW] Optimistic UI : envoi immédiat + confirm + dedupe
+ * - [NEW] Retry intelligent : max 3 "sending" simultanés (Q3=B)
+ * - [NEW] Avatars + pseudo cliquables (initiales fallback Q2=B)
+ * - [KEEP] Mark read, auth bootstrap inchangés
+ * - [KEEP] Layout page premium inchangé
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { Mail, Search, ArrowRight, Users, User as UserIcon, Loader2, Check, Send } from 'lucide-react';
+import { Mail, ArrowRight, Loader2, Check } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import {
   fetchConversationsForUser,
   fetchMessages,
   markConversationRead,
   sendMessage,
-  type ConversationRow,
-  type MessageRow,
 } from '@/lib/messages';
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-function safePreview(text: string): string {
-  const clean = (text ?? '').trim().replace(/\s+/g, ' ');
-  return clean || '…';
-}
+import ConversationList from '@/components/messages/ConversationList';
+import MessageList from '@/components/messages/MessageList';
+import Composer from '@/components/messages/Composer';
+import type { ConversationRowPlus, UiMessage } from '@/components/messages/types';
 
 export default function MessagesPage() {
   const [authLoading, setAuthLoading] = useState(true);
@@ -47,23 +44,22 @@ export default function MessagesPage() {
   const [q, setQ] = useState('');
 
   const [loadingConvs, setLoadingConvs] = useState(false);
-  const [convs, setConvs] = useState<ConversationRow[]>([]);
+  const [convs, setConvs] = useState<ConversationRowPlus[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [loadingMsgs, setLoadingMsgs] = useState(false);
-  const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
 
-  const [composer, setComposer] = useState('');
-  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const filteredConvs = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return convs;
-    return convs.filter((c) => {
-      const t = (c.title ?? '').toLowerCase();
-      return t.includes(term) || c.id.toLowerCase().includes(term);
-    });
-  }, [convs, q]);
+  const selected = useMemo(
+    () => convs.find((c) => c.id === selectedId) ?? null,
+    [convs, selectedId]
+  );
+
+  const pendingSendingCount = useMemo(() => {
+    return messages.filter((m) => m.status === 'sending').length;
+  }, [messages]);
 
   // Auth bootstrap
   useEffect(() => {
@@ -88,7 +84,6 @@ export default function MessagesPage() {
       setConvs([]);
       setSelectedId(null);
       setMessages([]);
-      setComposer('');
       setAuthLoading(false);
     });
 
@@ -106,11 +101,10 @@ export default function MessagesPage() {
       if (!userId) return;
       setLoadingConvs(true);
       try {
-        const rows = await fetchConversationsForUser(userId);
+        const rows = (await fetchConversationsForUser(userId)) as unknown as ConversationRowPlus[];
         if (!mounted) return;
         setConvs(rows);
 
-        // Auto-select first if none selected
         if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
       } catch {
         if (mounted) setConvs([]);
@@ -124,8 +118,7 @@ export default function MessagesPage() {
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId, selectedId]);
 
   // Load messages for selected conversation
   useEffect(() => {
@@ -137,9 +130,14 @@ export default function MessagesPage() {
       try {
         const rows = await fetchMessages(selectedId, 80);
         if (!mounted) return;
-        setMessages(rows);
 
-        // Mark read after load
+        const uiMsgs: UiMessage[] = rows.map((r) => ({
+          ...r,
+          status: 'sent' as const,
+        }));
+
+        setMessages(uiMsgs);
+
         await markConversationRead(selectedId);
       } catch {
         if (mounted) setMessages([]);
@@ -155,11 +153,6 @@ export default function MessagesPage() {
     };
   }, [selectedId]);
 
-  const selected = useMemo(
-    () => convs.find((c) => c.id === selectedId) ?? null,
-    [convs, selectedId]
-  );
-
   const onSelectConv = (id: string) => {
     setSelectedId(id);
   };
@@ -173,20 +166,53 @@ export default function MessagesPage() {
     }
   };
 
-  const onSend = async () => {
-    const clean = composer.trim();
-    if (!selectedId || !clean || sending) return;
+  // Optimistic send
+  const handleOptimisticSend = useCallback((msg: UiMessage) => {
+    setMessages((prev) => [...prev, msg]);
+  }, []);
 
-    setSending(true);
-    try {
-      const msg = await sendMessage(selectedId, clean);
-      setComposer('');
-      setMessages((prev) => [...prev, msg]);
+  // Confirm sent (replace optimistic by DB msg)
+  const handleConfirmSent = useCallback(async (clientId: string, dbMsg: UiMessage) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.client_id === clientId ? { ...dbMsg, status: 'sent' as const } : m))
+    );
+
+    if (selectedId) {
       await markConversationRead(selectedId);
-    } finally {
-      setSending(false);
     }
-  };
+  }, [selectedId]);
+
+  // Send failed
+  const handleSendFailed = useCallback((clientId: string, error: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.client_id === clientId
+          ? { ...m, status: 'failed' as const, error, retryCount: (m.retryCount ?? 0) + 1 }
+          : m
+      )
+    );
+  }, []);
+
+  // Retry
+  const handleRetry = useCallback(
+    async (msg: UiMessage) => {
+      if (!selectedId || !msg.client_id) return;
+
+      // Replace failed by sending
+      setMessages((prev) =>
+        prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
+      );
+
+      try {
+        const dbMsg = await sendMessage(selectedId, msg.content, { client_id: msg.client_id });
+        handleConfirmSent(msg.client_id, dbMsg as UiMessage);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Erreur d&apos;envoi';
+        handleSendFailed(msg.client_id, errMsg);
+      }
+    },
+    [selectedId, handleConfirmSent, handleSendFailed]
+  );
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 pb-16 pt-28">
@@ -201,7 +227,7 @@ export default function MessagesPage() {
             Vos conversations
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Discussions privées en temps réel. RLS protège l’accès aux conversations.
+            Discussions privées en temps réel. RLS protège l&apos;accès aux conversations.
           </p>
         </div>
 
@@ -237,63 +263,15 @@ export default function MessagesPage() {
       ) : (
         <div className="mt-10 grid gap-6 lg:grid-cols-[380px_1fr]">
           {/* Sidebar */}
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur">
-            <div className="border-b border-slate-200 p-4">
-              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                <Search className="h-4 w-4 text-slate-500" />
-                <input
-                  value={q}
-                  onChange={(ev) => setQ(ev.target.value)}
-                  className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
-                  placeholder="Rechercher…"
-                  aria-label="Search conversations"
-                />
-              </div>
-            </div>
-
-            <div className="max-h-[65vh] overflow-auto p-2">
-              {loadingConvs ? (
-                <div className="flex items-center gap-2 p-3 text-sm text-slate-600">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Chargement des conversations…
-                </div>
-              ) : filteredConvs.length === 0 ? (
-                <div className="m-2 rounded-xl border border-dashed border-slate-200 bg-white/60 p-4 text-sm text-slate-600">
-                  Aucune conversation pour le moment.
-                </div>
-              ) : (
-                filteredConvs.map((c) => {
-                  const isActive = c.id === selectedId;
-                  const title = c.title ?? (c.type === 'group' ? 'Groupe' : 'Direct');
-
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => onSelectConv(c.id)}
-                      className={`flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${
-                        isActive
-                          ? 'border border-slate-200 bg-white'
-                          : 'border border-transparent hover:border-slate-200 hover:bg-white'
-                      }`}
-                    >
-                      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white">
-                        {c.type === 'group' ? (
-                          <Users className="h-5 w-5 text-slate-700" />
-                        ) : (
-                          <UserIcon className="h-5 w-5 text-slate-700" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-bold text-slate-900">{title}</div>
-                        <div className="truncate text-xs text-slate-600">#{c.id.slice(0, 8)}</div>
-                      </div>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </section>
+          <ConversationList
+            conversations={convs}
+            loading={loadingConvs}
+            selectedId={selectedId}
+            onSelect={onSelectConv}
+            query={q}
+            onQueryChange={setQ}
+            variant="page"
+          />
 
           {/* Conversation */}
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur">
@@ -322,79 +300,27 @@ export default function MessagesPage() {
             </div>
 
             <div className="h-[55vh] overflow-auto p-5">
-              {!selectedId ? (
-                <div className="flex h-full flex-col items-center justify-center text-center">
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-sm">
-                    <Mail className="h-7 w-7 text-slate-900" />
-                  </div>
-                  <h2 className="mt-4 text-lg font-extrabold text-slate-900">
-                    Sélectionnez une conversation
-                  </h2>
-                  <p className="mt-2 text-sm text-slate-600">Les messages s’afficheront ici.</p>
-                </div>
-              ) : loadingMsgs ? (
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Chargement des messages…
-                </div>
-              ) : messages.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-white/60 p-4 text-sm text-slate-600">
-                  Aucun message dans cette conversation.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {messages.map((m) => {
-                    const mine = m.sender_id === userId;
-                    return (
-                      <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                        <div
-                          className={`max-w-[80%] rounded-2xl border px-4 py-3 text-sm shadow-sm ${
-                            mine
-                              ? 'border-slate-900 bg-slate-900 text-white'
-                              : 'border-slate-200 bg-white text-slate-900'
-                          }`}
-                        >
-                          <div className="whitespace-pre-wrap">{safePreview(m.content)}</div>
-                          <div className={`mt-2 text-[11px] ${mine ? 'text-white/70' : 'text-slate-500'}`}>
-                            {formatTime(m.created_at)}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              <MessageList
+                messages={messages}
+                loading={loadingMsgs}
+                userId={userId}
+                conversationId={selectedId}
+                onRetry={handleRetry}
+                scrollRef={messagesEndRef}
+                variant="page"
+              />
             </div>
 
             {/* Composer */}
-            <div className="border-t border-slate-200 p-4">
-              <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                <input
-                  value={composer}
-                  onChange={(ev) => setComposer(ev.target.value)}
-                  onKeyDown={(ev) => {
-                    if (ev.key === 'Enter' && !ev.shiftKey) {
-                      ev.preventDefault();
-                      void onSend();
-                    }
-                  }}
-                  className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
-                  placeholder={selectedId ? 'Écrire un message…' : 'Sélectionnez une conversation…'}
-                  aria-label="Write a message"
-                  disabled={!selectedId || sending}
-                />
-                <button
-                  type="button"
-                  onClick={() => void onSend()}
-                  className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-50"
-                  disabled={!selectedId || sending || !composer.trim()}
-                >
-                  <Send className="h-4 w-4" />
-                  Envoyer
-                </button>
-              </div>
-              <div className="mt-2 text-xs text-slate-500">Entrée = envoyer • Shift+Entrée = nouvelle ligne</div>
-            </div>
+            <Composer
+              conversationId={selectedId}
+              userId={userId}
+              onOptimisticSend={handleOptimisticSend}
+              onConfirmSent={handleConfirmSent}
+              onSendFailed={handleSendFailed}
+              pendingSendingCount={pendingSendingCount}
+              variant="page"
+            />
           </section>
         </div>
       )}

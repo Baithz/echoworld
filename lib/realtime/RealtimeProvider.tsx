@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : lib/realtime/RealtimeProvider.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-24)
- * Objet        : Provider global Realtime + état badges + ChatDock (open/close)
+ * Version      : 1.4.1 (2026-01-25)
+ * Objet        : Provider global Realtime + état badges + ChatDock (open/close) — LOT 1 dedupe
  * -----------------------------------------------------------------------------
  * Description  :
  * - Se branche sur Supabase auth
@@ -13,18 +13,18 @@
  *
  * Règle auto-open :
  * - Si ChatDock OUVERT : auto-switch vers la conversation du message entrant (sans ouvrir/fermer le dock)
- * - Si ChatDock FERMÉ : n’ouvre rien, badge uniquement (non intrusif)
- * - Si l’utilisateur est déjà sur la conversation active + dock ouvert : pas de bump badge
+ * - Si ChatDock FERMÉ : n'ouvre rien, badge uniquement (non intrusif)
+ * - Si l'utilisateur est déjà sur la conversation active + dock ouvert : pas de bump badge
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-24)
- * - [FIX] Callbacks realtime stables : refs pour dockOpen/activeConv/userId (évite re-subscribe & stale state)
- * - [KEEP] API context inchangée (openConversation ouvre toujours le dock)
- * - [KEEP] Badges + règles auto-open inchangés
- * 1.2.0 (2026-01-22)
- * - [NEW] Auto-open conditionnel "dock-open only" sur message entrant (non intrusif)
- * - [NEW] Anti-bump si conversation active déjà ouverte (dock ouvert)
+ * 1.4.1 (2026-01-25)
+ * - [FIX] TypeScript payload type : MessageConfirmCallback accept unknown payload (compatible RealtimeMessagePayload)
+ * 1.4.0 (2026-01-25)
+ * - [NEW] Event onMessageConfirm(callback) pour confirm optimistic (dedupe via client_id)
+ * - [KEEP] Callbacks realtime stables (refs)
+ * - [KEEP] Auto-open conditionnel inchangé
+ * - [KEEP] API context inchangée
  * =============================================================================
  */
 
@@ -43,6 +43,8 @@ import { supabase } from '@/lib/supabase/client';
 import { initRealtime, destroyRealtime, onMessage, onNotification } from '@/lib/realtime/realtime';
 import { fetchUnreadMessagesCount } from '@/lib/messages';
 import { fetchUnreadNotificationsCount } from '@/lib/notifications';
+
+type MessageConfirmCallback = (payload: { record: { id: string; payload?: unknown } }) => void;
 
 type RealtimeContextValue = {
   userId: string | null;
@@ -66,6 +68,9 @@ type RealtimeContextValue = {
   // Helpers (optionnels)
   bumpUnreadMessages: (delta?: number) => void;
   bumpUnreadNotifications: (delta?: number) => void;
+
+  // LOT 1 : confirm optimistic
+  onMessageConfirm: (callback: MessageConfirmCallback) => () => void;
 };
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
@@ -89,6 +94,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const userIdRef = useRef<string | null>(null);
   const dockOpenRef = useRef<boolean>(false);
   const activeConvRef = useRef<string | null>(null);
+
+  // LOT 1 : callbacks confirm optimistic
+  const confirmCallbacksRef = useRef<Set<MessageConfirmCallback>>(new Set());
 
   useEffect(() => {
     userIdRef.current = userId;
@@ -151,6 +159,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     setActiveConversationId(null);
   }, []);
 
+  // LOT 1 : subscribe to confirm events
+  const onMessageConfirm = useCallback((callback: MessageConfirmCallback) => {
+    confirmCallbacksRef.current.add(callback);
+    return () => {
+      confirmCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   // --------------------------------------------------------------------------
   // Auth bootstrap
   // --------------------------------------------------------------------------
@@ -203,7 +219,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       const dockOpen = dockOpenRef.current;
       const activeConv = activeConvRef.current;
 
-      // Si dock ouvert + conversation déjà active => pas de bump (l’utilisateur lit déjà)
+      // Si dock ouvert + conversation déjà active => pas de bump (l'utilisateur lit déjà)
       if (dockOpen && activeConv === convId) return;
 
       // Badge unread
@@ -213,6 +229,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       if (dockOpen) {
         setActiveConversationId(convId);
       }
+
+      // LOT 1 : notify confirm callbacks (pour dedupe optimistic)
+      confirmCallbacksRef.current.forEach((cb) => cb(p as unknown as { record: { id: string; payload?: unknown } }));
     });
 
     const offNotif = onNotification((p) => {
@@ -245,6 +264,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
       bumpUnreadMessages,
       bumpUnreadNotifications,
+
+      onMessageConfirm,
     }),
     [
       userId,
@@ -260,6 +281,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       closeConversation,
       bumpUnreadMessages,
       bumpUnreadNotifications,
+      onMessageConfirm,
     ]
   );
 

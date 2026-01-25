@@ -1,22 +1,24 @@
 // =============================================================================
 // Fichier      : lib/messages/index.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.1.1 (2026-01-24)
-// Objet        : Queries Messages (conversations, messages, unread, read state) — aligné BDD réelle
+// Version      : 2.0.0 (2026-01-25)
+// Objet        : Queries Messages (conversations, messages, unread, read state) — LOT 1 optimistic UI
 // -----------------------------------------------------------------------------
 // BDD (réelle) :
 // - public.conversations(id, type conversation_type, title?, created_by?, echo_id?, created_at, updated_at)
 // - public.conversation_members(conversation_id, user_id, role, joined_at, last_read_at, muted)
 // - public.messages(id, conversation_id, sender_id, content, payload?, created_at, edited_at?, deleted_at?)
+// - public.profiles(id, handle, display_name, avatar_url, ...)
 //
-// PHASE 5 — Mirror & DM (alignés sur la BDD réelle)
-// - [PHASE5] fetchConversationsForUser : conversations.* + echo_id + tri récent (updated_at desc local)
-// - [PHASE5] fetchConversationsForUser : enrichit les conv "direct" avec le peer (handle/display_name/avatar_url) via profiles
-// - [PHASE5] fetchUnreadMessagesCount : calcule les non-lus via conversation_members.last_read_at vs messages.created_at
-// - [KEEP] fetchMessages : deleted_at null + ordre chronologique + limit
-// - [KEEP] markConversationRead : update conversation_members.last_read_at (RLS friendly)
+// CHANGELOG
+// -----------------------------------------------------------------------------
+// 2.0.0 (2026-01-25)
+// - [NEW] sendMessage() supporte payload?: { client_id: string } pour optimistic UI
+// - [NEW] fetchSenderProfiles(senderIds: string[]) : batch fetch profiles pour avatars + noms
+// - [KEEP] fetchConversationsForUser enrichit peer_* (handle/display_name/avatar_url) inchangé
+// - [KEEP] fetchUnreadMessagesCount, markConversationRead inchangés
+// - [KEEP] Types ConversationRow, MessageRow inchangés
 // - [SAFE] Neutralise TS "never" sans `any` explicite
-// - [FIX] ESLint: retire @typescript-eslint/ban-types + type Function (no-unsafe-function-type)
 // =============================================================================
 
 import { supabase } from '@/lib/supabase/client';
@@ -62,6 +64,14 @@ export type MessageRow = {
   deleted_at: string | null;
 };
 
+// LOT 1 : Profile minimal pour sender enrichment
+export type SenderProfile = {
+  id: string;
+  handle: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
 // Minimal profile shape (pour titrage des DM)
 type ProfileRow = {
   id: string;
@@ -103,7 +113,7 @@ type MsgCountRes = {
 type PgErr = { message?: string } | null;
 type PgRes<T> = { data: T | null; error: PgErr };
 
-// Builder minimal pour chains qu’on utilise
+// Builder minimal pour chains qu'on utilise
 type Chain = {
   select: (...args: unknown[]) => Chain;
   eq: (...args: unknown[]) => Chain;
@@ -325,7 +335,46 @@ export async function fetchMessages(conversationId: string, limit = 50): Promise
   return ((data as unknown) ?? []) as MessageRow[];
 }
 
-export async function sendMessage(conversationId: string, content: string): Promise<MessageRow> {
+/* ============================================================================
+ * LOT 1 — SENDER PROFILES (batch fetch pour avatars + noms)
+ * ============================================================================
+ */
+
+/**
+ * Fetch profiles pour une liste de sender_id (batch).
+ * Retourne Map<sender_id, SenderProfile>
+ */
+export async function fetchSenderProfiles(senderIds: string[]): Promise<Map<string, SenderProfile>> {
+  const ids = uniq(senderIds);
+  const map = new Map<string, SenderProfile>();
+
+  if (ids.length === 0) return map;
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id,handle,display_name,avatar_url')
+    .in('id', ids);
+
+  if (error || !Array.isArray(data)) return map;
+
+  for (const p of data as SenderProfile[]) {
+    const pid = String(p?.id ?? '').trim();
+    if (pid) map.set(pid, p);
+  }
+
+  return map;
+}
+
+/* ============================================================================
+ * LOT 1 — SEND MESSAGE (support optimistic UI via payload.client_id)
+ * ============================================================================
+ */
+
+export async function sendMessage(
+  conversationId: string,
+  content: string,
+  payload?: { client_id?: string; [key: string]: unknown }
+): Promise<MessageRow> {
   const cid = (conversationId ?? '').trim();
   const clean = (content ?? '').trim();
   if (!cid || !clean) throw new Error('Missing conversationId or empty content.');
@@ -334,15 +383,20 @@ export async function sendMessage(conversationId: string, content: string): Prom
   const senderId = u.user?.id ?? null;
   if (!senderId) throw new Error('Not authenticated.');
 
-  const payload: Record<string, unknown> = {
+  const insertPayload: Record<string, unknown> = {
     conversation_id: cid,
     sender_id: senderId,
     content: clean,
   };
 
+  // LOT 1 : support payload (client_id pour optimistic dedupe)
+  if (payload && typeof payload === 'object') {
+    insertPayload.payload = payload;
+  }
+
   const { data, error } = await supabase
     .from('messages')
-    .insert(payload as unknown as never)
+    .insert(insertPayload as unknown as never)
     .select('*')
     .single();
 
