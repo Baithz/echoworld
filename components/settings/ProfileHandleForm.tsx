@@ -170,6 +170,13 @@ export default function ProfileHandleForm({
           signal: ctrl.signal,
         });
 
+        // FAIL-SOFT: si route absente / non-OK => on ne bloque pas l'utilisateur
+        if (!res.ok) {
+          if (ctrl.signal.aborted) return;
+          apply('error', 'Disponibilité non vérifiée (OK).');
+          return;
+        }
+
         const json = (await res.json().catch(() => null)) as { available?: boolean } | null;
         const available = Boolean(json && typeof json.available === 'boolean' ? json.available : false);
 
@@ -179,7 +186,7 @@ export default function ProfileHandleForm({
         else apply('taken', 'Déjà utilisé.');
       } catch {
         if (ctrl.signal.aborted) return;
-        apply('error', 'Impossible de vérifier pour le moment.');
+        apply('error', 'Disponibilité non vérifiée (OK).');
       }
     };
 
@@ -207,7 +214,8 @@ export default function ProfileHandleForm({
         setMessage('Vérification en cours…');
         return;
       }
-      if (availability !== 'available') return;
+      // FAIL-SOFT : error = check indisponible => on autorise quand même
+      if (availability !== 'available' && availability !== 'error') return;
     }
 
     if (!isDirty) return;
@@ -227,6 +235,11 @@ export default function ProfileHandleForm({
 
     if (!validation.ok) return false;
     if (availability === 'checking') return false;
+
+    // FAIL-SOFT : si le check est indisponible, on autorise quand même l'application.
+    // La contrainte UNIQUE BDD fera foi au moment du save.
+    if (availability === 'error') return true;
+
     return availability === 'available';
   }, [disabled, isDirty, normalized, validation.ok, availability]);
 
