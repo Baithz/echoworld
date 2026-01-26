@@ -302,9 +302,15 @@ export default function ChatDock() {
 
         setConvs(rows);
 
-        if (!activeConversationId && rows.length > 0) {
-          openConversation(rows[0].id);
-        }
+      if (!activeConversationId && rows.length > 0) {
+        // Trier par updated_at desc (plus récent en premier)
+        const sorted = [...rows].sort((a, b) => {
+          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+          return tb - ta;
+        });
+        openConversation(sorted[0].id); // ← Dernière conversation active
+      }
       } catch {
         if (!cancelled && mountedRef.current) setConvs([]);
       } finally {
@@ -452,9 +458,11 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
 
-        setTimeout(() => {
-          if (!cancelled && mountedRef.current) scrollToBottom();
-        }, 0);
+      // ✅ Scroll immédiat + delayed (pour render complet)
+      scrollToBottom();
+      setTimeout(() => {
+        if (!cancelled && mountedRef.current) scrollToBottom();
+      }, 100);
       } catch {
         if (!cancelled && mountedRef.current) setMessages([]);
       } finally {

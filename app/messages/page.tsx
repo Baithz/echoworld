@@ -274,7 +274,14 @@ export default function MessagesPage() {
 
         setConvs(rows);
 
-        if (!selectedId && rows.length > 0) setSelectedId(rows[0].id);
+      if (!selectedId && rows.length > 0) {
+        const sorted = [...rows].sort((a, b) => {
+          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+          return tb - ta;
+        });
+        setSelectedId(sorted[0].id);
+      }
       } catch {
         if (mounted) setConvs([]);
       } finally {
@@ -433,6 +440,10 @@ export default function MessagesPage() {
 
         await markConversationRead(selectedId);
         setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
+        setTimeout(() => {
+          if (!mounted) return;
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }, 100);
       } catch {
         if (mounted) setMessages([]);
       } finally {

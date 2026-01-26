@@ -2,25 +2,23 @@
  * =============================================================================
  * Fichier      : components/messages/ConversationList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-26)
- * Objet        : Liste conversations — ChatDock + Page + PresenceBadge overlay (fail-soft)
+ * Version      : 1.3.1 (2026-01-26)
+ * Objet        : Liste conversations — ChatDock + Page (sans badge présence sur avatars)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Affiche liste conversations avec recherche, états (loading/empty) et sélection active
  * - Support peer enrichment (handle/display_name/avatar_url) pour DM
  * - Avatars cliquables vers /u/[handle] (DM uniquement)
  * - Unread : badge par conv si unreadCounts fourni (fail-soft)
- * - Présence :
- *   - Compat : conserve onlineUserIds?: string[] (si fourni, prioritaire)
- *   - NEW : fallback auto via usePresence/isUserOnline (si onlineUserIds absent) (fail-soft)
- *   - UI : PresenceLine (En ligne/Hors ligne) + PresenceBadge overlay sur l’avatar (DM)
+ * - SAFE : suppression du PresenceBadge overlay sur avatar sidebar (pas d’impact header)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-26)
- * - [NEW] PresenceBadge overlay sur avatar (DM) — vert/gris (fail-soft)
- * - [IMPROVED] Présence : onlineUserIds prioritaire, fallback usePresence() si non fourni
- * - [KEEP] 1.2.0 : recherche, avatars cliquables, unread badges, states, layout inchangés
+ * 1.3.1 (2026-01-26)
+ * - [REMOVE] Sidebar: supprime PresenceBadge overlay sur avatars (DM)
+ * - [REMOVE] Sidebar: supprime fallback présence local (usePresence/isUserOnline) dans la liste
+ * - [KEEP] UI: PresenceLine (En ligne/Hors ligne) conservée (pilotée par onlineUserIds si fourni)
+ * - [KEEP] Recherche, avatars cliquables, unread badges, states, layout inchangés
  * =============================================================================
  */
 
@@ -29,8 +27,6 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { Search, Loader2, Users, User as UserIcon } from 'lucide-react';
-import PresenceBadge from './PresenceBadge';
-import { usePresence, isUserOnline } from '@/lib/presence/usePresence';
 import type { ConversationRowPlus } from './types';
 
 type Props = {
@@ -45,9 +41,8 @@ type Props = {
   // counts non lus par conv (ex: fetchUnreadCountsByConversation)
   unreadCounts?: Record<string, number>;
 
-  // Présence (fail-soft).
-  // Option 1 (prioritaire): liste d'user_id en ligne (peer_user_id).
-  // Option 2 (fallback): usePresence() local si non fourni.
+  // Présence (fail-soft): liste d'user_id en ligne (peer_user_id).
+  // NOTE: la présence du header est gérée ailleurs (ChatDock/page).
   onlineUserIds?: string[];
 };
 
@@ -96,9 +91,6 @@ export default function ConversationList({
     });
   }, [conversations, query]);
 
-  // PHASE 3: Présence (fallback global, fail-soft)
-  const presenceMap = usePresence(null, 'global-presence');
-
   const onlineSet = useMemo(() => {
     const ids = Array.isArray(onlineUserIds) ? onlineUserIds : [];
     return new Set(ids.map((s) => String(s ?? '').trim()).filter(Boolean));
@@ -109,22 +101,13 @@ export default function ConversationList({
   const resolveOnline = (peerUserId: string | null | undefined): boolean => {
     const pid = String(peerUserId ?? '').trim();
     if (!pid) return false;
-
-    // 1) si onlineUserIds fourni, il est prioritaire (compat 1.2.0)
+    // Uniquement via onlineUserIds si fourni, sinon fail-soft => offline
     if (Array.isArray(onlineUserIds)) return onlineSet.has(pid);
-
-    // 2) sinon fallback via presenceMap (fail-soft)
-    try {
-      return isUserOnline(presenceMap, pid);
-    } catch {
-      return false;
-    }
+    return false;
   };
 
   const PresenceLine = ({ isGroup, peerUserId }: { isGroup: boolean; peerUserId: string | null | undefined }) => {
-    if (isGroup) {
-      return <span className="block truncate text-[11px] text-slate-500">Groupe</span>;
-    }
+    if (isGroup) return <span className="block truncate text-[11px] text-slate-500">Groupe</span>;
 
     const isOnline = resolveOnline(peerUserId);
 
@@ -140,7 +123,11 @@ export default function ConversationList({
   };
 
   return (
-    <div className={isDock ? '' : 'overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur'}>
+    <div
+      className={
+        isDock ? '' : 'overflow-hidden rounded-2xl border border-slate-200 bg-white/75 shadow-sm backdrop-blur'
+      }
+    >
       {/* Search */}
       <div className={isDock ? 'p-2' : 'border-b border-slate-200 p-4'}>
         <div
@@ -190,9 +177,6 @@ export default function ConversationList({
             const profileHref = isDirect ? profileHrefFromHandle(c.peer_handle ?? null) : null;
             const avatarUrl = isDirect ? (c.peer_avatar_url ?? null) : null;
 
-            const peerUserId = String(c.peer_user_id ?? '').trim();
-            const showPresenceBadge = isDirect && Boolean(peerUserId);
-
             const Avatar = () => {
               const baseClass = isDock
                 ? 'inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white overflow-hidden'
@@ -211,34 +195,20 @@ export default function ConversationList({
                 fallbackIcon
               );
 
-              const overlay = showPresenceBadge ? (
-                <div className="absolute bottom-0 right-0 rounded-full bg-white p-0.5">
-                  <PresenceBadge online={resolveOnline(peerUserId)} size="small" showTooltip={false} />
-                </div>
-              ) : null;
-
               if (profileHref) {
                 return (
-                  <div className="relative">
-                    <Link
-                      href={profileHref}
-                      className={baseClass}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Voir le profil de ${title}`}
-                    >
-                      {content}
-                    </Link>
-                    {overlay}
-                  </div>
+                  <Link
+                    href={profileHref}
+                    className={baseClass}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Voir le profil de ${title}`}
+                  >
+                    {content}
+                  </Link>
                 );
               }
 
-              return (
-                <div className="relative">
-                  <span className={baseClass}>{content}</span>
-                  {overlay}
-                </div>
-              );
+              return <span className={baseClass}>{content}</span>;
             };
 
             if (isDock) {

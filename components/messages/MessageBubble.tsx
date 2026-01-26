@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.0 (2026-01-25)
- * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2
+ * Version      : 2.6.2 (2026-01-26)
+ * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2 + Attachments
  * -----------------------------------------------------------------------------
  * Description  :
  * - Affiche bulle message (mine vs received)
@@ -15,12 +15,17 @@
  * - Reply toujours visible côté extérieur (received=right, mine=left)
  * - Badge réactions superposé coin extérieur (received=bottom-right, mine=bottom-left)
  * - Emoji hover toujours à gauche du badge (ancré sur le badge, jamais écrasé)
+ * - Attachments (images) + Lightbox (clic → modal + navigation)
+ * - SAFE: fail-soft sur payload inconnue (narrowing + guards)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.5.0 (2026-01-25)
- * - [FIX] Avatar: affiche avatar_url (image) si dispo, fallback initiales si absent/erreur
- * - [KEEP] Reply/badges/reactions/quoted/optimistic/retry inchangés
+ * 2.6.2 (2026-01-26)
+ * - [FIX] Import type Attachment: utilise l'export nommé depuis MessageAttachments.tsx
+ * - [KEEP] Aucune régression UI/UX : avatars/reactions/reply/quoted/optimistic/retry inchangés
+ * -----------------------------------------------------------------------------
+ * 2.6.1 (2026-01-26)
+ * - [FIX] TypeScript: aligne le type attachments sur MessageAttachments (name/size/type optionnels)
  * =============================================================================
  */
 
@@ -28,12 +33,14 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Loader2, AlertCircle, RotateCw, Reply } from 'lucide-react';
+import { AlertCircle, Loader2, Reply, RotateCw } from 'lucide-react';
 import QuotedMessage from './QuotedMessage';
 import ReactionPicker from './ReactionPicker';
 import ReactionBadges from './ReactionBadges';
+import MessageAttachments, { type Attachment as MessageAttachment } from './MessageAttachments';
+import ImageLightbox from './ImageLightbox';
 import { groupReactions } from '@/lib/messages/reactions';
-import type { UiMessage, SenderProfile } from './types';
+import type { SenderProfile, UiMessage } from './types';
 
 type Props = {
   message: UiMessage;
@@ -46,6 +53,13 @@ type Props = {
   onReactionToggle?: (messageId: string, emoji: string) => void;
   onQuoteClick?: (parentId: string) => void;
   variant?: 'dock' | 'page';
+};
+
+type AttachmentLike = {
+  url?: unknown;
+  name?: unknown;
+  size?: unknown;
+  type?: unknown;
 };
 
 function formatTime(iso: string): string {
@@ -83,6 +97,42 @@ function getDisplayName(profile: SenderProfile | null | undefined): string {
 function getAvatarUrl(profile: SenderProfile | null | undefined): string | null {
   const url = (profile?.avatar_url ?? '').trim();
   return url ? url : null;
+}
+
+function isBracketFilesPlaceholder(content: string): boolean {
+  const s = (content ?? '').trim();
+  // Exemple: "[1 fichier(s)]", "[2 fichier(s)]"
+  return /^\[\s*\d+\s+fichier\(s\)\s*\]$/i.test(s);
+}
+
+/**
+ * Normalise payload.attachments[] -> Attachment[] (type aligné MessageAttachments).
+ * Fail-soft: ignore toute entrée invalide.
+ */
+function extractAttachments(payload: unknown): MessageAttachment[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const o = payload as Record<string, unknown>;
+  const raw = o.attachments;
+  if (!Array.isArray(raw)) return [];
+
+  const out: MessageAttachment[] = [];
+
+  for (const item of raw as AttachmentLike[]) {
+    if (!item || typeof item !== 'object') continue;
+
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!url) continue;
+
+    const name = typeof item.name === 'string' && item.name.trim() ? item.name : undefined;
+    const type = typeof item.type === 'string' && item.type.trim() ? item.type : undefined;
+
+    const size =
+      typeof item.size === 'number' && Number.isFinite(item.size) && item.size >= 0 ? item.size : undefined;
+
+    out.push({ url, name, type, size });
+  }
+
+  return out;
 }
 
 export default function MessageBubble({
@@ -149,6 +199,51 @@ export default function MessageBubble({
     </>
   );
 
+  // ✅ Attachments (fail-soft)
+  const attachments = useMemo(() => extractAttachments(message.payload), [message.payload]);
+  const hasAttachments = attachments.length > 0;
+
+  // ✅ Lightbox state
+  const [lightbox, setLightbox] = useState<{
+    url: string;
+    images: string[];
+    index: number;
+  } | null>(null);
+
+  const handleImageClick = (url: string, allImages: string[], index: number) => {
+    const u = (url ?? '').trim();
+    if (!u) return;
+
+    const imgs = Array.isArray(allImages)
+      ? allImages.filter((x) => typeof x === 'string' && x.trim())
+      : [u];
+
+    const safeImgs = imgs.length ? imgs : [u];
+    const i = Number.isFinite(index) ? index : 0;
+
+    setLightbox({
+      url: u,
+      images: safeImgs,
+      index: Math.max(0, Math.min(i, safeImgs.length - 1)),
+    });
+  };
+
+  const handleLightboxPrev = () => {
+    if (!lightbox) return;
+    const newIndex = lightbox.index - 1;
+    if (newIndex >= 0) setLightbox({ ...lightbox, url: lightbox.images[newIndex], index: newIndex });
+  };
+
+  const handleLightboxNext = () => {
+    if (!lightbox) return;
+    const newIndex = lightbox.index + 1;
+    if (newIndex < lightbox.images.length) setLightbox({ ...lightbox, url: lightbox.images[newIndex], index: newIndex });
+  };
+
+  // Texte: si placeholder "[N fichier(s)]" et attachments présents, on masque le texte
+  const rawContent = safeText(message.content);
+  const showContent = !(hasAttachments && isBracketFilesPlaceholder(rawContent));
+
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -160,11 +255,7 @@ export default function MessageBubble({
         {!mine && (
           <div className="shrink-0">
             {profileUrl ? (
-              <Link
-                href={profileUrl}
-                className={avatarBaseClass}
-                aria-label={`Profil ${getDisplayName(senderProfile)}`}
-              >
+              <Link href={profileUrl} className={avatarBaseClass} aria-label={`Profil ${getDisplayName(senderProfile)}`}>
                 {AvatarContent}
               </Link>
             ) : (
@@ -207,7 +298,15 @@ export default function MessageBubble({
                   mine ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-900'
                 } ${isFailed ? 'border-red-300 bg-red-50' : ''}`}
               >
-                <div className="whitespace-pre-wrap">{safeText(message.content)}</div>
+                {/* Content */}
+                {showContent && <div className="whitespace-pre-wrap">{rawContent}</div>}
+
+                {/* ✅ Attachments */}
+                {hasAttachments && (
+                  <div className={showContent ? 'mt-2' : ''}>
+                    <MessageAttachments attachments={attachments} onImageClick={handleImageClick} />
+                  </div>
+                )}
 
                 {/* Meta */}
                 <div
@@ -263,7 +362,7 @@ export default function MessageBubble({
                 </button>
               )}
 
-              {/* ✅ Coin réactions (badge + emoji) : emoji ancré AU BADGE */}
+              {/* ✅ Coin réactions */}
               {(showBadges || canReact) && (
                 <div className={`absolute bottom-0 ${cornerPosClass} translate-y-1/2 z-20`}>
                   <div className="relative inline-flex items-center">
@@ -292,6 +391,18 @@ export default function MessageBubble({
             </div>
 
             {(showBadges || canReact) && <div className="h-4" />}
+
+            {/* ✅ Lightbox modal */}
+            {lightbox && (
+              <ImageLightbox
+                imageUrl={lightbox.url}
+                images={lightbox.images}
+                currentIndex={lightbox.index}
+                onClose={() => setLightbox(null)}
+                onPrev={handleLightboxPrev}
+                onNext={handleLightboxNext}
+              />
+            )}
           </div>
         </div>
       </div>

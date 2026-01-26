@@ -2,34 +2,32 @@
  * =============================================================================
  * Fichier      : components/messages/RichComposer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.1 (2026-01-26)
- * Objet        : Rich Composer avec upload Supabase Storage — Fix lint + preview stable
+ * Version      : 2.1.2 (2026-01-26)
+ * Objet        : Rich Composer avec upload Supabase Storage — UX clean + upload only
  * -----------------------------------------------------------------------------
  * Description  :
  * - Conserve : actions au-dessus, typing callbacks, reply preview, optimistic send/retry, upload storage
- * - Fix lint : supprime import inutilisé ImageIcon
- * - Fix preview : évite les createObjectURL en render + cleanup systématique (anti-fuite mémoire)
- * - Fix input file : reset value pour pouvoir re-sélectionner le même fichier
+ * - UX : supprime le texte "Entrée = envoyer…" (inutile) et affiche uniquement l’état "Upload en cours…"
+ * - SAFE : previews stables + cleanup objectURLs + reset file input conservés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.1 (2026-01-26)
- * - [FIX] ESLint : supprime ImageIcon (unused-vars)
- * - [FIX] Preview : gestion des objectURLs via state + cleanup (pas de fuite)
- * - [IMPROVED] File input : reset après sélection (reselect même fichier OK)
- * - [KEEP] 2.1.0 : Upload Supabase Storage + miniatures + payload.attachments inchangés
+ * 2.1.2 (2026-01-26)
+ * - [CHANGE] UI: supprime "Entrée = envoyer • Shift+Entrée = ligne"
+ * - [KEEP] Affiche uniquement "Upload en cours..." quand uploading=true
+ * - [KEEP] 2.1.1 : preview URLs stables + cleanup + reset input + lint fix
  * =============================================================================
  */
 
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Paperclip, Smile, X } from 'lucide-react';
 import dynamic from 'next/dynamic';
+import { Paperclip, Send, Smile, X } from 'lucide-react';
 import { sendMessage } from '@/lib/messages';
-import { uploadMessageAttachments, isImageFile, formatFileSize } from '@/lib/storage/uploadToStorage';
+import { formatFileSize, isImageFile, uploadMessageAttachments } from '@/lib/storage/uploadToStorage';
 import ReplyPreview from './ReplyPreview';
-import type { UiMessage, SenderProfile } from './types';
+import type { SenderProfile, UiMessage } from './types';
 
 const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
 
@@ -60,7 +58,6 @@ function generateClientId(): string {
 }
 
 function fileKey(file: File): string {
-  // clé stable côté UI (pas parfaite mais suffisante pour la preview)
   return `${file.name}__${file.size}__${file.lastModified}__${file.type}`;
 }
 
@@ -87,6 +84,7 @@ export default function RichComposer({
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isDock = variant === 'dock';
+
   const canSend = Boolean(
     conversationId &&
       userId &&
@@ -137,7 +135,6 @@ export default function RichComposer({
 
     const clientId = generateClientId();
 
-    // Optimistic message (sans attachments d'abord)
     const optimisticMsg: UiMessage = {
       id: '',
       conversation_id: conversationId,
@@ -163,29 +160,21 @@ export default function RichComposer({
     if (replyTo) onReplyCancel();
 
     try {
-      // Upload attachments si présents
       let uploadedAttachments: Array<{ url: string; name: string; size: number; type: string }> = [];
 
       if (filesToUpload.length > 0) {
         setUploading(true);
         const results = await uploadMessageAttachments(filesToUpload, userId);
-        uploadedAttachments = results.map((r) => ({
-          url: r.url,
-          name: r.name,
-          size: r.size,
-          type: r.type,
-        }));
+        uploadedAttachments = results.map((r) => ({ url: r.url, name: r.name, size: r.size, type: r.type }));
         setUploading(false);
       }
 
-      // Payload avec attachments
       const payload: { client_id: string; parent_id?: string; attachments?: typeof uploadedAttachments } = {
         client_id: clientId,
       };
       if (replyTo?.id) payload.parent_id = replyTo.id;
       if (uploadedAttachments.length > 0) payload.attachments = uploadedAttachments;
 
-      // Send to DB
       const dbMsg = await sendMessage(conversationId, clean || `[${uploadedAttachments.length} fichier(s)]`, payload);
       onConfirmSent(clientId, dbMsg as UiMessage);
     } catch (err) {
@@ -282,6 +271,7 @@ export default function RichComposer({
             className="hidden"
             onChange={handleFileSelect}
           />
+
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -314,18 +304,10 @@ export default function RichComposer({
           </div>
         </div>
 
-        <div className={`text-slate-500 ${isDock ? 'text-[11px]' : 'text-xs'}`}>
-          {uploading ? (
-            <span className="font-semibold text-blue-600">Upload en cours...</span>
-          ) : (
-            <>
-              Entrée = envoyer • Shift+Entrée = ligne
-              {pendingSendingCount >= 3 && (
-                <span className="ml-2 font-semibold text-orange-600">(max 3 en cours)</span>
-              )}
-            </>
-          )}
-        </div>
+        {/* ✅ GARDER UNIQUEMENT ÉTAT UPLOAD */}
+        {uploading && (
+          <div className={`font-semibold text-blue-600 ${isDock ? 'text-[11px]' : 'text-xs'}`}>Upload en cours...</div>
+        )}
       </div>
 
       {/* Textarea + Send button */}
