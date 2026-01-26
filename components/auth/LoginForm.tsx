@@ -2,26 +2,26 @@
  * =============================================================================
  * Fichier      : components/auth/LoginForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.0 (2026-01-21)
- * Objet        : Form Connexion via API Route (contourne CORS)
+ * Version      : 1.3.1 (2026-01-26)
+ * Objet        : Form Connexion via API Route + lien mot de passe oublié
  * -----------------------------------------------------------------------------
  * Description  :
- * - Utilise /api/auth/login au lieu d'appel direct Supabase
- * - Plus de problème CORS
- * - Loading + erreurs + UI cohérente thème clair
+ * - Utilise /api/auth/login au lieu d'appel direct Supabase (anti-CORS)
+ * - Conserve UI/animations + stockage session côté client
+ * - Ajoute un lien "Mot de passe oublié ?" vers /auth/forgot-password
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.0 (2026-01-21)
- * - [FIX] Contournement CORS : connexion via /api/auth/login (server-side)
- * - [IMPROVED] Gestion session après connexion réussie
- * - [CHORE] Aucune régression UI/animations
+ * 1.3.1 (2026-01-26)
+ * - [NEW] Lien mot de passe oublié -> /auth/forgot-password
+ * - [KEEP] Aucune régression UI/animations + flow login
  * =============================================================================
  */
 
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Mail, Lock, AlertTriangle, ArrowRight } from 'lucide-react';
 import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
 
@@ -148,6 +148,16 @@ export default function LoginForm({
           />
         </div>
       </label>
+
+      {/* NEW: Forgot password */}
+      <div className="-mt-2 flex justify-end">
+        <Link
+          href="/auth/forgot-password"
+          className="text-sm font-semibold text-violet-700 hover:text-violet-800"
+        >
+          Mot de passe oublié ?
+        </Link>
+      </div>
 
       {/* Messages */}
       {error && (
