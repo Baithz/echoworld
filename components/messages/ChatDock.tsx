@@ -2,25 +2,28 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.4.0 (2026-01-25)
- * Objet        : ChatDock (bulle) — LOT 2 + LIVE + Auto-scroll + Typing + RichComposer
+ * Version      : 2.5.1 (2026-01-25)
+ * Objet        : ChatDock redesigné — Fix auto-scroll + typing + UX améliorée
  * -----------------------------------------------------------------------------
  * Description  :
- * - Dock flottant : sidebar conversations + thread + composer
- * - LOT 2 : reply / reactions / optimistic / retry conservés
- * - LIVE : reçoit les messages entrants via RealtimeProvider.onNewMessage (sans refresh)
- * - LOT 2.6 : Auto-scroll après réception message
- * - LOT 2.6 : Typing indicator (start/stop typing + affichage)
- * - Remplace Composer par RichComposer (callbacks typing), sans régression UI/UX
+ * - Dock flottant redesigné : sidebar 200px + actions au-dessus textarea
+ * - Fix auto-scroll : supprime useEffect conflictuel messages.length
+ * - Fix typing : fetch profiles pour afficher vrais noms
+ * - LOT 2.6 complet : RichComposer + TypingIndicator intégrés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.4.0 (2026-01-25)
- * - [NEW] LOT 2.6: Typing indicator (useTyping + TypingIndicator) dans le thread
- * - [NEW] LOT 2.6: RichComposer (remplace Composer) + callbacks onTypingStart/onTypingStop
- * - [KEEP] 2.3.1: Auto-scroll après réception message (setTimeout 100ms)
- * - [KEEP] 2.3.0: Live messages + unread badges + tri + dedupe inchangés
- * - [KEEP] LOT 2: reply/reactions/optimistic/retry inchangés
+ * 2.5.1 (2026-01-25)
+ * - [FIX] TypeScript : typage explicite .single<ProfileType>() + check error
+ * - [KEEP] 2.5.0 : Redesign + auto-scroll + typing inchangés
+ * 2.5.0 (2026-01-25)
+ * - [REDESIGN] Sidebar 200px (au lieu de 150px) - meilleure lisibilité noms
+ * - [REDESIGN] Wrapper w-[1100px] (au lieu de w-95) - plus d'espace conversation
+ * - [REDESIGN] Actions (📎 😊) AU-DESSUS textarea - meilleure ergonomie
+ * - [FIX] Auto-scroll : supprime useEffect conflictuel messages.length
+ * - [FIX] Typing : fetch profiles display_name/handle (vrais noms)
+ * - [NEW] RichComposer v2 : actions top + layout amélioré
+ * - [KEEP] LOT 1/2 : Optimistic + Reply + Reactions inchangés
  * =============================================================================
  */
 
@@ -150,9 +153,6 @@ export default function ChatDock() {
     el.scrollIntoView({ block: 'end', behavior: 'smooth' });
   };
 
-  // LOT 2.6: Typing indicator
-  const { typingUsers, startTyping, stopTyping } = useTyping(activeConversationId, userId, null, null);
-
   const selected = useMemo(
     () => convs.find((c) => c.id === activeConversationId) ?? null,
     [convs, activeConversationId]
@@ -161,6 +161,45 @@ export default function ChatDock() {
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
+
+  // ✅ FIX 2: Fetch current user profile pour typing
+  const [currentUserProfile, setCurrentUserProfile] = useState<{
+    displayName: string | null;
+    handle: string | null;
+  }>({ displayName: null, handle: null });
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const fetchProfile = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('display_name, handle')
+          .eq('id', userId)
+          .single<{ display_name: string | null; handle: string | null }>();
+
+        if (error || !data) return;
+
+        setCurrentUserProfile({
+          displayName: data.display_name ?? null,
+          handle: data.handle ?? null,
+        });
+      } catch {
+        // Fail-soft
+      }
+    };
+
+    void fetchProfile();
+  }, [userId]);
+
+  // LOT 2.6: Typing indicator avec vrais noms
+  const { typingUsers, startTyping, stopTyping } = useTyping(
+    activeConversationId,
+    userId,
+    currentUserProfile.displayName,
+    currentUserProfile.handle
+  );
 
   useEffect(() => {
     if (!isChatDockOpen) {
@@ -210,7 +249,7 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
 
-        // ✅ LOT 2.6: Auto-scroll après réception message
+        // ✅ FIX 1: Auto-scroll après réception message (seul endroit)
         setTimeout(() => scrollToBottom(), 100);
 
         void markConversationRead(convId).catch(() => {});
@@ -405,11 +444,8 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, activeConversationId, refreshCounts]);
 
-  // Scroll on new messages
-  useEffect(() => {
-    if (!isChatDockOpen || messages.length === 0) return;
-    scrollToBottom();
-  }, [messages.length, isChatDockOpen]);
+  // ✅ FIX 1: SUPPRIMÉ useEffect conflictuel messages.length
+  // (Scroll uniquement dans onNewMessage ligne ~250)
 
   // Realtime reactions
   useEffect(() => {
@@ -581,8 +617,9 @@ export default function ChatDock() {
   if (!isChatDockOpen) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-60 w-95 max-w-[92vw]">
+    <div className="fixed bottom-6 right-6 z-50 w-275 max-w-[92vw]">
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-2xl shadow-black/15 backdrop-blur-xl">
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
@@ -629,7 +666,8 @@ export default function ChatDock() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-[150px_1fr]">
+          <div className="grid grid-cols-[200px_1fr]">
+            {/* ✅ REDESIGN: Sidebar 200px (au lieu de 150px) */}
             <div className="border-r border-slate-200">
               <ConversationList
                 conversations={sortedConvs}
@@ -643,6 +681,7 @@ export default function ChatDock() {
               />
             </div>
 
+            {/* Messages + Composer */}
             <div className="flex flex-col">
               <div className="h-80 overflow-auto p-3">
                 <MessageList
@@ -661,6 +700,7 @@ export default function ChatDock() {
                 <TypingIndicator typingUsers={typingUsers} currentUserId={userId} variant="dock" />
               </div>
 
+              {/* ✅ REDESIGN: RichComposer avec actions au-dessus */}
               <RichComposer
                 conversationId={activeConversationId}
                 userId={userId}

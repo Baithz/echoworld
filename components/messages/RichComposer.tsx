@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : components/messages/RichComposer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
- * Objet        : Composer riche (Upload + Emoji + Typing) — LOT 2.6
+ * Version      : 2.0.0 (2026-01-25)
+ * Objet        : Rich Composer redesigné — Actions au-dessus + UX améliorée
  * -----------------------------------------------------------------------------
  * Description  :
  * - Composer avec optimistic UI + retry (LOT 1)
@@ -11,21 +11,22 @@
  * - Upload images/fichiers (LOT 2.6)
  * - Emoji picker inline (LOT 2.6)
  * - Typing indicator broadcast (LOT 2.6)
+ * - REDESIGN : Actions (📎 😊) AU-DESSUS du textarea pour meilleure ergonomie
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-25)
- * - [NEW] LOT 2.6 : Upload button (images + files)
- * - [NEW] LOT 2.6 : Emoji picker button
- * - [NEW] LOT 2.6 : Typing indicator broadcast
- * - [KEEP] LOT 1/2 : Optimistic + retry + reply inchangés
+ * 2.0.0 (2026-01-25)
+ * - [REDESIGN] Actions AU-DESSUS du textarea (meilleure lisibilité)
+ * - [REDESIGN] Textarea plus large (plus d'espace pour écrire)
+ * - [REDESIGN] Preview attachments inline (au-dessus textarea)
+ * - [KEEP] LOT 1/2/2.6 : Optimistic + retry + reply + upload + emoji + typing inchangés
  * =============================================================================
  */
 
 'use client';
 
 import { useState, useRef } from 'react';
-import { Send, Paperclip, Smile } from 'lucide-react';
+import { Send, Paperclip, Smile, X } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { sendMessage } from '@/lib/messages';
 import ReplyPreview from './ReplyPreview';
@@ -156,6 +157,10 @@ export default function RichComposer({
     setAttachments((prev) => [...prev, ...files].slice(0, 5)); // Max 5 files
   };
 
+  const handleRemoveAttachment = (idx: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const handleEmojiSelect = (emojiData: { emoji: string }) => {
     setText((prev) => prev + emojiData.emoji);
     setShowEmojiPicker(false);
@@ -187,18 +192,19 @@ export default function RichComposer({
               <span className="max-w-30 truncate">{file.name}</span>
               <button
                 type="button"
-                onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                onClick={() => handleRemoveAttachment(idx)}
                 className="text-slate-500 hover:text-slate-900"
+                aria-label="Remove attachment"
               >
-                ×
+                <X className="h-3 w-3" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="flex items-end gap-2">
-        {/* Actions */}
+      {/* ✅ REDESIGN: Actions AU-DESSUS du textarea */}
+      <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">
           {/* Upload button */}
           <input
@@ -213,7 +219,7 @@ export default function RichComposer({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className={`inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 ${
-              isDock ? 'h-8 w-8' : 'h-10 w-10'
+              isDock ? 'h-8 w-8' : 'h-9 w-9'
             }`}
             aria-label="Attach file"
           >
@@ -226,7 +232,7 @@ export default function RichComposer({
               type="button"
               onClick={() => setShowEmojiPicker((v) => !v)}
               className={`inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 ${
-                isDock ? 'h-8 w-8' : 'h-10 w-10'
+                isDock ? 'h-8 w-8' : 'h-9 w-9'
               }`}
               aria-label="Add emoji"
             >
@@ -241,7 +247,16 @@ export default function RichComposer({
           </div>
         </div>
 
-        {/* Text input */}
+        <div className={`text-slate-500 ${isDock ? 'text-[11px]' : 'text-xs'}`}>
+          Entrée = envoyer • Shift+Entrée = ligne
+          {pendingSendingCount >= 3 && (
+            <span className="ml-2 font-semibold text-orange-600">(max 3 en cours)</span>
+          )}
+        </div>
+      </div>
+
+      {/* ✅ REDESIGN: Textarea + Send button côte à côte */}
+      <div className="flex items-end gap-2">
         <div className="flex-1">
           <textarea
             value={text}
@@ -257,7 +272,6 @@ export default function RichComposer({
           />
         </div>
 
-        {/* Send button */}
         <button
           type="button"
           onClick={() => void handleSend()}
@@ -270,13 +284,6 @@ export default function RichComposer({
           <Send className="h-4 w-4" />
           {!isDock && 'Envoyer'}
         </button>
-      </div>
-
-      <div className={`mt-1 text-slate-500 ${isDock ? 'text-[11px]' : 'text-xs'}`}>
-        Entrée = envoyer • Shift+Entrée = ligne
-        {pendingSendingCount >= 3 && (
-          <span className="ml-2 font-semibold text-orange-600">(max 3 messages en cours)</span>
-        )}
       </div>
     </div>
   );
