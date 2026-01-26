@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.6.1 (2026-01-26)
+ * Version      : 2.6.2 (2026-01-26)
  * Objet        : Page Messages — Live messages + LOT 2 + Header avatar/presence + Typing + RichComposer
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,12 @@
  * - SAFE : mark read, retry, reply, reactions, fetch conservés
  *
  * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 2.6.2 (2026-01-26)
+ * - [FIX] Auto-select : dépend directement de convs/lastMsgByConv (pas sortedConvs) pour éviter re-triggers intempestifs
+ * - [FIX] Auto-select : calcul tri inline dans l'effet → sélectionne toujours la dernière conv active même après live updates
+ * - [KEEP] 2.6.1 : scroll double + live dedupe + typing + retry/reply/reactions inchangés
+ * - [SAFE] Aucune régression : fetch, mark read, présence header conservés
  * -----------------------------------------------------------------------------
  * 2.6.1 (2026-01-26)
  * - [FIX] Auto-select : sélectionne la dernière conversation active via sortedConvs (lastMsgByConv fallback updated_at)
@@ -432,11 +438,24 @@ export default function MessagesPage() {
   }, [convs, lastMsgByConv]);
 
   // ✅ Auto-select : dernière conversation active (fail-soft)
+  // NOTE: on dépend de convs/lastMsgByConv directement (pas sortedConvs) pour éviter loops
   useEffect(() => {
+    // Ne pas override si user a déjà sélectionné manuellement
     if (selectedId) return;
-    if (!sortedConvs.length) return;
-    setSelectedId(sortedConvs[0].id);
-  }, [sortedConvs, selectedId]);
+    
+    // Calculer le tri inline (évite dépendance sur sortedConvs qui change trop souvent)
+    if (convs.length === 0) return;
+    
+    const sorted = [...convs].sort((a, b) => {
+      const ta = safeTime(lastMsgByConv[a.id] ?? a.updated_at);
+      const tb = safeTime(lastMsgByConv[b.id] ?? b.updated_at);
+      return tb - ta;
+    });
+    
+    if (sorted.length > 0) {
+      setSelectedId(sorted[0].id);
+    }
+  }, [convs, lastMsgByConv, selectedId]);
 
   // Load messages for selected conversation
   useEffect(() => {

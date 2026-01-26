@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.1.1 (2026-01-26)
+ * Version      : 3.1.2 (2026-01-26)
  * Objet        : ChatDock — Dernière conv active + auto-scroll bas + présence header + typing sticky (SAFE)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -14,6 +14,12 @@
  * - Conserve intégralement : optimistic send/retry, reply, reactions, unread counts, live messages
  *
  * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 3.1.2 (2026-01-26)
+ * - [FIX] Auto-open : dépend directement de convs/lastMsgByConv (pas sortedConvs) pour éviter re-triggers intempestifs
+ * - [FIX] Auto-open : calcul tri inline dans l'effet → sélectionne toujours la dernière conv active même après live updates
+ * - [KEEP] 3.1.1 : scroll double + live dedupe + présence header peer + typing sticky inchangés
+ * - [SAFE] Aucune régression : retry/reply/reactions/mark read conservés
  * -----------------------------------------------------------------------------
  * 3.1.1 (2026-01-26)
  * - [FIX] Auto-open : ouvre la dernière conversation active via tri lastMsgByConv (fallback updated_at)
@@ -444,13 +450,23 @@ export default function ChatDock() {
     return arr;
   }, [convs, lastMsgByConv]);
 
-  // ✅ Auto-open : dernière conversation active via sortedConvs
+  // ✅ Auto-open : dernière conversation active via tri inline (stable)
   useEffect(() => {
     if (!isChatDockOpen) return;
     if (activeConversationId) return;
-    if (!sortedConvs.length) return;
-    openConversation(sortedConvs[0].id);
-  }, [isChatDockOpen, activeConversationId, sortedConvs, openConversation]);
+    if (convs.length === 0) return;
+    
+    // Calculer le tri inline (évite dépendance sur sortedConvs qui change trop souvent)
+    const sorted = [...convs].sort((a, b) => {
+      const ta = safeTime(lastMsgByConv[a.id] ?? a.updated_at);
+      const tb = safeTime(lastMsgByConv[b.id] ?? b.updated_at);
+      return tb - ta;
+    });
+    
+    if (sorted.length > 0) {
+      openConversation(sorted[0].id);
+    }
+  }, [isChatDockOpen, activeConversationId, convs, lastMsgByConv, openConversation]);
 
   // Load messages
   useEffect(() => {

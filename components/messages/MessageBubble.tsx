@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/messages/MessageBubble.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.6.2 (2026-01-26)
+ * Version      : 2.6.3 (2026-01-26)
  * Objet        : Bulle message avec avatars + réactions + répondre — LOT 2 + Attachments
  * -----------------------------------------------------------------------------
  * Description  :
@@ -15,17 +15,21 @@
  * - Reply toujours visible côté extérieur (received=right, mine=left)
  * - Badge réactions superposé coin extérieur (received=bottom-right, mine=bottom-left)
  * - Emoji hover toujours à gauche du badge (ancré sur le badge, jamais écrasé)
- * - Attachments (images) + Lightbox (clic → modal + navigation)
+ * - Attachments (images) avec lightbox intégrée (self-contained dans MessageAttachments)
  * - SAFE: fail-soft sur payload inconnue (narrowing + guards)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.6.3 (2026-01-26)
+ * - [FIX] Compat MessageAttachments v1.1.0 : supprime prop onImageClick (lightbox self-contained)
+ * - [FIX] Supprime state lightbox local (géré par MessageAttachments)
+ * - [FIX] Supprime import ImageLightbox (plus utilisé)
+ * - [KEEP] 2.6.2 : avatars/reactions/reply/quoted/optimistic/retry inchangés
+ * - [SAFE] Aucune régression : UI/UX identique, attachments + lightbox fonctionnels
+ * -----------------------------------------------------------------------------
  * 2.6.2 (2026-01-26)
  * - [FIX] Import type Attachment: utilise l'export nommé depuis MessageAttachments.tsx
  * - [KEEP] Aucune régression UI/UX : avatars/reactions/reply/quoted/optimistic/retry inchangés
- * -----------------------------------------------------------------------------
- * 2.6.1 (2026-01-26)
- * - [FIX] TypeScript: aligne le type attachments sur MessageAttachments (name/size/type optionnels)
  * =============================================================================
  */
 
@@ -38,7 +42,6 @@ import QuotedMessage from './QuotedMessage';
 import ReactionPicker from './ReactionPicker';
 import ReactionBadges from './ReactionBadges';
 import MessageAttachments, { type Attachment as MessageAttachment } from './MessageAttachments';
-import ImageLightbox from './ImageLightbox';
 import { groupReactions } from '@/lib/messages/reactions';
 import type { SenderProfile, UiMessage } from './types';
 
@@ -169,7 +172,7 @@ export default function MessageBubble({
   const canReact = !isSending && !isFailed && !!onReactionToggle;
   const showBadges = !isSending && !isFailed && reactionGroups.length > 0;
 
-  // “Extérieur” : mine => LEFT, received => RIGHT
+  // "Extérieur" : mine => LEFT, received => RIGHT
   const replyPosClass = mine ? '-left-9' : '-right-9';
   const cornerPosClass = mine ? 'left-0' : 'right-0';
 
@@ -202,43 +205,6 @@ export default function MessageBubble({
   // ✅ Attachments (fail-soft)
   const attachments = useMemo(() => extractAttachments(message.payload), [message.payload]);
   const hasAttachments = attachments.length > 0;
-
-  // ✅ Lightbox state
-  const [lightbox, setLightbox] = useState<{
-    url: string;
-    images: string[];
-    index: number;
-  } | null>(null);
-
-  const handleImageClick = (url: string, allImages: string[], index: number) => {
-    const u = (url ?? '').trim();
-    if (!u) return;
-
-    const imgs = Array.isArray(allImages)
-      ? allImages.filter((x) => typeof x === 'string' && x.trim())
-      : [u];
-
-    const safeImgs = imgs.length ? imgs : [u];
-    const i = Number.isFinite(index) ? index : 0;
-
-    setLightbox({
-      url: u,
-      images: safeImgs,
-      index: Math.max(0, Math.min(i, safeImgs.length - 1)),
-    });
-  };
-
-  const handleLightboxPrev = () => {
-    if (!lightbox) return;
-    const newIndex = lightbox.index - 1;
-    if (newIndex >= 0) setLightbox({ ...lightbox, url: lightbox.images[newIndex], index: newIndex });
-  };
-
-  const handleLightboxNext = () => {
-    if (!lightbox) return;
-    const newIndex = lightbox.index + 1;
-    if (newIndex < lightbox.images.length) setLightbox({ ...lightbox, url: lightbox.images[newIndex], index: newIndex });
-  };
 
   // Texte: si placeholder "[N fichier(s)]" et attachments présents, on masque le texte
   const rawContent = safeText(message.content);
@@ -301,10 +267,10 @@ export default function MessageBubble({
                 {/* Content */}
                 {showContent && <div className="whitespace-pre-wrap">{rawContent}</div>}
 
-                {/* ✅ Attachments */}
+                {/* ✅ Attachments avec lightbox intégrée (self-contained) */}
                 {hasAttachments && (
                   <div className={showContent ? 'mt-2' : ''}>
-                    <MessageAttachments attachments={attachments} onImageClick={handleImageClick} />
+                    <MessageAttachments attachments={attachments} />
                   </div>
                 )}
 
@@ -391,18 +357,6 @@ export default function MessageBubble({
             </div>
 
             {(showBadges || canReact) && <div className="h-4" />}
-
-            {/* ✅ Lightbox modal */}
-            {lightbox && (
-              <ImageLightbox
-                imageUrl={lightbox.url}
-                images={lightbox.images}
-                currentIndex={lightbox.index}
-                onClose={() => setLightbox(null)}
-                onPrev={handleLightboxPrev}
-                onNext={handleLightboxNext}
-              />
-            )}
           </div>
         </div>
       </div>

@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : components/messages/MessageList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.0 (2026-01-26)
- * Objet        : Liste messages — auto-scroll bottom (send/receive) + enrich batch SAFE
+ * Version      : 2.3.1 (2026-01-26)
+ * Objet        : Liste messages — auto-scroll bottom (always) + enrich batch SAFE
  * -----------------------------------------------------------------------------
  * Description  :
  * - Conserve : LOT 2 (reactions + parents batch), avatars self, quote scroll/highlight
@@ -13,11 +13,17 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.3.1 (2026-01-26)
+ * - [FIX] Auto-scroll : supprime guard shouldStickToBottomRef (trop fragile) → scroll to bottom systématique
+ * - [IMPROVED] Auto-scroll : double scroll (rAF + setTimeout 300ms) pour fiabilité images/previews
+ * - [REFACTOR] Supprime helpers getScrollParent/isNearBottom (plus utilisés)
+ * - [KEEP] 2.3.0 : batch reactions/parents + avatars self + quote highlight conservés
+ * - [SAFE] Aucune régression : props/comportements inchangés
+ * -----------------------------------------------------------------------------
  * 2.3.0 (2026-01-26)
- * - [NEW] Auto-scroll “smart” : scroll to bottom si near-bottom avant update (send/receive)
+ * - [NEW] Auto-scroll "smart" : scroll to bottom si near-bottom avant update (send/receive)
  * - [KEEP] 2.2.0 : ESLint set-state-in-effect OK + avatars self + batch reactions/parents + quote highlight
  * - [SAFE] Aucun changement cassant : mêmes props / mêmes comportements existants conservés
- * =============================================================================
  */
 
 'use client';
@@ -48,22 +54,6 @@ type ReactionRow = {
   emoji: string;
   created_at: string;
 };
-
-function getScrollParent(node: HTMLElement | null): HTMLElement | null {
-  let el: HTMLElement | null = node;
-  while (el) {
-    const style = window.getComputedStyle(el);
-    const oy = style.overflowY;
-    if (oy === 'auto' || oy === 'scroll') return el;
-    el = el.parentElement;
-  }
-  return null;
-}
-
-function isNearBottom(scroller: HTMLElement, thresholdPx = 120): boolean {
-  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-  return remaining <= thresholdPx;
-}
 
 export default function MessageList({
   messages,
@@ -150,31 +140,10 @@ export default function MessageList({
   }, [visibleMessages, reactionsByMsg, parentsById]);
 
   // --------------------------------------------------------------------------
-  // Auto-scroll “smart” au dernier message (send/receive)
-  // - Ne force pas si l'utilisateur est remonté (lecture)
+  // Auto-scroll au dernier message (send/receive)
+  // - Simplifié : toujours scroll to bottom sur conversationId change OU nouveau message
+  // - Délai augmenté (300ms) pour laisser images/previews charger
   // --------------------------------------------------------------------------
-  const shouldStickToBottomRef = useRef(true);
-
-  useEffect(() => {
-    const anchor = scrollRef?.current ?? null;
-    if (!anchor) return;
-
-    const scroller = getScrollParent(anchor);
-    if (!scroller) return;
-
-    const onScroll = () => {
-      shouldStickToBottomRef.current = isNearBottom(scroller, 160);
-    };
-
-    scroller.addEventListener('scroll', onScroll, { passive: true });
-    // init
-    onScroll();
-
-    return () => {
-      scroller.removeEventListener('scroll', onScroll);
-    };
-  }, [scrollRef, conversationId]);
-
   const lastMsgKey = useMemo(() => {
     const last = enrichedMessages[enrichedMessages.length - 1];
     return last ? String(last.id || last.client_id || last.created_at) : '';
@@ -184,13 +153,20 @@ export default function MessageList({
     const anchor = scrollRef?.current ?? null;
     if (!anchor) return;
 
-    // conversation change OR new last message => stick to bottom if user was near bottom
-    if (!shouldStickToBottomRef.current) return;
-
-    // rAF pour laisser le DOM se stabiliser (images/previews, etc.)
-    requestAnimationFrame(() => {
+    // Double scroll : immédiat + différé (fiabilité images/previews)
+    const scrollToBottom = () => {
       anchor.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    });
+    };
+
+    // Scroll immédiat (rAF pour attendre render DOM)
+    requestAnimationFrame(scrollToBottom);
+
+    // Scroll différé (attend chargement images/previews)
+    const timer = setTimeout(scrollToBottom, 300);
+
+    return () => {
+      clearTimeout(timer);
+    };
   }, [conversationId, lastMsgKey, scrollRef]);
 
   // Scroll to message + highlight
