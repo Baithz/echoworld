@@ -2,20 +2,21 @@
  * =============================================================================
  * Fichier      : components/messages/RichComposer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.1.2 (2026-01-26)
- * Objet        : Rich Composer avec upload Supabase Storage — UX clean + upload only
+ * Version      : 2.1.3 (2026-01-26)
+ * Objet        : Rich Composer avec upload Supabase Storage — UX clean + no placeholder “[x fichier(s)]”
  * -----------------------------------------------------------------------------
  * Description  :
  * - Conserve : actions au-dessus, typing callbacks, reply preview, optimistic send/retry, upload storage
- * - UX : supprime le texte "Entrée = envoyer…" (inutile) et affiche uniquement l’état "Upload en cours…"
+ * - UX : supprime le placeholder “[x fichier(s)]” dans le contenu message (affichage preview via attachments)
+ * - Typing : stopTyping quand le champ redevient vide (fail-soft)
  * - SAFE : previews stables + cleanup objectURLs + reset file input conservés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.1.2 (2026-01-26)
- * - [CHANGE] UI: supprime "Entrée = envoyer • Shift+Entrée = ligne"
- * - [KEEP] Affiche uniquement "Upload en cours..." quand uploading=true
- * - [KEEP] 2.1.1 : preview URLs stables + cleanup + reset input + lint fix
+ * 2.1.3 (2026-01-26)
+ * - [FIX] Envoi média-only : n’écrit plus “[x fichier(s)]” dans content (laisser content vide + payload.attachments)
+ * - [IMPROVED] Typing : stopTyping immédiat si texte vidé (fail-soft)
+ * - [KEEP] 2.1.2 : UI “Upload en cours...” only + previews stables + cleanup + reset input conservés
  * =============================================================================
  */
 
@@ -113,7 +114,10 @@ export default function RichComposer({
   const handleTextChange = (value: string) => {
     setText(value);
 
-    if (onTypingStart && value.trim()) {
+    const trimmed = value.trim();
+
+    // ✅ start typing when non-empty
+    if (onTypingStart && trimmed) {
       onTypingStart();
 
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -121,6 +125,14 @@ export default function RichComposer({
       typingTimeoutRef.current = setTimeout(() => {
         if (onTypingStop) onTypingStop();
       }, 2000);
+
+      return;
+    }
+
+    // ✅ stop typing immediately if user cleared input
+    if (!trimmed) {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (onTypingStop) onTypingStop();
     }
   };
 
@@ -175,7 +187,12 @@ export default function RichComposer({
       if (replyTo?.id) payload.parent_id = replyTo.id;
       if (uploadedAttachments.length > 0) payload.attachments = uploadedAttachments;
 
-      const dbMsg = await sendMessage(conversationId, clean || `[${uploadedAttachments.length} fichier(s)]`, payload);
+      // ✅ IMPORTANT:
+      // - media-only => content doit rester vide (pas de placeholder “[x fichier(s)]”)
+      // - preview doit être rendu via payload.attachments dans la UI
+      const contentToSend = clean || '';
+
+      const dbMsg = await sendMessage(conversationId, contentToSend, payload);
       onConfirmSent(clientId, dbMsg as UiMessage);
     } catch (err) {
       setUploading(false);

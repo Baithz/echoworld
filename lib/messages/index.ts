@@ -1,8 +1,8 @@
 // =============================================================================
 // Fichier      : lib/messages/index.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.2.0 (2026-01-25)
-// Objet        : Queries Messages + sendMessage() (optimistic UI + reply + broadcast) — LOT 1/2/2.5
+// Version      : 2.3.0 (2026-01-26)
+// Objet        : Queries Messages + sendMessage() (optimistic UI + reply + broadcast) — LOT 1/2/2.5/2.6
 // -----------------------------------------------------------------------------
 // BDD (réelle) :
 // - public.conversations(id, type conversation_type, title?, created_by?, echo_id?, created_at, updated_at)
@@ -12,6 +12,15 @@
 //
 // CHANGELOG
 // -----------------------------------------------------------------------------
+// 2.3.0 (2026-01-26)
+// - [FIX] sendMessage(): conserve tous les champs payload (attachments/parent_id/...) au lieu de garder uniquement client_id
+// - [FIX] sendMessage(): parent_id écrit correctement même si payload contient d'autres champs (compat LOT 2/2.6)
+// - [KEEP] LOT 2.5 : Broadcast manuel après sendMessage() (contourne Replication indispo)
+// - [KEEP] Optimistic UI: payload.client_id conservé pour dedupe realtime
+// - [KEEP] fetchConversationsForUser enrichit peer_* inchangé
+// - [KEEP] fetchUnreadMessagesCount, markConversationRead inchangés
+// - [KEEP] fetchSenderProfiles inchangé
+// - [SAFE] Pas de `any` ajouté, fail-soft conservé
 // 2.2.0 (2026-01-25)
 // - [NEW] LOT 2.5 : Broadcast manuel après sendMessage() (contourne Replication indispo)
 // - [KEEP] Reply: parent_id écrit dans messages.parent_id
@@ -390,9 +399,14 @@ export async function sendMessage(
     parent_id: parentId,
   };
 
+  // ✅ IMPORTANT: on conserve tout le payload (client_id + attachments + autres champs)
+  // - garantit l’affichage des previews (MessageAttachments) côté UI
+  // - conserve la déduplication realtime via payload.client_id
   if (payload && typeof payload === 'object') {
     const clientId = typeof payload.client_id === 'string' ? payload.client_id.trim() : '';
-    if (clientId) insertPayload.payload = { client_id: clientId };
+    const safePayload: Record<string, unknown> = { ...(payload as Record<string, unknown>) };
+    if (clientId) safePayload.client_id = clientId;
+    insertPayload.payload = safePayload;
   }
 
   const { data, error } = await supabase.from('messages').insert(insertPayload as unknown as never).select('*').single();

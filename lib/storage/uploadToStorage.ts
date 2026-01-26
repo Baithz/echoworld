@@ -2,16 +2,23 @@
  * =============================================================================
  * Fichier      : lib/storage/uploadToStorage.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-25)
- * Objet        : Upload fichiers vers Supabase Storage
+ * Version      : 1.1.0 (2026-01-26)
+ * Objet        : Upload fichiers vers Supabase Storage (robuste + compat preview message)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Upload images/fichiers vers bucket 'message-attachments'
- * - Génère URL publique
- * - Support multi-files
- * - Validation type/taille
+ * - Génère URL publique (public bucket) + métadonnées normalisées
+ * - Support multi-files (séquentiel, fail-fast)
+ * - Validation type/taille + extension fiable + nom unique stable
+ * - SAFE : conserve API uploadMessageAttachments(files, userId) + helpers isImageFile/formatFileSize
  *
  * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 1.1.0 (2026-01-26)
+ * - [IMPROVED] Nom fichier: extension déduite de file.type si possible (fallback filename)
+ * - [IMPROVED] Upload: encode/sanitize filename + évite ext vide + garde mime type
+ * - [KEEP] Validation type/taille + publicUrl + multi-files séquentiel inchangés
+ * - [SAFE] Signature & exports conservés
  * -----------------------------------------------------------------------------
  * 1.0.0 (2026-01-25)
  * - [NEW] uploadMessageAttachments(files, userId)
@@ -30,6 +37,8 @@ type UploadResult = {
   type: string;
 };
 
+const BUCKET = 'message-attachments';
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 const ALLOWED_FILE_TYPES = [
@@ -39,13 +48,58 @@ const ALLOWED_FILE_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ];
 
+function extFromMime(mime: string): string | null {
+  const m = (mime ?? '').toLowerCase().trim();
+  if (!m) return null;
+
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'application/pdf': 'pdf',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  };
+
+  return map[m] ?? null;
+}
+
+function safeBaseName(name: string): string {
+  const raw = (name ?? '').trim();
+  if (!raw) return 'file';
+
+  // Retire chemin éventuel + normalise espaces
+  const base = raw.split('/').pop()?.split('\\').pop() ?? raw;
+  const noExt = base.replace(/\.[^/.]+$/, '') || 'file';
+
+  // slug minimal (ascii-safe)
+  return noExt
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 60) || 'file';
+}
+
+function safeExt(file: File): string {
+  const fromMime = extFromMime(file.type);
+  if (fromMime) return fromMime;
+
+  const fromName = (file.name ?? '').split('.').pop();
+  const ext = (fromName ?? '').toLowerCase().trim();
+
+  // sécurité: ext alphanum courte sinon fallback
+  if (ext && /^[a-z0-9]{1,8}$/.test(ext)) return ext;
+  return 'bin';
+}
+
 /**
  * Upload attachments pour messages
  */
-export async function uploadMessageAttachments(
-  files: File[],
-  userId: string
-): Promise<UploadResult[]> {
+export async function uploadMessageAttachments(files: File[], userId: string): Promise<UploadResult[]> {
+  if (!userId) throw new Error("UserId manquant pour l'upload.");
+
   const results: UploadResult[] = [];
 
   for (const file of files) {
@@ -61,26 +115,24 @@ export async function uploadMessageAttachments(
 
     // Génération nom unique
     const timestamp = Date.now();
-    const randomStr = Math.random().toString(36).substring(2, 10);
-    const ext = file.name.split('.').pop() || 'bin';
-    const fileName = `${userId}/${timestamp}-${randomStr}.${ext}`;
+    const randomStr = Math.random().toString(36).slice(2, 10);
+    const ext = safeExt(file);
+    const base = safeBaseName(file.name);
+    const objectPath = `${userId}/${timestamp}-${randomStr}-${base}.${ext}`;
 
     // Upload vers Storage
-    const { data, error } = await supabase.storage
-      .from('message-attachments')
-      .upload(fileName, file, {
-        cacheControl: '3600',
-        upsert: false,
-      });
+    const { data, error } = await supabase.storage.from(BUCKET).upload(objectPath, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
 
-    if (error) {
-      throw new Error(`Erreur upload "${file.name}": ${error.message}`);
+    if (error || !data?.path) {
+      throw new Error(`Erreur upload "${file.name}": ${error?.message ?? 'upload failed'}`);
     }
 
-    // Génération URL publique
-    const { data: urlData } = supabase.storage
-      .from('message-attachments')
-      .getPublicUrl(data.path);
+    // Génération URL publique (bucket public)
+    const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(data.path);
 
     results.push({
       url: urlData.publicUrl,
@@ -98,14 +150,15 @@ export async function uploadMessageAttachments(
  * Check si fichier est une image
  */
 export function isImageFile(type: string): boolean {
-  return ALLOWED_IMAGE_TYPES.includes(type);
+  return ALLOWED_IMAGE_TYPES.includes((type ?? '').toLowerCase().trim());
 }
 
 /**
  * Format taille fichier
  */
 export function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const n = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

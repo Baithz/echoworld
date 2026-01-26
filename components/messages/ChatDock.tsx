@@ -2,8 +2,8 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.1.0 (2026-01-26)
- * Objet        : ChatDock — Header présence peer + wrapper 850 + typing sticky (SAFE)
+ * Version      : 3.1.1 (2026-01-26)
+ * Objet        : ChatDock — Dernière conv active + auto-scroll bas + présence header + typing sticky (SAFE)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Dock flottant redesigné : sidebar 200px + actions au-dessus textarea
@@ -15,9 +15,12 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 3.1.0 (2026-01-26)
- * - [NEW] Header : présence peer (DM) + badge vert/gris (fail-soft)
- * - [KEEP] 3.0.0 : wrapper 850px + h-96 + typing sticky + live/unread inchangés
+ * 3.1.1 (2026-01-26)
+ * - [FIX] Auto-open : ouvre la dernière conversation active via tri lastMsgByConv (fallback updated_at)
+ * - [FIX] Scroll : auto-scroll bas à l’ouverture conv + message reçu + message envoyé/confirmé (double scroll fail-soft)
+ * - [IMPROVED] lastMsgByConv : hydrate en merge (ne réinitialise pas l’état live)
+ * - [KEEP] 3.1.0 : présence header peer + wrapper 850 + h-96 + typing sticky + live/unread inchangés
+ * - [SAFE] Aucune régression : retry/reply/reactions/mark read/fetch conservés
  * =============================================================================
  */
 
@@ -142,12 +145,31 @@ export default function ChatDock() {
     activeConvRef.current = activeConversationId;
   }, [activeConversationId]);
 
+  // --------------------------------------------------------------------------
+  // Scroll helpers (fail-soft)
+  // --------------------------------------------------------------------------
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollToBottom = () => {
+
+  const scrollToBottom = useCallback((delay = 0) => {
     const el = messagesEndRef.current;
     if (!el) return;
-    el.scrollIntoView({ block: 'end', behavior: 'smooth' });
-  };
+
+    const run = () => {
+      messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    };
+
+    if (delay <= 0) {
+      run();
+      return;
+    }
+
+    setTimeout(run, delay);
+  }, []);
+
+  const scrollToBottomDouble = useCallback(() => {
+    scrollToBottom(0);
+    scrollToBottom(150);
+  }, [scrollToBottom]);
 
   const selected = useMemo(
     () => convs.find((c) => c.id === activeConversationId) ?? null,
@@ -161,11 +183,9 @@ export default function ChatDock() {
   const peerUserId = useMemo(() => {
     if (!selected) return null;
 
-    // Schéma attendu dans le projet : peer_user_id (déjà utilisé ailleurs)
     const pid1 = String((selected as ConversationRowPlus).peer_user_id ?? '').trim();
     if (selected.type === 'direct' && pid1) return pid1;
 
-    // Fallback tolérant (si jamais un alias existe)
     const anySel = selected as unknown as { peer_id?: string | null; peerId?: string | null };
     const pid2 = String(anySel.peer_id ?? anySel.peerId ?? '').trim();
     if (selected.type === 'direct' && pid2) return pid2;
@@ -273,8 +293,8 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
 
-        // Auto-scroll après réception message (seul endroit)
-        setTimeout(() => scrollToBottom(), 100);
+        // ✅ Auto-scroll : dernier message reçu (conv ouverte)
+        scrollToBottom(100);
 
         void markConversationRead(convId).catch(() => {});
         void refreshCounts().catch(() => {});
@@ -286,7 +306,7 @@ export default function ChatDock() {
     });
 
     return unsubscribe;
-  }, [isChatDockOpen, userId, onNewMessage, refreshCounts]);
+  }, [isChatDockOpen, userId, onNewMessage, refreshCounts, scrollToBottom]);
 
   // Load conversations
   useEffect(() => {
@@ -299,18 +319,7 @@ export default function ChatDock() {
       try {
         const rows = (await fetchConversationsForUser(userId)) as unknown as ConversationRowPlus[];
         if (cancelled || !mountedRef.current) return;
-
         setConvs(rows);
-
-      if (!activeConversationId && rows.length > 0) {
-        // Trier par updated_at desc (plus récent en premier)
-        const sorted = [...rows].sort((a, b) => {
-          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-          return tb - ta;
-        });
-        openConversation(sorted[0].id); // ← Dernière conversation active
-      }
       } catch {
         if (!cancelled && mountedRef.current) setConvs([]);
       } finally {
@@ -322,7 +331,7 @@ export default function ChatDock() {
     return () => {
       cancelled = true;
     };
-  }, [isChatDockOpen, userId, activeConversationId, openConversation]);
+  }, [isChatDockOpen, userId]);
 
   // Hydrate last message
   useEffect(() => {
@@ -353,7 +362,8 @@ export default function ChatDock() {
           if (!map[cid]) map[cid] = ca;
         }
 
-        setLastMsgByConv(map);
+        // ✅ merge (ne réinitialise pas l’état live)
+        setLastMsgByConv((prev) => ({ ...prev, ...map }));
       } catch {
         // noop
       }
@@ -399,8 +409,8 @@ export default function ChatDock() {
             gt: (c: string, v: unknown) => Promise<CountRes>;
           };
 
-          const q = (supabase.from('messages').select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
-          const base = q.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', userId);
+          const q2 = (supabase.from('messages').select('id', { count: 'exact', head: true }) as unknown) as CountQuery;
+          const base = q2.eq('conversation_id', convId).is('deleted_at', null).neq('sender_id', userId);
 
           const res = lastRead
             ? await base.gt('created_at', lastRead)
@@ -434,6 +444,14 @@ export default function ChatDock() {
     return arr;
   }, [convs, lastMsgByConv]);
 
+  // ✅ Auto-open : dernière conversation active via sortedConvs
+  useEffect(() => {
+    if (!isChatDockOpen) return;
+    if (activeConversationId) return;
+    if (!sortedConvs.length) return;
+    openConversation(sortedConvs[0].id);
+  }, [isChatDockOpen, activeConversationId, sortedConvs, openConversation]);
+
   // Load messages
   useEffect(() => {
     let cancelled = false;
@@ -458,11 +476,8 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
 
-      // ✅ Scroll immédiat + delayed (pour render complet)
-      scrollToBottom();
-      setTimeout(() => {
-        if (!cancelled && mountedRef.current) scrollToBottom();
-      }, 100);
+        // ✅ Auto-scroll : ouverture conv -> bas (double scroll)
+        if (!cancelled && mountedRef.current) scrollToBottomDouble();
       } catch {
         if (!cancelled && mountedRef.current) setMessages([]);
       } finally {
@@ -474,7 +489,7 @@ export default function ChatDock() {
     return () => {
       cancelled = true;
     };
-  }, [isChatDockOpen, activeConversationId, refreshCounts]);
+  }, [isChatDockOpen, activeConversationId, refreshCounts, scrollToBottomDouble]);
 
   // Realtime reactions
   useEffect(() => {
@@ -503,10 +518,16 @@ export default function ChatDock() {
     return unsubscribe;
   }, [isChatDockOpen, onReactionChange]);
 
-  const handleOptimisticSend = useCallback((msg: UiMessage) => {
-    setMessages((prev) => [...prev, msg]);
-    setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
-  }, []);
+  const handleOptimisticSend = useCallback(
+    (msg: UiMessage) => {
+      setMessages((prev) => [...prev, msg]);
+      setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
+
+      // ✅ Auto-scroll : message envoyé (optimistic)
+      scrollToBottom(50);
+    },
+    [scrollToBottom]
+  );
 
   const handleConfirmSent = useCallback(
     async (clientId: string, dbMsg: UiMessage) => {
@@ -518,8 +539,11 @@ export default function ChatDock() {
         await refreshCounts();
         setUnreadCounts((prev) => ({ ...prev, [activeConversationId]: 0 }));
       }
+
+      // ✅ Auto-scroll : confirm DB (images/attachments peuvent rendre plus tard)
+      scrollToBottomDouble();
     },
-    [activeConversationId, refreshCounts]
+    [activeConversationId, refreshCounts, scrollToBottomDouble]
   );
 
   const handleSendFailed = useCallback((clientId: string, error: string) => {
@@ -538,6 +562,9 @@ export default function ChatDock() {
         prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
       );
 
+      // ✅ Auto-scroll : état sending visible
+      scrollToBottom(50);
+
       try {
         const dbMsg = await sendMessage(activeConversationId, msg.content, { client_id: msg.client_id });
         handleConfirmSent(msg.client_id, dbMsg as UiMessage);
@@ -546,7 +573,7 @@ export default function ChatDock() {
         handleSendFailed(msg.client_id, errMsg);
       }
     },
-    [activeConversationId, handleConfirmSent, handleSendFailed]
+    [activeConversationId, handleConfirmSent, handleSendFailed, scrollToBottom]
   );
 
   const handleReply = useCallback(
@@ -639,6 +666,7 @@ export default function ChatDock() {
       openConversation(id);
       setReplyTo(null);
       setReplyToSenderProfile(null);
+      // scroll se fera après fetchMessages (effect activeConversationId)
     },
     [openConversation]
   );

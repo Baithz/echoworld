@@ -2,16 +2,21 @@
  * =============================================================================
  * Fichier      : components/messages/MessageList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-25)
- * Objet        : Liste messages avec reactions + parents — LOT 2 (+ avatars self) — ESLint set-state-in-effect OK
+ * Version      : 2.3.0 (2026-01-26)
+ * Objet        : Liste messages — auto-scroll bottom (send/receive) + enrich batch SAFE
  * -----------------------------------------------------------------------------
+ * Description  :
+ * - Conserve : LOT 2 (reactions + parents batch), avatars self, quote scroll/highlight
+ * - UX : auto-scroll au dernier message reçu/envoyé quand l’utilisateur est déjà en bas
+ * - SAFE : ne “force” pas le scroll si l’utilisateur a scrollé vers le haut (lecture historique)
+ * - Fail-soft : si fetch enrich échoue => messages visibles, reactions vides, parents null
+ *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.2.0 (2026-01-25)
- * - [FIX] ESLint react-hooks/set-state-in-effect : plus aucun setState synchrone dans l'effet
- * - [FIX] Avatars : senderProfiles inclut aussi l'utilisateur courant (plus de fallback "PO")
- * - [KEEP] LOT 2 : reactions batch + parents batch + quote scroll/highlight inchangés
- * - [SAFE] Fail-soft conservé (si fetch échoue => messages visibles, reactions vides, parents null)
+ * 2.3.0 (2026-01-26)
+ * - [NEW] Auto-scroll “smart” : scroll to bottom si near-bottom avant update (send/receive)
+ * - [KEEP] 2.2.0 : ESLint set-state-in-effect OK + avatars self + batch reactions/parents + quote highlight
+ * - [SAFE] Aucun changement cassant : mêmes props / mêmes comportements existants conservés
  * =============================================================================
  */
 
@@ -43,6 +48,22 @@ type ReactionRow = {
   emoji: string;
   created_at: string;
 };
+
+function getScrollParent(node: HTMLElement | null): HTMLElement | null {
+  let el: HTMLElement | null = node;
+  while (el) {
+    const style = window.getComputedStyle(el);
+    const oy = style.overflowY;
+    if (oy === 'auto' || oy === 'scroll') return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function isNearBottom(scroller: HTMLElement, thresholdPx = 120): boolean {
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  return remaining <= thresholdPx;
+}
 
 export default function MessageList({
   messages,
@@ -127,6 +148,50 @@ export default function MessageList({
       parentMessage: m.parent_id ? parentsById.get(m.parent_id) ?? null : null,
     }));
   }, [visibleMessages, reactionsByMsg, parentsById]);
+
+  // --------------------------------------------------------------------------
+  // Auto-scroll “smart” au dernier message (send/receive)
+  // - Ne force pas si l'utilisateur est remonté (lecture)
+  // --------------------------------------------------------------------------
+  const shouldStickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    const anchor = scrollRef?.current ?? null;
+    if (!anchor) return;
+
+    const scroller = getScrollParent(anchor);
+    if (!scroller) return;
+
+    const onScroll = () => {
+      shouldStickToBottomRef.current = isNearBottom(scroller, 160);
+    };
+
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    // init
+    onScroll();
+
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+    };
+  }, [scrollRef, conversationId]);
+
+  const lastMsgKey = useMemo(() => {
+    const last = enrichedMessages[enrichedMessages.length - 1];
+    return last ? String(last.id || last.client_id || last.created_at) : '';
+  }, [enrichedMessages]);
+
+  useEffect(() => {
+    const anchor = scrollRef?.current ?? null;
+    if (!anchor) return;
+
+    // conversation change OR new last message => stick to bottom if user was near bottom
+    if (!shouldStickToBottomRef.current) return;
+
+    // rAF pour laisser le DOM se stabiliser (images/previews, etc.)
+    requestAnimationFrame(() => {
+      anchor.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
+  }, [conversationId, lastMsgKey, scrollRef]);
 
   // Scroll to message + highlight
   const handleQuoteClick = useCallback((parentId: string) => {

@@ -2,29 +2,29 @@
  * =============================================================================
  * Fichier      : components/messages/ConversationList.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-26)
- * Objet        : Liste conversations — ChatDock + Page (sans badge présence sur avatars)
+ * Version      : 1.3.2 (2026-01-26)
+ * Objet        : Liste conversations — sélection active fiable + auto-scroll item actif (SAFE)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Affiche liste conversations avec recherche, états (loading/empty) et sélection active
  * - Support peer enrichment (handle/display_name/avatar_url) pour DM
  * - Avatars cliquables vers /u/[handle] (DM uniquement)
  * - Unread : badge par conv si unreadCounts fourni (fail-soft)
- * - SAFE : suppression du PresenceBadge overlay sur avatar sidebar (pas d’impact header)
+ * - SAFE : pas de PresenceBadge overlay sur avatar sidebar (header gère la présence)
+ * - UX : quand selectedId défini, auto-scroll l’item actif dans la liste (dock/page)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.1 (2026-01-26)
- * - [REMOVE] Sidebar: supprime PresenceBadge overlay sur avatars (DM)
- * - [REMOVE] Sidebar: supprime fallback présence local (usePresence/isUserOnline) dans la liste
- * - [KEEP] UI: PresenceLine (En ligne/Hors ligne) conservée (pilotée par onlineUserIds si fourni)
- * - [KEEP] Recherche, avatars cliquables, unread badges, states, layout inchangés
+ * 1.3.2 (2026-01-26)
+ * - [FIX] Sidebar: auto-scroll vers la conversation active (selectedId) après render / filtre
+ * - [KEEP] 1.3.1 : suppression PresenceBadge overlay + PresenceLine via onlineUserIds + unread/search/layout inchangés
+ * - [SAFE] Aucune régression : clic avatar/profil, états, badges, sélection conservés
  * =============================================================================
  */
 
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Search, Loader2, Users, User as UserIcon } from 'lucide-react';
 import type { ConversationRowPlus } from './types';
@@ -122,6 +122,30 @@ export default function ConversationList({
     );
   };
 
+  // --------------------------------------------------------------------------
+  // Auto-scroll vers la conversation active (selectedId)
+  // --------------------------------------------------------------------------
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    if (loading) return;
+
+    const root = listRef.current;
+    if (!root) return;
+
+    const el = root.querySelector<HTMLElement>(`[data-conv-id="${CSS.escape(selectedId)}"]`);
+    if (!el) return;
+
+    // Fail-soft: ne pas bouger si déjà visible
+    const rootRect = root.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const fullyVisible = elRect.top >= rootRect.top && elRect.bottom <= rootRect.bottom;
+    if (fullyVisible) return;
+
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedId, loading, filtered.length, variant]);
+
   return (
     <div
       className={
@@ -149,7 +173,10 @@ export default function ConversationList({
       </div>
 
       {/* List */}
-      <div className={isDock ? 'max-h-90 overflow-auto px-2 pb-2' : 'max-h-[65vh] overflow-auto p-2'}>
+      <div
+        ref={listRef}
+        className={isDock ? 'max-h-90 overflow-auto px-2 pb-2' : 'max-h-[65vh] overflow-auto p-2'}
+      >
         {loading ? (
           <div className={`flex items-center gap-2 p-3 text-slate-600 ${isDock ? 'text-xs' : 'text-sm'}`}>
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -215,6 +242,7 @@ export default function ConversationList({
               return (
                 <button
                   key={c.id}
+                  data-conv-id={c.id}
                   type="button"
                   onClick={() => onSelect(c.id)}
                   className={`relative mb-2 flex w-full items-center gap-2 rounded-xl border p-2 text-left transition ${
@@ -241,10 +269,13 @@ export default function ConversationList({
             return (
               <button
                 key={c.id}
+                data-conv-id={c.id}
                 type="button"
                 onClick={() => onSelect(c.id)}
                 className={`relative flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${
-                  isActive ? 'border border-slate-200 bg-white' : 'border border-transparent hover:border-slate-200 hover:bg-white'
+                  isActive
+                    ? 'border border-slate-200 bg-white'
+                    : 'border border-transparent hover:border-slate-200 hover:bg-white'
                 }`}
               >
                 <Avatar />

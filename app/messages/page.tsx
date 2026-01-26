@@ -2,24 +2,23 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.6.0 (2026-01-26)
+ * Version      : 2.6.1 (2026-01-26)
  * Objet        : Page Messages — Live messages + LOT 2 + Header avatar/presence + Typing + RichComposer
  * -----------------------------------------------------------------------------
  * Description  :
  * - Page conversations (sidebar + thread) avec optimistic send / retry / reply / reactions
  * - Live : push des messages entrants via RealtimeProvider.onNewMessage (sans refresh)
- * - Badges : unreadCounts fail-soft + tri par dernier message
- * - LOT 2.6 : Typing indicator (start/stop typing + affichage)
- * - RichComposer (callbacks typing) sans régression
- * - PHASE 3 : Presence via usePresence + PresenceBadge + libellé En ligne/Hors ligne (fail-soft)
+ * - Badges : unreadCounts fail-soft + tri par dernier message (lastMsgByConv)
+ * - LOT 2.6 : Typing indicator (start/stop typing + affichage) + RichComposer callbacks
+ * - PHASE 3 : Présence header peer (DM) via usePresence + PresenceBadge (fail-soft)
  * - SAFE : mark read, retry, reply, reactions, fetch conservés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.6.0 (2026-01-26)
- * - [NEW] PHASE 3: Header présence peer (DM) via PresenceBadge + En ligne/Hors ligne (fail-soft)
- * - [IMPROVED] Presence: remplace onlineUserIds local par usePresence (source unique)
- * - [KEEP] 2.5.0: Typing + RichComposer + Live + dedupe + unreadCounts/lastMsgByConv conservés
+ * 2.6.1 (2026-01-26)
+ * - [FIX] Auto-select : sélectionne la dernière conversation active via sortedConvs (lastMsgByConv fallback updated_at)
+ * - [FIX] Scroll : auto-scroll bas à l’ouverture conv + message reçu + message envoyé/confirmé (double scroll fail-soft)
+ * - [KEEP] Live dedupe + unreadCounts/lastMsgByConv + typing + retry/reply/reactions conservés
  * - [SAFE] Aucune régression : fetch, retry, reply, reactions, mark read conservés
  * =============================================================================
  */
@@ -175,6 +174,32 @@ export default function MessagesPage() {
   }, [userId]);
 
   // --------------------------------------------------------------------------
+  // Scroll helpers (fail-soft)
+  // --------------------------------------------------------------------------
+  const scrollToBottom = useCallback((delay = 0) => {
+    const el = messagesEndRef.current;
+    if (!el) return;
+
+    const run = () => {
+      // smooth ok ici (55vh), on veut "dernier message" en priorité
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    };
+
+    if (delay <= 0) {
+      run();
+      return;
+    }
+
+    setTimeout(run, delay);
+  }, []);
+
+  const scrollToBottomDouble = useCallback(() => {
+    // Double scroll (immédiat + 150ms) pour fiabiliser après render / images
+    scrollToBottom(0);
+    scrollToBottom(150);
+  }, [scrollToBottom]);
+
+  // --------------------------------------------------------------------------
   // Auth bootstrap
   // --------------------------------------------------------------------------
   useEffect(() => {
@@ -249,6 +274,9 @@ export default function MessagesPage() {
 
         // Fail-soft: mark read
         void markConversationRead(convId).catch(() => {});
+
+        // ✅ Auto-scroll : dernier message reçu (conv ouverte)
+        scrollToBottom(100);
         return;
       }
 
@@ -257,7 +285,7 @@ export default function MessagesPage() {
     });
 
     return unsubscribe;
-  }, [userId, onNewMessage]);
+  }, [userId, onNewMessage, scrollToBottom]);
 
   // --------------------------------------------------------------------------
   // Load conversations
@@ -271,17 +299,7 @@ export default function MessagesPage() {
       try {
         const rows = (await fetchConversationsForUser(userId)) as unknown as ConversationRowPlus[];
         if (!mounted) return;
-
         setConvs(rows);
-
-      if (!selectedId && rows.length > 0) {
-        const sorted = [...rows].sort((a, b) => {
-          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-          return tb - ta;
-        });
-        setSelectedId(sorted[0].id);
-      }
       } catch {
         if (mounted) setConvs([]);
       } finally {
@@ -294,7 +312,7 @@ export default function MessagesPage() {
     return () => {
       mounted = false;
     };
-  }, [userId, selectedId]);
+  }, [userId]);
 
   /**
    * Hydrate last message per conversation (fail-soft)
@@ -413,6 +431,13 @@ export default function MessagesPage() {
     return arr;
   }, [convs, lastMsgByConv]);
 
+  // ✅ Auto-select : dernière conversation active (fail-soft)
+  useEffect(() => {
+    if (selectedId) return;
+    if (!sortedConvs.length) return;
+    setSelectedId(sortedConvs[0].id);
+  }, [sortedConvs, selectedId]);
+
   // Load messages for selected conversation
   useEffect(() => {
     let mounted = true;
@@ -440,10 +465,9 @@ export default function MessagesPage() {
 
         await markConversationRead(selectedId);
         setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
-        setTimeout(() => {
-          if (!mounted) return;
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-        }, 100);
+
+        // ✅ Auto-scroll : ouverture conv -> bas (double scroll)
+        if (mounted) scrollToBottomDouble();
       } catch {
         if (mounted) setMessages([]);
       } finally {
@@ -456,13 +480,14 @@ export default function MessagesPage() {
     return () => {
       mounted = false;
     };
-  }, [selectedId]);
+  }, [selectedId, scrollToBottomDouble]);
 
   const onSelectConv = (id: string) => {
     setSelectedId(id);
     setReplyTo(null);
     setReplyToSenderProfile(null);
     setUnreadCounts((prev) => ({ ...prev, [id]: 0 }));
+    // Le scroll se fera après le fetchMessages (effect selectedId)
   };
 
   const onMarkRead = async () => {
@@ -476,10 +501,16 @@ export default function MessagesPage() {
   };
 
   // Optimistic send
-  const handleOptimisticSend = useCallback((msg: UiMessage) => {
-    setMessages((prev) => [...prev, msg]);
-    setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
-  }, []);
+  const handleOptimisticSend = useCallback(
+    (msg: UiMessage) => {
+      setMessages((prev) => [...prev, msg]);
+      setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
+
+      // ✅ Auto-scroll : dernier message envoyé (optimistic)
+      scrollToBottom(50);
+    },
+    [scrollToBottom]
+  );
 
   // Confirm sent
   const handleConfirmSent = useCallback(
@@ -493,8 +524,11 @@ export default function MessagesPage() {
         await markConversationRead(selectedId);
         setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
       }
+
+      // ✅ Auto-scroll : confirm DB (images/attachments peuvent rendre plus tard)
+      scrollToBottomDouble();
     },
-    [selectedId]
+    [selectedId, scrollToBottomDouble]
   );
 
   // Send failed
@@ -515,6 +549,9 @@ export default function MessagesPage() {
         prev.map((m) => (m.client_id === msg.client_id ? { ...m, status: 'sending' as const, error: undefined } : m))
       );
 
+      // ✅ Auto-scroll : on renvoie (state sending)
+      scrollToBottom(50);
+
       try {
         const dbMsg = await sendMessage(selectedId, msg.content, { client_id: msg.client_id });
         handleConfirmSent(msg.client_id, dbMsg as UiMessage);
@@ -523,7 +560,7 @@ export default function MessagesPage() {
         handleSendFailed(msg.client_id, errMsg);
       }
     },
-    [selectedId, handleConfirmSent, handleSendFailed]
+    [selectedId, handleConfirmSent, handleSendFailed, scrollToBottom]
   );
 
   // Reply
