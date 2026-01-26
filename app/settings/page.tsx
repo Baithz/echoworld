@@ -2,17 +2,24 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.2.0 (2026-01-23)
+ * Version      : 2.3.1 (2026-01-26)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
  * - Lecture/édition de user_settings (theme, defaults, notifications soft, pour-moi MVP)
  * - Lecture/édition de profiles (handle, bio, identity_mode, lang_primary, public_profile_enabled)
- * - [FIX] Source de vérité “Profil public” = profiles.public_profile_enabled (aligné RLS + search)
+ * - Source de vérité “Profil public” = profiles.public_profile_enabled (aligné RLS + search)
  * - FAIL-SOFT : si colonnes "for_me_*" absentes en BDD, sauvegarde fallback sans casser
+ * - Validation + disponibilité pseudo (handle) via /api/handle/check (fail-soft, unique constraint garde le dernier mot)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.3.1 (2026-01-26)
+ * - [CLEAN] Refactor léger (ordre des checks, dépendances, msgs) sans changement fonctionnel
+ * - [SAFE] Validation handle + check dispo conservés, aucune régression UX
+ * 2.3.0 (2026-01-26)
+ * - [NEW] Validation locale + check disponibilité handle via /api/handle/check (fail-soft si route absente)
+ * - [SAFE] Bloque uniquement les handles invalides ou déjà pris (fallback sur contrainte unique BDD)
  * 2.2.0 (2026-01-23)
  * - [FIX] Profil public: lecture + écriture sur profiles.public_profile_enabled
  * - [FIX] user_settings.public_profile_enabled n’est plus utilisé pour la visibilité publique
@@ -118,6 +125,56 @@ function normalizeHandle(input: string): string {
   return cleaned.slice(0, 24);
 }
 
+// -----------------------------------------------------------------------------
+// Validation + disponibilité handle
+// -----------------------------------------------------------------------------
+const HANDLE_MIN = 3;
+const HANDLE_MAX = 24;
+
+// Réservés (routes + mots sensibles / courts)
+const RESERVED_HANDLES = new Set([
+  'admin',
+  'api',
+  'app',
+  'auth',
+  'account',
+  'settings',
+  'login',
+  'signup',
+  'register',
+  'explore',
+  'map',
+  'u',
+  'me',
+  'support',
+  'terms',
+  'privacy',
+]);
+
+type HandleCheckState = 'idle' | 'invalid' | 'checking' | 'available' | 'taken' | 'unknown';
+
+function validateHandle(raw: string): { ok: boolean; normalized: string; reason?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, normalized: '' }; // handle facultatif
+
+  const normalized = normalizeHandle(trimmed);
+
+  if (normalized.length < HANDLE_MIN) {
+    return { ok: false, normalized, reason: `Minimum ${HANDLE_MIN} caractères.` };
+  }
+  if (normalized.length > HANDLE_MAX) {
+    return {
+      ok: false,
+      normalized: normalized.slice(0, HANDLE_MAX),
+      reason: `Maximum ${HANDLE_MAX} caractères.`,
+    };
+  }
+  if (RESERVED_HANDLES.has(normalized)) {
+    return { ok: false, normalized, reason: 'Pseudo réservé.' };
+  }
+  return { ok: true, normalized };
+}
+
 function safeLang(v: string | null | undefined): string {
   const x = (v || '').trim().toLowerCase();
   if (!x) return 'en';
@@ -183,18 +240,26 @@ export default function SettingsPage() {
   const [forMeIncludeFresh, setForMeIncludeFresh] = useState(true);
   const [forMeMaxItems, setForMeMaxItems] = useState<number>(18);
 
+  // ---------------------------------------------------------------------------
+  // Handle availability (FAIL-SOFT)
+  // ---------------------------------------------------------------------------
+  const [handleState, setHandleState] = useState<HandleCheckState>('idle');
+  const [handleHint, setHandleHint] = useState<string | null>(null);
+  const lastCheckedHandleRef = useRef<string>('');
+
   const canSave = useMemo(() => {
     if (authLoading || loading) return false;
     if (!userId) return false;
     if (saving) return false;
 
-    const h = handle.trim();
-    if (h && normalizeHandle(h).length < 3) return false;
+    const v = validateHandle(handle);
+    if (!v.ok) return false;
+    if (handleState === 'taken') return false;
 
     if (Number.isNaN(forMeMaxItems) || forMeMaxItems < 6 || forMeMaxItems > 60) return false;
 
     return true;
-  }, [userId, saving, handle, loading, authLoading, forMeMaxItems]);
+  }, [userId, saving, handle, handleState, loading, authLoading, forMeMaxItems]);
 
   // Auth guard
   useEffect(() => {
@@ -297,15 +362,94 @@ export default function SettingsPage() {
     };
   }, [userId]);
 
+  // ---------------------------------------------------------------------------
+  // Handle availability (FAIL-SOFT)
+  // - Si l’API n’existe pas / erreur réseau : state = 'unknown' (n’empêche pas save)
+  // - Si handle vide : idle
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (authLoading || loading) return;
+    if (!userId) return;
+
+    const { ok: isValid, normalized, reason } = validateHandle(handle);
+
+    if (!handle.trim()) {
+      setHandleState('idle');
+      setHandleHint(null);
+      lastCheckedHandleRef.current = '';
+      return;
+    }
+
+    if (!isValid) {
+      setHandleState('invalid');
+      setHandleHint(reason || 'Pseudo invalide.');
+      lastCheckedHandleRef.current = '';
+      return;
+    }
+
+    // Si inchangé vs DB (handle actuel du profil) => pas besoin de checker
+    const current = (profile?.handle ?? '') || '';
+    if (normalized && normalized === current) {
+      setHandleState('available');
+      setHandleHint('Pseudo actuel.');
+      lastCheckedHandleRef.current = normalized;
+      return;
+    }
+
+    setHandleState('checking');
+    setHandleHint('Vérification…');
+
+    const t = window.setTimeout(async () => {
+      try {
+        // évite double-check
+        if (lastCheckedHandleRef.current === normalized) return;
+
+        const res = await fetch(`/api/handle/check?handle=${encodeURIComponent(normalized)}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+
+        // FAIL-SOFT : si route non créée (404) ou autre -> unknown
+        if (!res.ok) {
+          setHandleState('unknown');
+          setHandleHint('Disponibilité non vérifiée (OK).');
+          return;
+        }
+
+        const json = (await res.json().catch(() => ({}))) as { available?: boolean };
+        const available = !!json.available;
+
+        setHandleState(available ? 'available' : 'taken');
+        setHandleHint(available ? 'Pseudo disponible.' : 'Pseudo déjà utilisé.');
+        lastCheckedHandleRef.current = normalized;
+      } catch {
+        setHandleState('unknown');
+        setHandleHint('Disponibilité non vérifiée (OK).');
+      }
+    }, 450);
+
+    return () => window.clearTimeout(t);
+  }, [handle, userId, authLoading, loading, profile?.handle]);
+
   const save = async () => {
     if (!userId || !canSave) return;
+
+    const vHandle = validateHandle(handle);
+    if (!vHandle.ok) {
+      setError(vHandle.reason || 'Pseudo invalide.');
+      return;
+    }
+    if (handleState === 'taken') {
+      setError('Ce pseudo est déjà utilisé. Essayez une autre variante.');
+      return;
+    }
 
     setSaving(true);
     setError(null);
     setOk(null);
 
     try {
-      const nextHandle = handle.trim() ? normalizeHandle(handle) : null;
+      const nextHandle = vHandle.normalized ? vHandle.normalized : null;
       const nextBio = bio.trim() ? bio.trim() : null;
       const nextLang = safeLang(langPrimary);
 
@@ -475,8 +619,8 @@ export default function SettingsPage() {
               onBlur={() => {
                 const h = handle.trim();
                 if (!h) return;
-                const n = normalizeHandle(h);
-                if (n !== handle) setHandle(n);
+                const v = validateHandle(h);
+                if (v.normalized !== handle) setHandle(v.normalized);
               }}
               placeholder="ex: night_river"
               className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
@@ -484,8 +628,26 @@ export default function SettingsPage() {
               inputMode="text"
               autoComplete="off"
             />
-            <div className="mt-2 text-xs text-slate-500">
-              {handle.trim() ? `Format appliqué : ${normalizeHandle(handle)}` : 'Tu peux rester sans pseudo si tu veux.'}
+            <div className="mt-2 space-y-1 text-xs">
+              <div className="text-slate-500">
+                {handle.trim()
+                  ? `Format appliqué : ${validateHandle(handle).normalized}`
+                  : 'Tu peux rester sans pseudo si tu veux.'}
+              </div>
+
+              {handle.trim() && (
+                <div
+                  className={
+                    handleState === 'available'
+                      ? 'text-emerald-700'
+                      : handleState === 'taken' || handleState === 'invalid'
+                        ? 'text-rose-700'
+                        : 'text-slate-500'
+                  }
+                >
+                  {handleHint || '—'}
+                </div>
+              )}
             </div>
           </div>
 
@@ -566,7 +728,7 @@ export default function SettingsPage() {
               className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
             >
               <option value="world">Monde (public)</option>
-              <option value="local">Local (public local)</option>
+              <option value="local">Local (public)</option>
               <option value="semi_anonymous">Semi-anonyme</option>
               <option value="private">Privé</option>
             </select>
@@ -657,7 +819,9 @@ export default function SettingsPage() {
               <option value="light">Clair</option>
               <option value="dark">Sombre</option>
             </select>
-            <div className="mt-2 text-xs text-slate-500">(Le switch global sera appliqué via layout à l&apos;étape suivante.)</div>
+            <div className="mt-2 text-xs text-slate-500">
+              (Le switch global sera appliqué via layout à l&apos;étape suivante.)
+            </div>
           </div>
 
           <ToggleRow
@@ -672,7 +836,9 @@ export default function SettingsPage() {
       {/* RGPD */}
       <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
         <h2 className="text-lg font-bold text-slate-900">Données & RGPD</h2>
-        <p className="mt-1 text-sm text-slate-600">Export et suppression complète seront ajoutés ensuite (prévu dans la roadmap).</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Export et suppression complète seront ajoutés ensuite (prévu dans la roadmap).
+        </p>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
           <button

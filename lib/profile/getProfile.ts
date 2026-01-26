@@ -1,20 +1,22 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.7.3 (2026-01-24)
+// Version      : 1.7.4 (2026-01-26)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
 // - Résolution profil par id/handle (public_profile_enabled)
+// - Lookup handle STRICT aligné DB/Settings (a-z0-9_- ; max 24 ; lowercase)
 // - Récupération échos publics (published + world/local)
 // - Stats publiques (counts + topThemes)
 // - isFollowing via table follows (RLS OK)
 // ----------------------------------------------------------------------------
 // CHANGELOG
-// 1.7.3 (2026-01-24)
-// - [DEBUG] Logs gated EW_DEBUG=1: erreurs Supabase détaillées + étapes lookup
-// - [FIX] Zéro bruit ESLint: prefer-const / unused / helpers morts (foldDiacritics supprimé)
-// - [SAFE] Contrat inchangé: mêmes exports/types/signatures, picks/stats/echoes inchangés
+// 1.7.4 (2026-01-26)
+// - [FIX] Handle lookup: normalisation unique et stricte (match index unique profiles.handle)
+// - [FIX] Supprime fallbacks ambigus (ilike sans wildcard / 32 chars / '.' autorisé) => moins de 404 incohérents
+// - [KEEP] Contrat inchangé: mêmes exports/types/signatures, picks/stats/echoes inchangés
+// - [SAFE] Zéro régression fonctionnelle hors correction handle
 // =============================================================================
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -123,30 +125,31 @@ function pickSupabaseError(err: unknown) {
 }
 
 /**
- * Normalisation STRICTE "lookup" (index lower(handle)):
+ * Normalisation STRICTE (doit matcher Settings + DB unique index):
  * - remove @
  * - trim
  * - lowercase
- * - NE PAS filtrer d’autres caractères ici (évite mismatch si handle stocké avec ponctuation/accents)
+ * - espaces => _
+ * - autorise uniquement [a-z0-9_-]
+ * - max 24
  */
-function normalizeHandleForLookup(input: string): string {
-  return (input ?? '').trim().replace(/^@/, '').trim().toLowerCase();
+function normalizeHandleStrict(input: string): string {
+  const raw = typeof input === 'string' ? input : '';
+  const cleaned = raw.trim().replace(/^@/, '').trim();
+  if (!cleaned) return '';
+  return cleaned
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 24);
 }
 
 /**
- * Normalisation pour URLs (/u/[handle]) :
- * - convertit espaces en _
- * - supprime tout hors [a-z0-9._-]
- * - coupe à 32
+ * (Compat export) Normalisation pour URLs (/u/[handle]) :
+ * Alignée STRICTEMENT sur la règle handle.
  */
 export function normalizeHandleForUrl(input: string): string {
-  const raw = (input ?? '').trim().replace(/^@/, '').trim();
-  if (!raw) return '';
-  return raw
-    .toLowerCase()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9._-]/g, '')
-    .slice(0, 32);
+  return normalizeHandleStrict(input);
 }
 
 function pickProfile(row: ProfileRow): PublicProfile {
@@ -218,93 +221,38 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
     return null;
   }
 
-  const normalized = normalizeHandleForLookup(raw);
-  const urlNorm = normalizeHandleForUrl(raw);
+  const normalized = normalizeHandleStrict(raw);
+  log('getProfileByHandle: start', { raw, normalized });
 
-  log('getProfileByHandle: start', { raw, normalized, urlNorm });
+  if (!normalized) {
+    log('getProfileByHandle: normalized empty => MISS', { raw });
+    return null;
+  }
 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // 1) EQ(normalized)
-    const r1 = await supabase
+    // Lookup strict = 1 seule source de vérité (match index unique)
+    const r = await supabase
       .from('profiles')
       .select(PROFILE_SELECT)
       .eq('handle', normalized)
       .maybeSingle<ProfileRow>();
 
-    if (r1.error) {
-      logError('getProfileByHandle: r1 eq(normalized) error', {
-        normalized,
-        err: pickSupabaseError(r1.error),
-      });
+    if (r.error) {
+      logError('getProfileByHandle: eq(handle) error', { normalized, err: pickSupabaseError(r.error) });
       return null;
     }
-    if (r1.data) {
-      log('getProfileByHandle: r1 HIT', { id: r1.data.id, handle: r1.data.handle });
-      return pickProfile(r1.data);
-    }
-    log('getProfileByHandle: r1 MISS', { normalized });
 
-    // 2) ILIKE(normalized) (sans wildcard)
-    const r2 = await supabase
-      .from('profiles')
-      .select(PROFILE_SELECT)
-      .ilike('handle', normalized)
-      .maybeSingle<ProfileRow>();
-
-    if (r2.error) {
-      logError('getProfileByHandle: r2 ilike(normalized) error', {
-        normalized,
-        err: pickSupabaseError(r2.error),
-      });
+    if (!r.data) {
+      log('getProfileByHandle: MISS', { normalized });
       return null;
     }
-    if (r2.data) {
-      log('getProfileByHandle: r2 HIT', { id: r2.data.id, handle: r2.data.handle });
-      return pickProfile(r2.data);
-    }
-    log('getProfileByHandle: r2 MISS', { normalized });
 
-    // 3) Fallback URL-normalized
-    if (urlNorm && urlNorm !== normalized) {
-      const r3 = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .eq('handle', urlNorm)
-        .maybeSingle<ProfileRow>();
-
-      if (r3.error) {
-        logError('getProfileByHandle: r3 eq(urlNorm) error', { urlNorm, err: pickSupabaseError(r3.error) });
-        return null;
-      }
-      if (r3.data) {
-        log('getProfileByHandle: r3 HIT', { id: r3.data.id, handle: r3.data.handle });
-        return pickProfile(r3.data);
-      }
-      log('getProfileByHandle: r3 MISS', { urlNorm });
-
-      const r4 = await supabase
-        .from('profiles')
-        .select(PROFILE_SELECT)
-        .ilike('handle', urlNorm)
-        .maybeSingle<ProfileRow>();
-
-      if (r4.error) {
-        logError('getProfileByHandle: r4 ilike(urlNorm) error', { urlNorm, err: pickSupabaseError(r4.error) });
-        return null;
-      }
-      if (r4.data) {
-        log('getProfileByHandle: r4 HIT', { id: r4.data.id, handle: r4.data.handle });
-        return pickProfile(r4.data);
-      }
-      log('getProfileByHandle: r4 MISS', { urlNorm });
-    }
-
-    log('getProfileByHandle: MISS all', { raw, normalized, urlNorm });
-    return null;
+    log('getProfileByHandle: HIT', { id: r.data.id, handle: r.data.handle });
+    return pickProfile(r.data);
   } catch (err) {
-    logError('getProfileByHandle: Exception', { raw, normalized, urlNorm, err });
+    logError('getProfileByHandle: Exception', { raw, normalized, err });
     return null;
   }
 }
