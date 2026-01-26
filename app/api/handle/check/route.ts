@@ -2,19 +2,22 @@
  * =============================================================================
  * Fichier      : app/api/handle/check/route.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-26)
+ * Version      : 1.0.1 (2026-01-26)
  * Objet        : API Handle Check — disponibilité pseudo (FAIL-SOFT, anti-régression)
  * -----------------------------------------------------------------------------
  * Description  :
  * - GET ?handle=xxx -> { available: boolean }
- * - Normalise/valide le handle côté serveur (mêmes règles que Settings)
+ * - Normalise/valide le handle côté serveur (mêmes règles strictes que Settings + lookup)
  * - Ne révèle pas d’informations autres que "disponible / non"
- * - SAFE: si erreur/RLS -> renvoie 200 {available:false} ou 200 {available:true}? -> ici: false
+ * - Prefer SERVICE_ROLE_KEY si présent (unicité fiable même si profils non publics)
+ * - SAFE: si erreur/RLS/env manquants -> status 200 + available:false
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-26)
- * - [NEW] Endpoint /api/handle/check (disponibilité handle)
+ * 1.0.1 (2026-01-26)
+ * - [FIX] Normalisation strictement alignée (a-z0-9_- ; espaces->_ ; max 24)
+ * - [IMPROVED] Support service role (si dispo) pour vérif unicité réelle
+ * - [KEEP] FAIL-SOFT 200 + available:false en cas d’erreur
  * =============================================================================
  */
 
@@ -45,24 +48,32 @@ const RESERVED_HANDLES = new Set([
 
 function getEnvVar(key: string): string {
   const value = process.env[key];
-  if (!value) {
-    console.error(`[ENV ERROR] Variable manquante: ${key}`);
-    throw new Error(`Variable d'environnement manquante: ${key}`);
-  }
+  if (!value) throw new Error(`Variable d'environnement manquante: ${key}`);
   return value;
 }
 
-function normalizeHandle(input: string): string {
-  const cleaned = input
-    .trim()
+/**
+ * Normalisation STRICTE (doit matcher Settings + DB unique index):
+ * - remove @
+ * - trim
+ * - lowercase
+ * - espaces => _
+ * - autorise uniquement [a-z0-9_-]
+ * - max 24
+ */
+function normalizeHandleStrict(input: string): string {
+  const raw = typeof input === 'string' ? input : '';
+  const cleaned = raw.trim().replace(/^@/, '').trim();
+  if (!cleaned) return '';
+  return cleaned
     .toLowerCase()
     .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_-]/g, '');
-  return cleaned.slice(0, HANDLE_MAX);
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, HANDLE_MAX);
 }
 
 function validateHandle(raw: string): { ok: boolean; normalized: string } {
-  const normalized = normalizeHandle(raw);
+  const normalized = normalizeHandleStrict(raw);
 
   if (!normalized) return { ok: false, normalized: '' };
   if (normalized.length < HANDLE_MIN) return { ok: false, normalized };
@@ -72,24 +83,22 @@ function validateHandle(raw: string): { ok: boolean; normalized: string } {
   return { ok: true, normalized };
 }
 
+function getSupabaseAdminOrAnon() {
+  const supabaseUrl = getEnvVar('NEXT_PUBLIC_SUPABASE_URL');
+
+  // Prefer service role (unicité fiable même si profils non publics / RLS restrictif)
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (serviceKey) {
+    return createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  }
+
+  // Fallback anon (peut être limité par RLS -> FAIL-SOFT available:false)
+  const anonKey = getEnvVar('NEXT_PUBLIC_SUPABASE_ANON_KEY');
+  return createClient(supabaseUrl, anonKey, { auth: { persistSession: false } });
+}
+
 export async function GET(request: NextRequest) {
   try {
-    let supabaseUrl: string;
-    let supabaseAnonKey: string;
-
-    try {
-      supabaseUrl = getEnvVar('NEXT_PUBLIC_SUPABASE_URL');
-      supabaseAnonKey = getEnvVar('NEXT_PUBLIC_SUPABASE_ANON_KEY');
-    } catch (envError) {
-      console.error('[ENV ERROR]', envError);
-      // FAIL-SOFT : on ne bloque pas la saisie côté client
-      return NextResponse.json({ available: false, reason: 'env_missing' }, { status: 200 });
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { persistSession: false },
-    });
-
     const handle = request.nextUrl.searchParams.get('handle') || '';
     const v = validateHandle(handle);
 
@@ -97,15 +106,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ available: false }, { status: 200 });
     }
 
-    // Important:
-    // - on ne doit pas dépendre de l’utilisateur connecté
-    // - le but est seulement "existe déjà ?" (unicité)
-    // - si RLS bloque (devrait pas : profils publics), on fail-soft => available:false
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('handle', v.normalized)
-      .limit(1);
+    let supabase;
+    try {
+      supabase = getSupabaseAdminOrAnon();
+    } catch (envError) {
+      console.error('[HANDLE CHECK ENV ERROR]', envError);
+      return NextResponse.json({ available: false, reason: 'env_missing' }, { status: 200 });
+    }
+
+    const { data, error } = await supabase.from('profiles').select('id').eq('handle', v.normalized).limit(1);
 
     if (error) {
       console.error('[HANDLE CHECK ERROR]', error);

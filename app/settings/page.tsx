@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.1 (2026-01-26)
+ * Version      : 2.3.2 (2026-01-26)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,10 +10,13 @@
  * - Lecture/édition de profiles (handle, bio, identity_mode, lang_primary, public_profile_enabled)
  * - Source de vérité “Profil public” = profiles.public_profile_enabled (aligné RLS + search)
  * - FAIL-SOFT : si colonnes "for_me_*" absentes en BDD, sauvegarde fallback sans casser
- * - Validation + disponibilité pseudo (handle) via /api/handle/check (fail-soft, unique constraint garde le dernier mot)
+ * - Validation pseudo (handle) dans un composant dédié ProfileHandleForm (debounce + check /api/handle/check)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.3.2 (2026-01-26)
+ * - [REFACTOR] Extraction de toute la logique handleState/handleHint/check dispo vers ProfileHandleForm
+ * - [SAFE] Le bouton Enregistrer conserve la même logique d’upsert (profiles.handle + unique BDD)
  * 2.3.1 (2026-01-26)
  * - [CLEAN] Refactor léger (ordre des checks, dépendances, msgs) sans changement fonctionnel
  * - [SAFE] Validation handle + check dispo conservés, aucune régression UX
@@ -34,6 +37,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import ProfileHandleForm from '@/components/settings/ProfileHandleForm';
 
 type IdentityMode = 'real' | 'symbolic' | 'anonymous';
 type Theme = 'system' | 'light' | 'dark';
@@ -126,52 +130,28 @@ function normalizeHandle(input: string): string {
 }
 
 // -----------------------------------------------------------------------------
-// Validation + disponibilité handle
+// Validation handle (côté page)
 // -----------------------------------------------------------------------------
-const HANDLE_MIN = 3;
-const HANDLE_MAX = 24;
-
-// Réservés (routes + mots sensibles / courts)
-const RESERVED_HANDLES = new Set([
-  'admin',
-  'api',
-  'app',
-  'auth',
-  'account',
-  'settings',
-  'login',
-  'signup',
-  'register',
-  'explore',
-  'map',
-  'u',
-  'me',
-  'support',
-  'terms',
-  'privacy',
-]);
-
-type HandleCheckState = 'idle' | 'invalid' | 'checking' | 'available' | 'taken' | 'unknown';
-
+// Le composant ProfileHandleForm gère la validation UX + check disponibilité,
+// mais on garde un filet de sécurité ici pour éviter d’enregistrer un format
+// complètement invalide si jamais le composant est contourné.
 function validateHandle(raw: string): { ok: boolean; normalized: string; reason?: string } {
   const trimmed = raw.trim();
   if (!trimmed) return { ok: true, normalized: '' }; // handle facultatif
 
   const normalized = normalizeHandle(trimmed);
 
-  if (normalized.length < HANDLE_MIN) {
-    return { ok: false, normalized, reason: `Minimum ${HANDLE_MIN} caractères.` };
+  if (normalized.length < 3) {
+    return { ok: false, normalized, reason: 'Minimum 3 caractères.' };
   }
-  if (normalized.length > HANDLE_MAX) {
+  if (normalized.length > 24) {
     return {
       ok: false,
-      normalized: normalized.slice(0, HANDLE_MAX),
-      reason: `Maximum ${HANDLE_MAX} caractères.`,
+      normalized: normalized.slice(0, 24),
+      reason: 'Maximum 24 caractères.',
     };
   }
-  if (RESERVED_HANDLES.has(normalized)) {
-    return { ok: false, normalized, reason: 'Pseudo réservé.' };
-  }
+
   return { ok: true, normalized };
 }
 
@@ -240,13 +220,6 @@ export default function SettingsPage() {
   const [forMeIncludeFresh, setForMeIncludeFresh] = useState(true);
   const [forMeMaxItems, setForMeMaxItems] = useState<number>(18);
 
-  // ---------------------------------------------------------------------------
-  // Handle availability (FAIL-SOFT)
-  // ---------------------------------------------------------------------------
-  const [handleState, setHandleState] = useState<HandleCheckState>('idle');
-  const [handleHint, setHandleHint] = useState<string | null>(null);
-  const lastCheckedHandleRef = useRef<string>('');
-
   const canSave = useMemo(() => {
     if (authLoading || loading) return false;
     if (!userId) return false;
@@ -254,12 +227,11 @@ export default function SettingsPage() {
 
     const v = validateHandle(handle);
     if (!v.ok) return false;
-    if (handleState === 'taken') return false;
 
     if (Number.isNaN(forMeMaxItems) || forMeMaxItems < 6 || forMeMaxItems > 60) return false;
 
     return true;
-  }, [userId, saving, handle, handleState, loading, authLoading, forMeMaxItems]);
+  }, [userId, saving, handle, loading, authLoading, forMeMaxItems]);
 
   // Auth guard
   useEffect(() => {
@@ -362,85 +334,12 @@ export default function SettingsPage() {
     };
   }, [userId]);
 
-  // ---------------------------------------------------------------------------
-  // Handle availability (FAIL-SOFT)
-  // - Si l’API n’existe pas / erreur réseau : state = 'unknown' (n’empêche pas save)
-  // - Si handle vide : idle
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    if (authLoading || loading) return;
-    if (!userId) return;
-
-    const { ok: isValid, normalized, reason } = validateHandle(handle);
-
-    if (!handle.trim()) {
-      setHandleState('idle');
-      setHandleHint(null);
-      lastCheckedHandleRef.current = '';
-      return;
-    }
-
-    if (!isValid) {
-      setHandleState('invalid');
-      setHandleHint(reason || 'Pseudo invalide.');
-      lastCheckedHandleRef.current = '';
-      return;
-    }
-
-    // Si inchangé vs DB (handle actuel du profil) => pas besoin de checker
-    const current = (profile?.handle ?? '') || '';
-    if (normalized && normalized === current) {
-      setHandleState('available');
-      setHandleHint('Pseudo actuel.');
-      lastCheckedHandleRef.current = normalized;
-      return;
-    }
-
-    setHandleState('checking');
-    setHandleHint('Vérification…');
-
-    const t = window.setTimeout(async () => {
-      try {
-        // évite double-check
-        if (lastCheckedHandleRef.current === normalized) return;
-
-        const res = await fetch(`/api/handle/check?handle=${encodeURIComponent(normalized)}`, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-        });
-
-        // FAIL-SOFT : si route non créée (404) ou autre -> unknown
-        if (!res.ok) {
-          setHandleState('unknown');
-          setHandleHint('Disponibilité non vérifiée (OK).');
-          return;
-        }
-
-        const json = (await res.json().catch(() => ({}))) as { available?: boolean };
-        const available = !!json.available;
-
-        setHandleState(available ? 'available' : 'taken');
-        setHandleHint(available ? 'Pseudo disponible.' : 'Pseudo déjà utilisé.');
-        lastCheckedHandleRef.current = normalized;
-      } catch {
-        setHandleState('unknown');
-        setHandleHint('Disponibilité non vérifiée (OK).');
-      }
-    }, 450);
-
-    return () => window.clearTimeout(t);
-  }, [handle, userId, authLoading, loading, profile?.handle]);
-
   const save = async () => {
     if (!userId || !canSave) return;
 
     const vHandle = validateHandle(handle);
     if (!vHandle.ok) {
       setError(vHandle.reason || 'Pseudo invalide.');
-      return;
-    }
-    if (handleState === 'taken') {
-      setError('Ce pseudo est déjà utilisé. Essayez une autre variante.');
       return;
     }
 
@@ -611,45 +510,18 @@ export default function SettingsPage() {
         </p>
 
         <div className="mt-6 grid gap-5 md:grid-cols-2">
-          <div>
-            <label className="text-sm font-semibold text-slate-900">Pseudo (handle)</label>
-            <input
-              value={handle}
-              onChange={(e) => setHandle(e.target.value)}
-              onBlur={() => {
-                const h = handle.trim();
-                if (!h) return;
-                const v = validateHandle(h);
-                if (v.normalized !== handle) setHandle(v.normalized);
-              }}
-              placeholder="ex: night_river"
-              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
-              maxLength={24}
-              inputMode="text"
-              autoComplete="off"
-            />
-            <div className="mt-2 space-y-1 text-xs">
-              <div className="text-slate-500">
-                {handle.trim()
-                  ? `Format appliqué : ${validateHandle(handle).normalized}`
-                  : 'Tu peux rester sans pseudo si tu veux.'}
-              </div>
-
-              {handle.trim() && (
-                <div
-                  className={
-                    handleState === 'available'
-                      ? 'text-emerald-700'
-                      : handleState === 'taken' || handleState === 'invalid'
-                        ? 'text-rose-700'
-                        : 'text-slate-500'
-                  }
-                >
-                  {handleHint || '—'}
-                </div>
-              )}
-            </div>
-          </div>
+          <ProfileHandleForm
+            initialHandle={profile?.handle ?? null}
+            disabled={saving}
+            onCommit={(next) => {
+              // UI-only : mise à jour de l’état local.
+              // La sauvegarde réelle se fait via save().
+              setHandle(next ?? '');
+            }}
+            label="Pseudo (handle)"
+            hint="Visible sur ton profil public et dans les URLs : /u/[handle]."
+            commitOnBlur={false}
+          />
 
           <div>
             <label className="text-sm font-semibold text-slate-900">Mode d&apos;identité</label>
