@@ -2,28 +2,22 @@
  * =============================================================================
  * Fichier      : components/messages/ChatDock.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.1 (2026-01-25)
- * Objet        : ChatDock redesigné — Fix auto-scroll + typing + UX améliorée
+ * Version      : 3.1.0 (2026-01-26)
+ * Objet        : ChatDock — Header présence peer + wrapper 850 + typing sticky (SAFE)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Dock flottant redesigné : sidebar 200px + actions au-dessus textarea
- * - Fix auto-scroll : supprime useEffect conflictuel messages.length
- * - Fix typing : fetch profiles pour afficher vrais noms
- * - LOT 2.6 complet : RichComposer + TypingIndicator intégrés
+ * - Wrapper ajusté : 850px (plus raisonnable que 1100px)
+ * - Zone messages : hauteur augmentée (h-96) pour plus de lisibilité
+ * - TypingIndicator repositionné : visible sans scroll (sticky au-dessus du composer)
+ * - Header : affiche la présence du peer (DM) via PresenceBadge + libellé En ligne/Hors ligne
+ * - Conserve intégralement : optimistic send/retry, reply, reactions, unread counts, live messages
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.5.1 (2026-01-25)
- * - [FIX] TypeScript : typage explicite .single<ProfileType>() + check error
- * - [KEEP] 2.5.0 : Redesign + auto-scroll + typing inchangés
- * 2.5.0 (2026-01-25)
- * - [REDESIGN] Sidebar 200px (au lieu de 150px) - meilleure lisibilité noms
- * - [REDESIGN] Wrapper w-[1100px] (au lieu de w-95) - plus d'espace conversation
- * - [REDESIGN] Actions (📎 😊) AU-DESSUS textarea - meilleure ergonomie
- * - [FIX] Auto-scroll : supprime useEffect conflictuel messages.length
- * - [FIX] Typing : fetch profiles display_name/handle (vrais noms)
- * - [NEW] RichComposer v2 : actions top + layout amélioré
- * - [KEEP] LOT 1/2 : Optimistic + Reply + Reactions inchangés
+ * 3.1.0 (2026-01-26)
+ * - [NEW] Header : présence peer (DM) + badge vert/gris (fail-soft)
+ * - [KEEP] 3.0.0 : wrapper 850px + h-96 + typing sticky + live/unread inchangés
  * =============================================================================
  */
 
@@ -34,6 +28,7 @@ import Link from 'next/link';
 import { X, Mail } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
+import { usePresence, isUserOnline } from '@/lib/presence/usePresence';
 import {
   fetchConversationsForUser,
   fetchMessages,
@@ -47,6 +42,7 @@ import ConversationList from './ConversationList';
 import MessageList from './MessageList';
 import TypingIndicator from './TypingIndicator';
 import RichComposer from './RichComposer';
+import PresenceBadge from './PresenceBadge';
 import type { ConversationRowPlus, UiMessage, SenderProfile } from './types';
 
 type MsgLite = { id: string; conversation_id: string; created_at: string };
@@ -158,11 +154,39 @@ export default function ChatDock() {
     [convs, activeConversationId]
   );
 
+  // PHASE 3: Présence (fail-soft)
+  const presenceMap = usePresence(userId, 'global-presence');
+
+  // Peer presence (DM uniquement) — robuste selon schéma ConversationRowPlus
+  const peerUserId = useMemo(() => {
+    if (!selected) return null;
+
+    // Schéma attendu dans le projet : peer_user_id (déjà utilisé ailleurs)
+    const pid1 = String((selected as ConversationRowPlus).peer_user_id ?? '').trim();
+    if (selected.type === 'direct' && pid1) return pid1;
+
+    // Fallback tolérant (si jamais un alias existe)
+    const anySel = selected as unknown as { peer_id?: string | null; peerId?: string | null };
+    const pid2 = String(anySel.peer_id ?? anySel.peerId ?? '').trim();
+    if (selected.type === 'direct' && pid2) return pid2;
+
+    return null;
+  }, [selected]);
+
+  const peerOnline = useMemo(() => {
+    if (!peerUserId) return false;
+    try {
+      return isUserOnline(presenceMap, peerUserId);
+    } catch {
+      return false;
+    }
+  }, [presenceMap, peerUserId]);
+
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
   }, [messages]);
 
-  // ✅ FIX 2: Fetch current user profile pour typing
+  // Fetch current user profile pour typing
   const [currentUserProfile, setCurrentUserProfile] = useState<{
     displayName: string | null;
     handle: string | null;
@@ -193,7 +217,7 @@ export default function ChatDock() {
     void fetchProfile();
   }, [userId]);
 
-  // LOT 2.6: Typing indicator avec vrais noms
+  // Typing indicator avec vrais noms
   const { typingUsers, startTyping, stopTyping } = useTyping(
     activeConversationId,
     userId,
@@ -249,7 +273,7 @@ export default function ChatDock() {
 
         setUnreadCounts((prev) => ({ ...prev, [convId]: 0 }));
 
-        // ✅ FIX 1: Auto-scroll après réception message (seul endroit)
+        // Auto-scroll après réception message (seul endroit)
         setTimeout(() => scrollToBottom(), 100);
 
         void markConversationRead(convId).catch(() => {});
@@ -444,9 +468,6 @@ export default function ChatDock() {
     };
   }, [isChatDockOpen, activeConversationId, refreshCounts]);
 
-  // ✅ FIX 1: SUPPRIMÉ useEffect conflictuel messages.length
-  // (Scroll uniquement dans onNewMessage ligne ~250)
-
   // Realtime reactions
   useEffect(() => {
     if (!isChatDockOpen) return;
@@ -617,7 +638,7 @@ export default function ChatDock() {
   if (!isChatDockOpen) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 w-275 max-w-[92vw]">
+    <div className="fixed bottom-6 right-6 z-50 w-190 max-w-[92vw]">
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-2xl shadow-black/15 backdrop-blur-xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -625,9 +646,23 @@ export default function ChatDock() {
             <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
               <Mail className="h-5 w-5" />
             </span>
+
             <div className="leading-tight">
               <div className="text-sm font-extrabold text-slate-900">Chat</div>
-              <div className="text-xs text-slate-500">{selected ? convTitle(selected) : 'Conversations'}</div>
+
+              {/* ✅ PHASE 3: Nom + présence */}
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-500">{selected ? convTitle(selected) : 'Conversations'}</span>
+
+                {peerUserId && (
+                  <>
+                    <PresenceBadge online={peerOnline} size="small" showTooltip={false} />
+                    <span className={peerOnline ? 'font-medium text-emerald-600' : 'text-slate-400'}>
+                      {peerOnline ? 'En ligne' : 'Hors ligne'}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -667,7 +702,7 @@ export default function ChatDock() {
           </div>
         ) : (
           <div className="grid grid-cols-[200px_1fr]">
-            {/* ✅ REDESIGN: Sidebar 200px (au lieu de 150px) */}
+            {/* Sidebar 200px */}
             <div className="border-r border-slate-200">
               <ConversationList
                 conversations={sortedConvs}
@@ -681,9 +716,9 @@ export default function ChatDock() {
               />
             </div>
 
-            {/* Messages + Composer */}
+            {/* Messages + Typing (sticky) + Composer */}
             <div className="flex flex-col">
-              <div className="h-80 overflow-auto p-3">
+              <div className="h-96 overflow-auto p-3">
                 <MessageList
                   messages={messages}
                   loading={loadingMsgs}
@@ -695,12 +730,13 @@ export default function ChatDock() {
                   scrollRef={messagesEndRef}
                   variant="dock"
                 />
+              </div>
 
-                {/* ✅ LOT 2.6: Typing indicator */}
+              {/* TypingIndicator visible sans scroll (sticky au-dessus du composer) */}
+              <div className="sticky bottom-0 z-10 border-t border-slate-200 bg-white/90 px-3 py-2 backdrop-blur-xl">
                 <TypingIndicator typingUsers={typingUsers} currentUserId={userId} variant="dock" />
               </div>
 
-              {/* ✅ REDESIGN: RichComposer avec actions au-dessus */}
               <RichComposer
                 conversationId={activeConversationId}
                 userId={userId}

@@ -2,33 +2,32 @@
  * =============================================================================
  * Fichier      : components/messages/RichComposer.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.0.0 (2026-01-25)
- * Objet        : Rich Composer redesigné — Actions au-dessus + UX améliorée
+ * Version      : 2.1.1 (2026-01-26)
+ * Objet        : Rich Composer avec upload Supabase Storage — Fix lint + preview stable
  * -----------------------------------------------------------------------------
  * Description  :
- * - Composer avec optimistic UI + retry (LOT 1)
- * - Reply preview (LOT 2)
- * - Upload images/fichiers (LOT 2.6)
- * - Emoji picker inline (LOT 2.6)
- * - Typing indicator broadcast (LOT 2.6)
- * - REDESIGN : Actions (📎 😊) AU-DESSUS du textarea pour meilleure ergonomie
+ * - Conserve : actions au-dessus, typing callbacks, reply preview, optimistic send/retry, upload storage
+ * - Fix lint : supprime import inutilisé ImageIcon
+ * - Fix preview : évite les createObjectURL en render + cleanup systématique (anti-fuite mémoire)
+ * - Fix input file : reset value pour pouvoir re-sélectionner le même fichier
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.0.0 (2026-01-25)
- * - [REDESIGN] Actions AU-DESSUS du textarea (meilleure lisibilité)
- * - [REDESIGN] Textarea plus large (plus d'espace pour écrire)
- * - [REDESIGN] Preview attachments inline (au-dessus textarea)
- * - [KEEP] LOT 1/2/2.6 : Optimistic + retry + reply + upload + emoji + typing inchangés
+ * 2.1.1 (2026-01-26)
+ * - [FIX] ESLint : supprime ImageIcon (unused-vars)
+ * - [FIX] Preview : gestion des objectURLs via state + cleanup (pas de fuite)
+ * - [IMPROVED] File input : reset après sélection (reselect même fichier OK)
+ * - [KEEP] 2.1.0 : Upload Supabase Storage + miniatures + payload.attachments inchangés
  * =============================================================================
  */
 
 'use client';
 
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Send, Paperclip, Smile, X } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { sendMessage } from '@/lib/messages';
+import { uploadMessageAttachments, isImageFile, formatFileSize } from '@/lib/storage/uploadToStorage';
 import ReplyPreview from './ReplyPreview';
 import type { UiMessage, SenderProfile } from './types';
 
@@ -45,14 +44,24 @@ type Props = {
   onSendFailed: (clientId: string, error: string) => void;
   pendingSendingCount: number;
   variant?: 'dock' | 'page';
-
-  // LOT 2.6 : Typing
   onTypingStart?: () => void;
   onTypingStop?: () => void;
 };
 
+type AttachmentPreview = {
+  key: string;
+  file: File;
+  isImage: boolean;
+  previewUrl: string | null;
+};
+
 function generateClientId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function fileKey(file: File): string {
+  // clé stable côté UI (pas parfaite mais suffisante pour la preview)
+  return `${file.name}__${file.size}__${file.lastModified}__${file.type}`;
 }
 
 export default function RichComposer({
@@ -72,17 +81,40 @@ export default function RichComposer({
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isDock = variant === 'dock';
-  const canSend = Boolean(conversationId && userId && (text.trim() || attachments.length > 0) && pendingSendingCount < 3);
+  const canSend = Boolean(
+    conversationId &&
+      userId &&
+      (text.trim() || attachments.length > 0) &&
+      pendingSendingCount < 3 &&
+      !uploading
+  );
+
+  // ✅ Previews stables (évite createObjectURL dans le render)
+  const previews: AttachmentPreview[] = useMemo(() => {
+    return attachments.map((file) => {
+      const img = isImageFile(file.type);
+      return { key: fileKey(file), file, isImage: img, previewUrl: img ? URL.createObjectURL(file) : null };
+    });
+  }, [attachments]);
+
+  // ✅ Cleanup objectURLs
+  useEffect(() => {
+    return () => {
+      for (const p of previews) {
+        if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+      }
+    };
+  }, [previews]);
 
   const handleTextChange = (value: string) => {
     setText(value);
 
-    // LOT 2.6 : Typing indicator
     if (onTypingStart && value.trim()) {
       onTypingStart();
 
@@ -98,23 +130,19 @@ export default function RichComposer({
     const clean = text.trim();
     if (!conversationId || !userId) return;
     if (!clean && attachments.length === 0) return;
-    if (pendingSendingCount >= 3) return;
+    if (pendingSendingCount >= 3 || uploading) return;
 
-    // LOT 2.6 : Stop typing
     if (onTypingStop) onTypingStop();
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
     const clientId = generateClientId();
 
-    // TODO LOT 2.6 : Upload attachments to Supabase Storage
-    // For now, just send text
-
-    // 1) Optimistic message
+    // Optimistic message (sans attachments d'abord)
     const optimisticMsg: UiMessage = {
       id: '',
       conversation_id: conversationId,
       sender_id: userId,
-      content: clean || `[${attachments.length} fichier(s)]`,
+      content: clean || '',
       payload: { client_id: clientId },
       created_at: new Date().toISOString(),
       edited_at: null,
@@ -128,18 +156,40 @@ export default function RichComposer({
 
     onOptimisticSend(optimisticMsg);
     setText('');
+
+    const filesToUpload = [...attachments];
     setAttachments([]);
     setShowEmojiPicker(false);
     if (replyTo) onReplyCancel();
 
-    // 2) Send to DB
     try {
-      const payload: { client_id: string; parent_id?: string } = { client_id: clientId };
-      if (replyTo?.id) payload.parent_id = replyTo.id;
+      // Upload attachments si présents
+      let uploadedAttachments: Array<{ url: string; name: string; size: number; type: string }> = [];
 
-      const dbMsg = await sendMessage(conversationId, clean || `[${attachments.length} fichier(s)]`, payload);
+      if (filesToUpload.length > 0) {
+        setUploading(true);
+        const results = await uploadMessageAttachments(filesToUpload, userId);
+        uploadedAttachments = results.map((r) => ({
+          url: r.url,
+          name: r.name,
+          size: r.size,
+          type: r.type,
+        }));
+        setUploading(false);
+      }
+
+      // Payload avec attachments
+      const payload: { client_id: string; parent_id?: string; attachments?: typeof uploadedAttachments } = {
+        client_id: clientId,
+      };
+      if (replyTo?.id) payload.parent_id = replyTo.id;
+      if (uploadedAttachments.length > 0) payload.attachments = uploadedAttachments;
+
+      // Send to DB
+      const dbMsg = await sendMessage(conversationId, clean || `[${uploadedAttachments.length} fichier(s)]`, payload);
       onConfirmSent(clientId, dbMsg as UiMessage);
     } catch (err) {
+      setUploading(false);
       const msg = err instanceof Error ? err.message : "Erreur d'envoi";
       onSendFailed(clientId, msg);
     }
@@ -154,7 +204,10 @@ export default function RichComposer({
 
   const handleFileSelect = (ev: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(ev.target.files ?? []);
-    setAttachments((prev) => [...prev, ...files].slice(0, 5)); // Max 5 files
+    setAttachments((prev) => [...prev, ...files].slice(0, 5));
+
+    // ✅ reset pour autoriser re-sélection du même fichier
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleRemoveAttachment = (idx: number) => {
@@ -167,7 +220,7 @@ export default function RichComposer({
   };
 
   return (
-    <div className="border-t border-slate-200 p-3">
+    <div className="border-t border-slate-200 bg-white p-3">
       {/* LOT 2 : ReplyPreview */}
       {replyTo && (
         <div className="mb-2">
@@ -180,33 +233,47 @@ export default function RichComposer({
         </div>
       )}
 
-      {/* LOT 2.6 : Attachments preview */}
-      {attachments.length > 0 && (
+      {/* Preview attachments */}
+      {previews.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
-          {attachments.map((file, idx) => (
-            <div
-              key={idx}
-              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
-            >
-              <Paperclip className="h-3 w-3" />
-              <span className="max-w-30 truncate">{file.name}</span>
-              <button
-                type="button"
-                onClick={() => handleRemoveAttachment(idx)}
-                className="text-slate-500 hover:text-slate-900"
-                aria-label="Remove attachment"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
+          {previews.map((p, idx) => {
+            const ext = p.file.name.split('.').pop();
+
+            return (
+              <div key={p.key} className="relative overflow-hidden rounded-lg border border-slate-200 bg-white">
+                {p.isImage && p.previewUrl ? (
+                  <div className="relative h-20 w-20">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.previewUrl} alt={p.file.name} className="h-full w-full object-cover" />
+                  </div>
+                ) : (
+                  <div className="flex h-20 w-20 flex-col items-center justify-center gap-1 p-2 text-xs">
+                    <Paperclip className="h-5 w-5" />
+                    <span className="truncate text-center text-[10px]">{ext}</span>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleRemoveAttachment(idx)}
+                  className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur hover:bg-black/80"
+                  aria-label="Remove"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+
+                <div className="absolute bottom-0 left-0 right-0 bg-linear-to-t from-black/60 to-transparent px-1 py-0.5 text-[9px] text-white">
+                  {formatFileSize(p.file.size)}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* ✅ REDESIGN: Actions AU-DESSUS du textarea */}
+      {/* Actions AU-DESSUS */}
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">
-          {/* Upload button */}
           <input
             ref={fileInputRef}
             type="file"
@@ -218,7 +285,8 @@ export default function RichComposer({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className={`inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 ${
+            disabled={uploading}
+            className={`inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 ${
               isDock ? 'h-8 w-8' : 'h-9 w-9'
             }`}
             aria-label="Attach file"
@@ -226,7 +294,6 @@ export default function RichComposer({
             <Paperclip className="h-4 w-4" />
           </button>
 
-          {/* Emoji picker button */}
           <div className="relative">
             <button
               type="button"
@@ -248,14 +315,20 @@ export default function RichComposer({
         </div>
 
         <div className={`text-slate-500 ${isDock ? 'text-[11px]' : 'text-xs'}`}>
-          Entrée = envoyer • Shift+Entrée = ligne
-          {pendingSendingCount >= 3 && (
-            <span className="ml-2 font-semibold text-orange-600">(max 3 en cours)</span>
+          {uploading ? (
+            <span className="font-semibold text-blue-600">Upload en cours...</span>
+          ) : (
+            <>
+              Entrée = envoyer • Shift+Entrée = ligne
+              {pendingSendingCount >= 3 && (
+                <span className="ml-2 font-semibold text-orange-600">(max 3 en cours)</span>
+              )}
+            </>
           )}
         </div>
       </div>
 
-      {/* ✅ REDESIGN: Textarea + Send button côte à côte */}
+      {/* Textarea + Send button */}
       <div className="flex items-end gap-2">
         <div className="flex-1">
           <textarea
@@ -267,7 +340,7 @@ export default function RichComposer({
             }`}
             placeholder={conversationId ? 'Écrire…' : 'Sélectionnez une conv…'}
             rows={isDock ? 2 : 3}
-            disabled={!conversationId || pendingSendingCount >= 3}
+            disabled={!conversationId || pendingSendingCount >= 3 || uploading}
             aria-label="Write a message"
           />
         </div>

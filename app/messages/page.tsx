@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : app/messages/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.0 (2026-01-25)
+ * Version      : 2.6.0 (2026-01-26)
  * Objet        : Page Messages — Live messages + LOT 2 + Header avatar/presence + Typing + RichComposer
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,16 +10,16 @@
  * - Live : push des messages entrants via RealtimeProvider.onNewMessage (sans refresh)
  * - Badges : unreadCounts fail-soft + tri par dernier message
  * - LOT 2.6 : Typing indicator (start/stop typing + affichage)
- * - Remplace Composer par RichComposer (callbacks typing) sans régression
+ * - RichComposer (callbacks typing) sans régression
+ * - PHASE 3 : Presence via usePresence + PresenceBadge + libellé En ligne/Hors ligne (fail-soft)
  * - SAFE : mark read, retry, reply, reactions, fetch conservés
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.5.0 (2026-01-25)
- * - [NEW] LOT 2.6: Typing indicator (useTyping + TypingIndicator) dans le thread
- * - [NEW] LOT 2.6: RichComposer (remplace Composer) + callbacks onTypingStart/onTypingStop
- * - [KEEP] 2.4.1: Live (anti stale-closure selectedId ref) + dedupe stable message id conservés
- * - [KEEP] 2.4.1: Update unreadCounts/lastMsgByConv même si conv pas hydratée conservé
+ * 2.6.0 (2026-01-26)
+ * - [NEW] PHASE 3: Header présence peer (DM) via PresenceBadge + En ligne/Hors ligne (fail-soft)
+ * - [IMPROVED] Presence: remplace onlineUserIds local par usePresence (source unique)
+ * - [KEEP] 2.5.0: Typing + RichComposer + Live + dedupe + unreadCounts/lastMsgByConv conservés
  * - [SAFE] Aucune régression : fetch, retry, reply, reactions, mark read conservés
  * =============================================================================
  */
@@ -31,6 +31,7 @@ import Link from 'next/link';
 import { Mail, ArrowRight, Loader2, Check, Users as UsersIcon, User as UserIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { useRealtime } from '@/lib/realtime/RealtimeProvider';
+import { usePresence, isUserOnline } from '@/lib/presence/usePresence';
 import {
   fetchConversationsForUser,
   fetchMessages,
@@ -44,6 +45,7 @@ import ConversationList from '@/components/messages/ConversationList';
 import MessageList from '@/components/messages/MessageList';
 import TypingIndicator from '@/components/messages/TypingIndicator';
 import RichComposer from '@/components/messages/RichComposer';
+import PresenceBadge from '@/components/messages/PresenceBadge';
 import type { ConversationRowPlus, UiMessage } from '@/components/messages/types';
 
 type MsgLite = { id: string; conversation_id: string; created_at: string };
@@ -111,12 +113,41 @@ export default function MessagesPage() {
   // last message timestamp per conversation (tri sidebar)
   const [lastMsgByConv, setLastMsgByConv] = useState<Record<string, string>>({});
 
-  // Online presence (fail-soft). Pour l’instant: vide => tout "Hors ligne".
-  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => convs.find((c) => c.id === selectedId) ?? null, [convs, selectedId]);
+
+  // PHASE 3: Présence (fail-soft)
+  const presenceMap = usePresence(userId, 'global-presence');
+
+  // Derive online user ids for ConversationList (fail-soft, compatible avec diverses implémentations)
+  const onlineUserIds = useMemo((): string[] => {
+    try {
+      const pm: unknown = presenceMap as unknown;
+
+      // Map<userId, boolean>
+      if (pm && typeof pm === 'object' && pm instanceof Map) {
+        const ids: string[] = [];
+        for (const [k, v] of pm.entries()) {
+          if (v) ids.push(String(k));
+        }
+        return ids;
+      }
+
+      // Record<string, boolean>
+      if (pm && typeof pm === 'object' && !Array.isArray(pm)) {
+        const rec = pm as Record<string, unknown>;
+        const out: string[] = [];
+        for (const [k, v] of Object.entries(rec)) {
+          if (v === true) out.push(String(k));
+        }
+        return out;
+      }
+    } catch {
+      // noop
+    }
+    return [];
+  }, [presenceMap]);
 
   const pendingSendingCount = useMemo(() => {
     return messages.filter((m) => m.status === 'sending').length;
@@ -170,7 +201,6 @@ export default function MessagesPage() {
       setMessages([]);
       setUnreadCounts({});
       setLastMsgByConv({});
-      setOnlineUserIds([]);
       setAuthLoading(false);
     });
 
@@ -198,7 +228,6 @@ export default function MessagesPage() {
       // Dedupe global (évite re-append si event doublonné)
       const seen = seenMsgIdsRef.current;
       if (seen.has(msgId)) {
-        // Même si déjà vu: on peut quand même refresh ordering (safe)
         setLastMsgByConv((prev) => ({ ...prev, [convId]: rec.created_at }));
         return;
       }
@@ -403,7 +432,6 @@ export default function MessagesPage() {
         setMessages(uiMsgs);
 
         await markConversationRead(selectedId);
-
         setUnreadCounts((prev) => ({ ...prev, [selectedId]: 0 }));
       } catch {
         if (mounted) setMessages([]);
@@ -423,7 +451,6 @@ export default function MessagesPage() {
     setSelectedId(id);
     setReplyTo(null);
     setReplyToSenderProfile(null);
-
     setUnreadCounts((prev) => ({ ...prev, [id]: 0 }));
   };
 
@@ -439,12 +466,6 @@ export default function MessagesPage() {
 
   // Optimistic send
   const handleOptimisticSend = useCallback((msg: UiMessage) => {
-    // register into dedupe immediately (évite double si realtime arrive vite)
-    if (msg.id) {
-      const id = String(msg.id);
-      seenMsgIdsRef.current.add(id);
-    }
-
     setMessages((prev) => [...prev, msg]);
     setLastMsgByConv((prev) => ({ ...prev, [msg.conversation_id]: msg.created_at }));
   }, []);
@@ -582,7 +603,7 @@ export default function MessagesPage() {
 
     const dn = (selected.peer_display_name ?? '').trim();
     const h = (selected.peer_handle ?? '').trim();
-    return dn || (h ? (h.startsWith('@') ? h : `@${h}`) : (selected.title ?? 'Direct'));
+    return dn || (h ? (h.startsWith('@') ? h : `@${h}`) : selected.title ?? 'Direct');
   }, [selected]);
 
   // Header avatar/presence
@@ -592,11 +613,15 @@ export default function MessagesPage() {
   const headerAvatarUrl = !headerIsGroup ? (selected?.peer_avatar_url ?? null) : null;
   const headerPeerUserId = !headerIsGroup ? (selected?.peer_user_id ?? null) : null;
 
-  const headerOnline = useMemo(() => {
+  const peerOnline = useMemo(() => {
     const pid = String(headerPeerUserId ?? '').trim();
     if (!pid) return false;
-    return onlineUserIds.includes(pid);
-  }, [headerPeerUserId, onlineUserIds]);
+    try {
+      return isUserOnline(presenceMap, pid);
+    } catch {
+      return false;
+    }
+  }, [presenceMap, headerPeerUserId]);
 
   const HeaderAvatar = () => {
     const baseClass =
@@ -695,15 +720,17 @@ export default function MessagesPage() {
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-slate-900">{selected ? headerTitle : '—'}</div>
 
-                    <div className="truncate text-xs text-slate-500">
+                    <div className="truncate text-xs">
                       {!selected ? (
-                        'Sélectionnez une conversation'
+                        <span className="text-slate-500">Sélectionnez une conversation</span>
                       ) : selected.type === 'group' ? (
-                        'Groupe'
+                        <span className="text-slate-500">Groupe</span>
                       ) : (
-                        <span className="inline-flex items-center gap-2">
-                          <span className={`h-2 w-2 rounded-full ${headerOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                          {headerOnline ? 'En ligne' : 'Hors ligne'}
+                        <span className="inline-flex items-center gap-2 text-slate-500">
+                          <PresenceBadge online={peerOnline} size="small" showTooltip={false} />
+                          <span className={peerOnline ? 'font-medium text-emerald-600' : 'text-slate-400'}>
+                            {peerOnline ? 'En ligne' : 'Hors ligne'}
+                          </span>
                         </span>
                       )}
                     </div>
@@ -737,7 +764,7 @@ export default function MessagesPage() {
                 variant="page"
               />
 
-              {/* ✅ LOT 2.6: Typing indicator */}
+              {/* LOT 2.6: Typing indicator */}
               <TypingIndicator typingUsers={typingUsers} currentUserId={userId} variant="page" />
             </div>
 
