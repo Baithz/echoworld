@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/settings/AccountDataSection.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-27)
+ * Version      : 1.1.0 (2026-01-27)
  * Objet        : Section "Données et compte" — Export RGPD + Suppression compte
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,9 +10,14 @@
  * - Bouton "Supprimer mon compte" → modal confirmation + vérif password → POST /api/account/delete
  * - UX claire : messages succès/erreur, loading states, modals de confirmation
  * - SAFE : double confirmation pour suppression (modal + mot de passe)
+ * - DESIGN : aligné sur le glassmorphism EchoWorld (slate-200, white/70, backdrop-blur)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.1.0 (2026-01-27)
+ * - [IMPROVED] Design aligné sur ProfileSettings (slate-200, glassmorphism, subtle colors)
+ * - [IMPROVED] Icônes Download/Trash2 + style cohérent avec le reste
+ * - [IMPROVED] Modal avec glassmorphism + fond backdrop-blur
  * 1.0.0 (2026-01-27)
  * - [NEW] Export données RGPD (ZIP download)
  * - [NEW] Suppression compte (soft delete + double confirmation)
@@ -109,66 +114,55 @@ export default function AccountDataSection() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Titre section */}
-      <div>
-        <h2 className="text-lg font-semibold text-white/90 mb-1">Données et compte</h2>
-        <p className="text-sm text-white/50">
-          Exportez vos données (RGPD) ou supprimez définitivement votre compte.
-        </p>
-      </div>
-
+    <div className="grid gap-5 md:grid-cols-2">
       {/* Export données */}
-      <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+      <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
         <div className="flex items-start justify-between gap-4 mb-3">
-          <div>
-            <h3 className="text-sm font-medium text-white/80 mb-1">
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+              <Download className="w-4 h-4 text-slate-600" />
               Exporter mes données
-            </h3>
-            <p className="text-xs text-white/50">
-              Téléchargez une archive ZIP contenant toutes vos données (profil, messages, echoes, etc.)
-            </p>
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Télécharge une archive ZIP de tes données (profil, echoes, messages).
+            </div>
           </div>
-          <Download className="w-5 h-5 text-violet-400 shrink-0" />
         </div>
 
         {exportError && (
-          <p className="text-xs text-rose-400 mb-2">
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
             Erreur : {exportError}
-          </p>
+          </div>
         )}
 
         <button
           type="button"
           onClick={handleExport}
           disabled={exportLoading}
-          className="w-full py-2 px-4 rounded-lg bg-violet-500/20 hover:bg-violet-500/30 
-                     text-violet-300 font-medium text-sm transition-all
-                     disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-all hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {exportLoading ? 'Génération en cours...' : 'Télécharger mes données'}
+          {exportLoading ? 'Génération en cours…' : 'Télécharger'}
         </button>
       </div>
 
       {/* Suppression compte */}
-      <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20">
+      <div className="rounded-2xl border border-rose-200 bg-rose-50/30 p-4">
         <div className="flex items-start justify-between gap-4 mb-3">
-          <div>
-            <h3 className="text-sm font-medium text-rose-300 mb-1">
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-rose-900 flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-rose-600" />
               Supprimer mon compte
-            </h3>
-            <p className="text-xs text-white/50">
-              Action irréversible : suppression de toutes vos données après 30 jours.
-            </p>
+            </div>
+            <div className="mt-1 text-xs text-rose-700/80">
+              Action irréversible. Conservation 30j puis suppression définitive.
+            </div>
           </div>
-          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
         </div>
 
         <button
           type="button"
           onClick={() => setDeleteModalOpen(true)}
-          className="w-full py-2 px-4 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 
-                     text-rose-300 font-medium text-sm transition-all"
+          className="w-full rounded-xl border border-rose-300 bg-white px-4 py-3 text-sm font-semibold text-rose-700 transition-all hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Supprimer mon compte
         </button>
@@ -176,15 +170,15 @@ export default function AccountDataSection() {
 
       {/* Modal confirmation suppression */}
       {deleteModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 rounded-2xl p-6 max-w-md w-full border border-white/10 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="relative rounded-3xl border border-slate-200 bg-white/90 backdrop-blur-xl p-6 max-w-md w-full shadow-2xl">
             {/* Header */}
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center">
-                  <Trash2 className="w-5 h-5 text-rose-400" />
+                <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5 text-rose-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">
+                <h3 className="text-lg font-bold text-slate-900">
                   Supprimer le compte
                 </h3>
               </div>
@@ -194,39 +188,38 @@ export default function AccountDataSection() {
                   setDeletePassword('');
                   setDeleteError(null);
                 }}
-                className="text-white/50 hover:text-white transition-colors"
+                className="text-slate-400 hover:text-slate-600 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Warning */}
-            <div className="mb-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
-              <p className="text-sm text-rose-300">
-                ⚠️ Cette action est <strong>irréversible</strong>. Toutes vos données seront supprimées 
+            <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-3">
+              <p className="text-sm text-rose-900">
+                ⚠️ Cette action est <strong>irréversible</strong>. Tes données seront supprimées 
                 définitivement après 30 jours.
               </p>
             </div>
 
             {/* Password input */}
             <div className="mb-4">
-              <label className="block text-sm font-medium text-white/70 mb-2">
-                Confirmez avec votre mot de passe
+              <label className="block text-sm font-semibold text-slate-900 mb-2">
+                Confirme avec ton mot de passe
               </label>
               <input
                 type="password"
                 value={deletePassword}
                 onChange={(e) => setDeletePassword(e.target.value)}
-                placeholder="Votre mot de passe"
-                className="w-full px-4 py-2 rounded-lg bg-white/5 border border-white/10 
-                           text-white placeholder-white/30 focus:outline-none focus:border-violet-500/50"
+                placeholder="Ton mot de passe"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-slate-300"
               />
             </div>
 
             {deleteError && (
-              <p className="text-xs text-rose-400 mb-3">
+              <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
                 {deleteError}
-              </p>
+              </div>
             )}
 
             {/* Actions */}
@@ -238,20 +231,16 @@ export default function AccountDataSection() {
                   setDeleteError(null);
                 }}
                 disabled={deleteLoading}
-                className="flex-1 py-2 px-4 rounded-lg bg-white/5 hover:bg-white/10 
-                           text-white/70 font-medium text-sm transition-all
-                           disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Annuler
               </button>
               <button
                 onClick={handleDelete}
                 disabled={deleteLoading || !deletePassword.trim()}
-                className="flex-1 py-2 px-4 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 
-                           text-rose-300 font-medium text-sm transition-all
-                           disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 rounded-xl border border-rose-300 bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {deleteLoading ? 'Suppression...' : 'Confirmer la suppression'}
+                {deleteLoading ? 'Suppression…' : 'Confirmer'}
               </button>
             </div>
           </div>
