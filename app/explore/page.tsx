@@ -1,616 +1,244 @@
 /**
  * =============================================================================
- * Fichier      : components/map/EchoMap.tsx
+ * Fichier      : app/explorer/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.5.5 (2026-01-23)
- * Objet        : Carte EchoWorld - Globe (dézoom) + Hybrid (zoom) + layers échos
+ * Version      : 1.2.0 (2026-01-27)
+ * Objet        : Page Explorer — Map plein écran + filtres + sélection d’un écho
  * -----------------------------------------------------------------------------
  * Description  :
- * - Stabilise la visibilité des échos au dézoom (WORLD_BBOX) pour éviter une Terre "vide"
- * - Unifie la résolution de bbox (nearMe / monde / bounds) pour init + reload filtres + swap style
- * - Corrige un risque runtime (applyStyleIfNeeded appelé avant déclaration)
- * - Garantit que les filtres utilisés lors des fetch restent "live" (refs) même après mount
- * - Conserve intégralement : clusters/points/heat/pulse/cinéma/focus + swap globe/détail
+ * - Monte EchoMap en client-only (dynamic import, ssr:false) pour éviter les soucis SSR MapLibre
+ * - Branche réellement la map à la page (c’est ici que vit l’UI Explorer)
+ * - Gère les filtres (emotion/since/nearMe) et le focus via querystring (?focus=uuid)
+ * - Quand un écho est cliqué: met à jour l’URL + affiche un panneau minimal
+ * - SAFE: pas de StoryDrawer ici (zéro régression), et pas de setState-in-effect (lint)
+ * - NEW: Ajoute une règle UX “Monde = dernière heure” (TTL 1h) pour éviter 15M points
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 2.5.5 (2026-01-23)
- * - [FIX] ESLint react-hooks/exhaustive-deps en déstructurant safeFilters (emotion/since/nearMe)
- * - [KEEP] Comportement identique (SSR safe + swap globe/détail inchangé)
- * 2.5.4 (2026-01-23)
- * - [FIX] Prop filters optionnelle (SSR/prerender safe)
- * - [FIX] safeFilters par défaut + refs synchronisées (évite crash filters.since undefined)
- * 2.5.3 (2026-01-23)
- * - [FIX] Suppression double chargement style au init (évite “globe puis plat” par race)
- * - [FIX] Projection explicitement forcée après chaque style.load (globe ou mercator)
- * - [FIX] transformStyle typé strict (TransformStyleFunction -> StyleSpecification)
- * - [KEEP] IDs layers/sources/interactions inchangés
+ * 1.2.0 (2026-01-27)
+ * - [NEW] Ajoute since="1h" (Dernière heure) + default depuis = 1h (cohérent TTL monde)
+ * - [FIX] selectedId URL-driven robuste: pendingId temporaire (clic) sans bloquer back/forward
+ * - [KEEP] UI identique : topbar filtres + panneau minimal + map fullscreen
  * =============================================================================
  */
 
 'use client';
 
-import maplibregl from 'maplibre-gl';
-import type {
-  GeoJSONSource,
-  MapMouseEvent,
-  MapGeoJSONFeature,
-  AddLayerObject,
-  MapGeoJSONFeature as MapFeature,
-  CircleLayerSpecification,
-  StyleSpecification,
-  TransformStyleFunction,
-} from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
-import { useEffect, useMemo, useRef } from 'react';
-import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from '@/components/map/mapStyle';
-import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from '@/components/map/echoLayers';
-import { getEchoesForMap } from '@/lib/echo/getEchoesForMap';
-import type { FeatureCollection, Point } from 'geojson';
+import dynamic from 'next/dynamic';
+import { useMemo, useState, useCallback } from 'react';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 
 type Filters = {
   emotion: string | null;
-  since: '24h' | '7d' | null;
+  since: '1h' | '24h' | '7d' | null;
   nearMe: boolean;
 };
 
-type EchoFeatureProps = {
-  id?: string;
-  emotion?: string | null;
-  cluster_id?: number;
-  point_count?: number;
-  [k: string]: unknown;
-};
+// Import client-only de la map (MapLibre ne doit pas être rendu SSR)
+const EchoMap = dynamic(() => import('@/components/map/EchoMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="h-screen w-screen grid place-items-center">
+      <div className="text-sm opacity-70">Chargement de la carte…</div>
+    </div>
+  ),
+});
 
-type GeoJSONSourceClusterCompat = GeoJSONSource & {
-  getClusterExpansionZoom: (clusterId: number, callback: (error: unknown, zoom: number) => void) => void;
-};
+const EMOTIONS: Array<{ key: string; label: string }> = [
+  { key: 'joy', label: 'Joie' },
+  { key: 'hope', label: 'Espoir' },
+  { key: 'love', label: 'Amour' },
+  { key: 'resilience', label: 'Résilience' },
+  { key: 'gratitude', label: 'Gratitude' },
+  { key: 'courage', label: 'Courage' },
+  { key: 'peace', label: 'Paix' },
+  { key: 'wonder', label: 'Émerveillement' },
+];
 
-const GLOW_LAYER_ID = 'echo-glow';
-const DETAIL_ZOOM_THRESHOLD = 5;
-
-const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
-const WORLD_ZOOM_THRESHOLD = 2.8;
-
-function sinceToDate(since: Filters['since']): Date | null {
-  if (!since) return null;
-  const d = new Date();
-  if (since === '24h') d.setHours(d.getHours() - 24);
-  if (since === '7d') d.setDate(d.getDate() - 7);
-  return d;
+function safeUuid(v: string | null): string | null {
+  if (!v) return null;
+  const s = v.trim();
+  if (s.length < 32 || s.length > 40) return null;
+  return s;
 }
 
-function bboxAround(lng: number, lat: number, km: number): [number, number, number, number] {
-  const dLat = km / 110.574;
-  const dLng = km / (111.32 * Math.cos((lat * Math.PI) / 180));
-  return [lng - dLng, lat - dLat, lng + dLng, lat + dLat];
-}
+export default function ExplorerPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
-function getIdFromFeature(f: MapGeoJSONFeature | undefined): string | null {
-  if (!f) return null;
-  const p = f.properties as unknown as EchoFeatureProps | undefined;
-  return typeof p?.id === 'string' ? p.id : null;
-}
+  const focusFromUrl = useMemo(() => safeUuid(searchParams.get('focus')), [searchParams]);
 
-function getClusterIdFromFeature(f: MapGeoJSONFeature | undefined): number | null {
-  if (!f) return null;
-  const p = f.properties as unknown as EchoFeatureProps | undefined;
-  return typeof p?.cluster_id === 'number' ? p.cluster_id : null;
-}
+  // Default: Monde = dernière heure (TTL perf)
+  const [filters, setFilters] = useState<Filters>({ emotion: null, since: '1h', nearMe: false });
 
-function isPointGeometry(
-  f: MapFeature | undefined
-): f is MapFeature & { geometry: { type: 'Point'; coordinates: [number, number] } } {
-  return Boolean(f && f.geometry && (f.geometry as { type?: unknown }).type === 'Point');
-}
+  /**
+   * URL-driven selection, sans setState-in-effect.
+   * pendingId sert uniquement à rendre le clic instantané
+   * avant que Next ne reflète l’URL dans useSearchParams().
+   */
+  const [pendingId, setPendingId] = useState<string | null>(null);
 
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined') return false;
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
-}
+  const selectedId = useMemo(() => {
+    // Back/forward / liens directs: l’URL gagne toujours.
+    return focusFromUrl ?? pendingId;
+  }, [focusFromUrl, pendingId]);
 
-function createGlowLayer(): CircleLayerSpecification {
-  return {
-    id: GLOW_LAYER_ID,
-    type: 'circle',
-    source: SOURCE_ID,
-    filter: ['!', ['has', 'point_count']],
-    minzoom: 1,
-    maxzoom: 9,
-    paint: {
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 10, 6, 26, 9, 40],
-      'circle-blur': 0.8,
-      'circle-opacity': 0.18,
-      'circle-color': [
-        'match',
-        ['get', 'emotion'],
-        'joy',
-        EMOTION_COLORS.joy,
-        'sadness',
-        EMOTION_COLORS.sadness,
-        'anger',
-        EMOTION_COLORS.anger,
-        'fear',
-        EMOTION_COLORS.fear,
-        'love',
-        EMOTION_COLORS.love,
-        'hope',
-        EMOTION_COLORS.hope,
-        EMOTION_COLORS.default,
-      ],
+  const updateUrlFocus = useCallback(
+    (id: string | null) => {
+      const current = typeof window !== 'undefined' ? window.location.search : '';
+      const sp = new URLSearchParams(current);
+
+      if (id) sp.set('focus', id);
+      else sp.delete('focus');
+
+      const qs = sp.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
     },
-  };
-}
-
-// Style vide pour éviter le double chargement (new Map(style=url) + setStyle(url))
-const EMPTY_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {},
-  layers: [],
-};
-
-export default function EchoMap({
-  focusId,
-  filters,
-  onSelectEcho,
-}: {
-  focusId?: string;
-  filters?: Filters; // optionnel pour SSR / prerender
-  onSelectEcho: (id: string) => void;
-}) {
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const indexRef = useRef<Map<string, { lng: number; lat: number }>>(new Map());
-  const pulseRafRef = useRef<number | null>(null);
-
-  const cameraTokenRef = useRef<number>(0);
-  const cameraTimeoutRef = useRef<number | null>(null);
-  const cinemaToRef = useRef<((center: [number, number], targetZoom: number) => void) | null>(null);
-
-  const currentStyleRef = useRef<'globe' | 'detail'>('globe');
-
-  const handlersRef = useRef<{
-    onPointClick?: (evt: MapMouseEvent) => void;
-    onClusterClick?: (evt: MapMouseEvent) => void;
-    onEnter?: () => void;
-    onLeave?: () => void;
-    onZoomEnd?: () => void;
-  }>({});
-
-  // Filters "safe" pour SSR / prerender
-  const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
-
-  // Déstructuration pour hooks (évite deps sur l’objet safeFilters)
-  const { emotion, since, nearMe } = safeFilters;
-
-  const sinceDate = useMemo(() => sinceToDate(since), [since]);
-
-  const filtersRef = useRef<Filters>(safeFilters);
-  const sinceDateRef = useRef<Date | null>(sinceDate);
-
-  useEffect(() => {
-    filtersRef.current = { emotion, since, nearMe };
-  }, [emotion, since, nearMe]);
-
-  useEffect(() => {
-    sinceDateRef.current = sinceDate;
-  }, [sinceDate]);
-
-  useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
-
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: EMPTY_STYLE,
-      center: [0, 20],
-      zoom: 1.8,
-      pitch: 0,
-      attributionControl: false,
-      renderWorldCopies: false,
-      minZoom: 1.2,
-      maxZoom: 18,
-      maxPitch: 60,
-    });
-
-    mapRef.current = map;
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
-
-    type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
-    const forceProjection = (mode: 'globe' | 'detail') => {
-      const m = mapRef.current;
-      if (!m) return;
-      try {
-        const mp = m as MapWithProjection;
-        if (mode === 'globe') {
-          mp.setProjection?.({ type: 'globe' });
-          mp.setProjection?.('globe');
-        } else {
-          mp.setProjection?.({ type: 'mercator' });
-          mp.setProjection?.('mercator');
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
-      return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
-        next.projection = { type: mode === 'globe' ? 'globe' : 'mercator' };
-
-        if (mode === 'globe') {
-          next.sky = {
-            'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
-          };
-          next.light = {
-            anchor: 'map',
-            position: [1.5, 90, 80],
-          } as unknown as StyleSpecification['light'];
-        } else {
-          if ('sky' in next) delete next.sky;
-        }
-
-        return next;
-      };
-    };
-
-    const setStyleForMode = (m: maplibregl.Map, mode: 'globe' | 'detail', styleUrl: string) => {
-      m.setStyle(styleUrl, { transformStyle: transformForMode(mode) });
-    };
-
-    const cancelCamera = () => {
-      cameraTokenRef.current += 1;
-      if (cameraTimeoutRef.current !== null) {
-        window.clearTimeout(cameraTimeoutRef.current);
-        cameraTimeoutRef.current = null;
-      }
-      try {
-        map.stop();
-      } catch {
-        // ignore
-      }
-    };
-
-    const cinemaTo = (center: [number, number], targetZoom: number) => {
-      const m = mapRef.current;
-      if (!m) return;
-
-      cancelCamera();
-      const token = cameraTokenRef.current;
-      const reduce = prefersReducedMotion();
-      const baseZoom = Math.max(m.getZoom(), targetZoom);
-
-      if (reduce) {
-        m.easeTo({ center, zoom: baseZoom, duration: 0, bearing: 0, pitch: 0 });
-        return;
-      }
-
-      m.easeTo({
-        center,
-        zoom: baseZoom,
-        duration: 650,
-        easing: (tt) => tt * (2 - tt),
-        bearing: 0,
-        pitch: 22,
-      });
-
-      cameraTimeoutRef.current = window.setTimeout(() => {
-        if (cameraTokenRef.current !== token) return;
-        const mm = mapRef.current;
-        if (!mm) return;
-        mm.easeTo({ pitch: 0, duration: 700, easing: (tt) => tt * (2 - tt) });
-      }, 520);
-    };
-
-    cinemaToRef.current = cinemaTo;
-
-    const stopPulse = () => {
-      if (pulseRafRef.current !== null) cancelAnimationFrame(pulseRafRef.current);
-      pulseRafRef.current = null;
-    };
-
-    const startPulse = () => {
-      const tick = () => {
-        const m = mapRef.current;
-        if (!m) return;
-
-        const z = m.getZoom();
-        const t = Date.now() / 1000;
-
-        if (z <= 4.5) {
-          const opacity = 0.18 + 0.1 * (0.5 + 0.5 * Math.sin(t * 1.2));
-          const intensity = 0.9 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.2));
-          try {
-            m.setPaintProperty('echo-heat', 'heatmap-opacity', opacity);
-            m.setPaintProperty('echo-heat', 'heatmap-intensity', intensity);
-          } catch {
-            // ignore
-          }
-        }
-
-        try {
-          const glow = 0.5 + 0.5 * Math.sin(t * 1.15);
-          m.setPaintProperty(GLOW_LAYER_ID, 'circle-opacity', 0.1 + 0.2 * glow);
-          m.setPaintProperty(GLOW_LAYER_ID, 'circle-blur', 0.6 + 0.9 * glow);
-        } catch {
-          // ignore
-        }
-
-        pulseRafRef.current = requestAnimationFrame(tick);
-      };
-
-      pulseRafRef.current = requestAnimationFrame(tick);
-    };
-
-    const resolveBbox = async (): Promise<[number, number, number, number]> => {
-      const m = mapRef.current;
-      if (!m) return WORLD_BBOX;
-
-      const f = filtersRef.current;
-
-      if (f.nearMe && navigator.geolocation) {
-        const pos = await new Promise<GeolocationPosition | null>((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (p) => resolve(p),
-            () => resolve(null),
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 }
-          );
-        });
-
-        if (pos) {
-          const lng = pos.coords.longitude;
-          const lat = pos.coords.latitude;
-          cinemaToRef.current?.([lng, lat], Math.max(m.getZoom(), 6.5));
-          return bboxAround(lng, lat, 40);
-        }
-      }
-
-      const z = m.getZoom();
-      if (z <= WORLD_ZOOM_THRESHOLD) return WORLD_BBOX;
-
-      const b = m.getBounds();
-      return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-    };
-
-    const fetchGeojson = async () => {
-      const m = mapRef.current;
-      if (!m) return null;
-
-      const bbox = await resolveBbox();
-
-      const geojson = (await getEchoesForMap({
-        bbox,
-        emotion: filtersRef.current.emotion ?? undefined,
-        since: sinceDateRef.current ?? undefined,
-      })) as unknown as FeatureCollection<Point>;
-
-      indexRef.current.clear();
-      for (const f of geojson.features) {
-        const props = f.properties as unknown as { id?: unknown } | null;
-        const id = typeof props?.id === 'string' ? props.id : undefined;
-        const [lng, lat] = f.geometry.coordinates;
-        if (id && Number.isFinite(lng) && Number.isFinite(lat)) indexRef.current.set(id, { lng, lat });
-      }
-
-      return geojson;
-    };
-
-    const ensureEchoLayers = (geojson?: FeatureCollection<Point>) => {
-      const m = mapRef.current;
-      if (!m) return;
-
-      const src = m.getSource(SOURCE_ID) as GeoJSONSource | undefined;
-
-      if (!src) {
-        m.addSource(SOURCE_ID, {
-          type: 'geojson',
-          data: (geojson ?? { type: 'FeatureCollection', features: [] }) as unknown as GeoJSON.FeatureCollection,
-          cluster: true,
-          clusterRadius: 50,
-        });
-
-        m.addLayer(HEAT_LAYER as unknown as AddLayerObject);
-        m.addLayer(createGlowLayer() as unknown as AddLayerObject);
-        m.addLayer(CLUSTER_LAYER as unknown as AddLayerObject);
-        m.addLayer(CLUSTER_COUNT_LAYER as unknown as AddLayerObject);
-        m.addLayer(POINT_LAYER as unknown as AddLayerObject);
-      } else if (geojson) {
-        src.setData(geojson as unknown as GeoJSON.FeatureCollection);
-      }
-    };
-
-    const unbindInteractions = () => {
-      const m = mapRef.current;
-      if (!m) return;
-
-      const h = handlersRef.current;
-      if (h.onPointClick) m.off('click', 'echo-point', h.onPointClick);
-      if (h.onClusterClick) m.off('click', 'clusters', h.onClusterClick);
-      if (h.onEnter) m.off('mouseenter', 'echo-point', h.onEnter);
-      if (h.onLeave) m.off('mouseleave', 'echo-point', h.onLeave);
-      if (h.onZoomEnd) m.off('zoomend', h.onZoomEnd);
-    };
-
-    async function applyStyleIfNeeded() {
-      const m = mapRef.current;
-      if (!m) return;
-
-      const z = m.getZoom();
-      const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
-      if (want === currentStyleRef.current) return;
-
-      const center = m.getCenter();
-      const zoom = m.getZoom();
-      const bearing = m.getBearing();
-      const pitch = m.getPitch();
-
-      currentStyleRef.current = want;
-      const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
-
-      const geojson = await fetchGeojson();
-
-      setStyleForMode(m, want, nextStyle);
-
-      m.once('style.load', () => {
-        forceProjection(want);
-        ensureEchoLayers(geojson ?? undefined);
-        bindInteractions();
-        m.jumpTo({ center, zoom, bearing, pitch });
-      });
-    }
-
-    const bindInteractions = () => {
-      const m = mapRef.current;
-      if (!m) return;
-
-      unbindInteractions();
-
-      const onPointClick = (evt: MapMouseEvent) => {
-        const features = m.queryRenderedFeatures(evt.point, { layers: ['echo-point'] });
-        const id = getIdFromFeature(features?.[0]);
-        if (!id) return;
-
-        const p = indexRef.current.get(id);
-        if (p) cinemaTo([p.lng, p.lat], Math.max(m.getZoom(), 9));
-        onSelectEcho(id);
-      };
-
-      const onClusterClick = (evt: MapMouseEvent) => {
-        const features = m.queryRenderedFeatures(evt.point, { layers: ['clusters'] });
-        const f = features?.[0];
-        const clusterId = getClusterIdFromFeature(f);
-        if (clusterId === null) return;
-
-        const src = m.getSource(SOURCE_ID) as GeoJSONSourceClusterCompat;
-        src.getClusterExpansionZoom(clusterId, (err: unknown, zoom: number) => {
-          if (err || typeof zoom !== 'number') return;
-          if (!isPointGeometry(f)) return;
-          cinemaTo(f.geometry.coordinates, zoom);
-        });
-      };
-
-      const onEnter = () => {
-        m.getCanvas().style.cursor = 'pointer';
-      };
-      const onLeave = () => {
-        m.getCanvas().style.cursor = '';
-      };
-
-      const onZoomEnd = () => {
-        void applyStyleIfNeeded();
-      };
-
-      handlersRef.current = { onPointClick, onClusterClick, onEnter, onLeave, onZoomEnd };
-
-      m.on('click', 'echo-point', onPointClick);
-      m.on('click', 'clusters', onClusterClick);
-      m.on('mouseenter', 'echo-point', onEnter);
-      m.on('mouseleave', 'echo-point', onLeave);
-      m.on('zoomend', onZoomEnd);
-    };
-
-    // 1) charge le style globe UNE SEULE FOIS
-    setStyleForMode(map, 'globe', STYLE_GLOBE_URL);
-    currentStyleRef.current = 'globe';
-
-    // 2) init après le premier style.load
-    map.once('style.load', () => {
-      forceProjection('globe');
-
-      (async () => {
-        const geojson = await fetchGeojson();
-        ensureEchoLayers(geojson ?? undefined);
-        bindInteractions();
-        startPulse();
-
-        if (focusId) {
-          const p = indexRef.current.get(focusId);
-          if (p) cinemaTo([p.lng, p.lat], 9);
-        }
-      })();
-    });
-
-    return () => {
-      stopPulse();
-      cancelCamera();
-      try {
-        unbindInteractions();
-      } catch {
-        // ignore
-      }
-      map.remove();
-      mapRef.current = null;
-      cinemaToRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Reload data when filters changent
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const reload = async () => {
-      if (!map.isStyleLoaded()) return;
-
-      const z = map.getZoom();
-      let bbox: [number, number, number, number] = WORLD_BBOX;
-
-      if (nearMe && navigator.geolocation) {
-        const pos = await new Promise<GeolocationPosition | null>((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (p) => resolve(p),
-            () => resolve(null),
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 30_000 }
-          );
-        });
-
-        if (pos) {
-          const lng = pos.coords.longitude;
-          const lat = pos.coords.latitude;
-          bbox = bboxAround(lng, lat, 40);
-          cinemaToRef.current?.([lng, lat], Math.max(map.getZoom(), 6.5));
-        } else {
-          const b = map.getBounds();
-          bbox = z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-        }
-      } else {
-        const b = map.getBounds();
-        bbox = z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-      }
-
-      const data = (await getEchoesForMap({
-        bbox,
-        emotion: emotion ?? undefined,
-        since: sinceDate ?? undefined,
-      })) as unknown as FeatureCollection<Point>;
-
-      indexRef.current.clear();
-      for (const f of data.features) {
-        const props = f.properties as unknown as { id?: unknown } | null;
-        const id = typeof props?.id === 'string' ? props.id : undefined;
-        const [lng, lat] = f.geometry.coordinates;
-        if (id && Number.isFinite(lng) && Number.isFinite(lat)) indexRef.current.set(id, { lng, lat });
-      }
-
-      const src = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
-      if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
-    };
-
-    void reload();
-  }, [emotion, since, nearMe, sinceDate]);
-
-  // Focus update
-  useEffect(() => {
-    if (!focusId) return;
-    const map = mapRef.current;
-    if (!map) return;
-
-    const p = indexRef.current.get(focusId);
-    if (!p) return;
-
-    cinemaToRef.current?.([p.lng, p.lat], Math.max(map.getZoom(), 9));
-  }, [focusId]);
-
-  return <div ref={containerRef} className="h-screen w-screen" />;
+    [router, pathname]
+  );
+
+  const onSelectEcho = useCallback(
+    (id: string) => {
+      // rendu immédiat
+      setPendingId(id);
+      // pousse l’URL (source de vérité)
+      updateUrlFocus(id);
+      // libère pending (l’URL prendra le relais)
+      window.setTimeout(() => setPendingId(null), 400);
+    },
+    [updateUrlFocus]
+  );
+
+  const clearSelection = useCallback(() => {
+    setPendingId(null);
+    updateUrlFocus(null);
+  }, [updateUrlFocus]);
+
+  const geoHint = useMemo(() => {
+    if (!filters.nearMe) return null;
+    if (typeof window === 'undefined') return null;
+    if (!('geolocation' in navigator)) return 'Géolocalisation non disponible sur ce navigateur.';
+    return null;
+  }, [filters.nearMe]);
+
+  const worldTTLHint = useMemo(() => {
+    // Hint discret: la règle 1h concerne surtout la vue monde (sans nearMe)
+    if (filters.nearMe) return null;
+    if (filters.since !== '1h') return null;
+    return 'Vue monde limitée à la dernière heure pour préserver la performance.';
+  }, [filters.nearMe, filters.since]);
+
+  return (
+    <div className="relative h-screen w-screen overflow-hidden">
+      {/* MAP */}
+      <EchoMap focusId={selectedId ?? undefined} filters={filters} onSelectEcho={onSelectEcho} />
+
+      {/* TOP BAR (filtres) */}
+      <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 p-3">
+        <div className="pointer-events-auto mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 rounded-2xl bg-black/40 px-3 py-2 backdrop-blur-md">
+          <div className="text-xs font-semibold opacity-90">Explorer</div>
+
+          <div className="h-4 w-px bg-white/15" />
+
+          {/* Emotion */}
+          <label className="flex items-center gap-2 text-xs opacity-90">
+            Émotion
+            <select
+              className="rounded-lg bg-black/40 px-2 py-1 text-xs outline-none ring-1 ring-white/10"
+              value={filters.emotion ?? ''}
+              onChange={(e) => setFilters((p) => ({ ...p, emotion: e.target.value ? e.target.value : null }))}
+            >
+              <option value="">Toutes</option>
+              {EMOTIONS.map((e) => (
+                <option key={e.key} value={e.key}>
+                  {e.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* Since */}
+          <label className="flex items-center gap-2 text-xs opacity-90">
+            Période
+            <select
+              className="rounded-lg bg-black/40 px-2 py-1 text-xs outline-none ring-1 ring-white/10"
+              value={filters.since ?? ''}
+              onChange={(e) =>
+                setFilters((p) => ({
+                  ...p,
+                  since: (e.target.value ? (e.target.value as Filters['since']) : null) ?? null,
+                }))
+              }
+              title="Filtre temporel côté carte (Monde conseillé: 1h)"
+            >
+              <option value="">Tout</option>
+              <option value="1h">Dernière heure</option>
+              <option value="24h">24h</option>
+              <option value="7d">7 jours</option>
+            </select>
+          </label>
+
+          {/* Near me */}
+          <button
+            type="button"
+            className={`rounded-lg px-2 py-1 text-xs ring-1 ${
+              filters.nearMe ? 'bg-white/20 ring-white/20' : 'bg-black/30 ring-white/10'
+            }`}
+            onClick={() => setFilters((p) => ({ ...p, nearMe: !p.nearMe }))}
+            title="Centrer autour de moi (géoloc)"
+          >
+            {filters.nearMe ? '📍 Autour de moi' : '📍 Monde'}
+          </button>
+
+          <div className="ml-auto flex items-center gap-2">
+            {selectedId ? (
+              <button
+                type="button"
+                className="rounded-lg bg-black/30 px-2 py-1 text-xs ring-1 ring-white/10"
+                onClick={clearSelection}
+              >
+                Fermer
+              </button>
+            ) : null}
+          </div>
+
+          {geoHint ? (
+            <div className="w-full text-[11px] opacity-70">
+              {geoHint} Si vous avez refusé la permission, réactivez-la dans le navigateur.
+            </div>
+          ) : null}
+
+          {worldTTLHint ? <div className="w-full text-[11px] opacity-70">{worldTTLHint}</div> : null}
+        </div>
+      </div>
+
+      {/* RIGHT PANEL (sélection minimale) */}
+      {selectedId ? (
+        <div className="pointer-events-none absolute bottom-0 right-0 top-0 z-10 w-full max-w-md p-3">
+          <div className="pointer-events-auto h-full rounded-2xl bg-black/45 p-3 backdrop-blur-md ring-1 ring-white/10">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Écho sélectionné</div>
+              <button
+                type="button"
+                className="rounded-lg bg-black/30 px-2 py-1 text-xs ring-1 ring-white/10"
+                onClick={clearSelection}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-3 rounded-xl bg-black/30 p-3 text-xs ring-1 ring-white/10">
+              <div className="opacity-75">ID</div>
+              <div className="mt-1 break-all font-mono text-[11px]">{selectedId}</div>
+            </div>
+
+            <div className="mt-3 text-xs opacity-80">
+              Prochaine étape: brancher ici le drawer complet (detail + media + actions) une fois la map validée.
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }

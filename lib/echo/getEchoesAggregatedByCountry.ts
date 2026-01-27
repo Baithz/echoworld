@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : lib/echo/getEchoesAggregatedByCountry.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.4 (2026-01-27)
+ * Version      : 1.0.5 (2026-01-27)
  * Objet        : Service pour récupérer les échos agrégés par pays (vue globe)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -13,9 +13,11 @@
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.4 (2026-01-27)
- * - [FIX] Compat RPC bbox: essaie d’abord bbox=[minLng,minLat,maxLng,maxLat], sinon bboxJson
- * - [KEEP] API publique inchangée (params/return), centroids statiques conservés
+ * 1.0.5 (2026-01-27)
+ * - [FIX] findDominantEmotion: fallback "joy" si counts vides/NaN (évite crash entries[0])
+ * - [FIX] Normalise total_count à la somme des émotions si total_count manquant/incohérent
+ * - [IMPROVED] Tri dominantEmotion stable (tie-break alphabétique) pour rendu déterministe
+ * - [KEEP] RPC compat bbox array/object + centroids statiques conservés
  * =============================================================================
  */
 
@@ -67,8 +69,13 @@ type RpcRow = {
   emotion_wonder: number;
 };
 
+function n(v: unknown): number {
+  const x = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
 function calculatePercentages(counts: EmotionCounts, total: number): EmotionPercentages {
-  if (total === 0) {
+  if (total <= 0) {
     return { joy: 0, hope: 0, love: 0, resilience: 0, gratitude: 0, courage: 0, peace: 0, wonder: 0 };
   }
   return {
@@ -83,10 +90,19 @@ function calculatePercentages(counts: EmotionCounts, total: number): EmotionPerc
   };
 }
 
+function sumCounts(c: EmotionCounts): number {
+  return c.joy + c.hope + c.love + c.resilience + c.gratitude + c.courage + c.peace + c.wonder;
+}
+
 function findDominantEmotion(counts: EmotionCounts): EmotionKeyDB {
   const entries = Object.entries(counts) as [EmotionKeyDB, number][];
-  entries.sort((a, b) => b[1] - a[1]);
-  return entries[0][0];
+  // Tri stable: desc par count, puis asc par key (déterministe)
+  entries.sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
+  const top = entries[0];
+  if (!top) return 'joy';
+  // si tous à 0 => fallback
+  if (top[1] <= 0) return 'joy';
+  return top[0];
 }
 
 type RpcCall = (fn: string, args?: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>;
@@ -103,9 +119,9 @@ export async function getEchoesAggregatedByCountry(params: {
   try {
     const rpc = (supabase.rpc as unknown) as RpcCall;
 
-    // 1) Signature préférée: bbox array (cohérente avec get_echoes_in_bbox)
+    // 1) Signature préférée: bbox array
     const first = await rpc('get_echoes_aggregated_by_country', {
-      bbox, // <-- array
+      bbox,
       emotion_filter: emotion ?? null,
       since_ts: since?.toISOString() ?? null,
     });
@@ -125,34 +141,43 @@ export async function getEchoesAggregatedByCountry(params: {
       return [];
     }
 
-    const data = second.data;
-    if (!data || !Array.isArray(data)) return [];
+    if (!Array.isArray(second.data)) return [];
 
-    const rows = data as RpcRow[];
+    const rows = second.data as RpcRow[];
 
     const aggregations: CountryAggregation[] = [];
+
     for (const row of rows) {
-      const country = row.country;
+      const country = String(row.country ?? '').trim();
+      if (!country) continue;
 
       if (!hasCountryCentroid(country)) {
-        // INFO uniquement (pas warn pour éviter bruit)
+        // silence: on ignore ceux qu’on ne sait pas placer
         continue;
       }
 
       const centroid = getCountryCentroid(country);
       if (!centroid) continue;
 
-      const totalCount = Number(row.total_count) || 0;
       const emotionCounts: EmotionCounts = {
-        joy: Number(row.emotion_joy) || 0,
-        hope: Number(row.emotion_hope) || 0,
-        love: Number(row.emotion_love) || 0,
-        resilience: Number(row.emotion_resilience) || 0,
-        gratitude: Number(row.emotion_gratitude) || 0,
-        courage: Number(row.emotion_courage) || 0,
-        peace: Number(row.emotion_peace) || 0,
-        wonder: Number(row.emotion_wonder) || 0,
+        joy: n(row.emotion_joy),
+        hope: n(row.emotion_hope),
+        love: n(row.emotion_love),
+        resilience: n(row.emotion_resilience),
+        gratitude: n(row.emotion_gratitude),
+        courage: n(row.emotion_courage),
+        peace: n(row.emotion_peace),
+        wonder: n(row.emotion_wonder),
       };
+
+      const sum = sumCounts(emotionCounts);
+      const reportedTotal = n(row.total_count);
+
+      // total fiable: si RPC ne renvoie pas total ou renvoie 0 alors que sum>0, on prend sum
+      const totalCount = reportedTotal > 0 ? reportedTotal : sum;
+
+      // si totalCount 0 => skip (rien à afficher)
+      if (totalCount <= 0) continue;
 
       const emotionPercentages = calculatePercentages(emotionCounts, totalCount);
       const dominantEmotion = findDominantEmotion(emotionCounts);

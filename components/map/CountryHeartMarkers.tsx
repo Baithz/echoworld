@@ -2,36 +2,36 @@
  * =============================================================================
  * Fichier      : components/map/CountryHeartMarkers.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.1.0 (2026-01-27)
+ * Version      : 1.2.0 (2026-01-27)
  * Objet        : Cœurs d'agrégation pays (vue monde) + % + heartbeat + pulse line
  * -----------------------------------------------------------------------------
  * Description  :
  * - Cœur SVG inline (ombre + stroke) coloré par émotion dominante
  * - Pourcentage dominant affiché dans le cœur
  * - Heartbeat (animation) + hover
- * - NEW: Ligne ECG animée sous le cœur (pulse line)
+ * - Ligne ECG animée sous le cœur (pulse line)
  * - Click : callback (zoom vers centroid)
  * - KEEP: Props / data-* / title / badge count, aucune régression
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.0 (2026-01-27)
+ * - [FIX] filterId SVG stable + safe (hash) pour éviter collisions / caractères invalides
+ * - [FIX] Component-ready-for-Marker: wrapper unique (pas de position absolute inutile)
+ * - [IMPROVED] A11y: role/button + aria-label + keydown (Enter/Space)
+ * - [IMPROVED] Perf: markers memoïzés avec deps strictes + clamp % [0..100]
+ * - [KEEP] Rendu cœur + % + click + badge count + ECG + heartbeat, zéro régression
+ *
  * 1.1.0 (2026-01-27)
  * - [NEW] Ajoute une ligne ECG animée sous le cœur (pulse line)
  * - [IMPROVED] DOM marker-ready (centrage stable + hover ciblé)
  * - [KEEP] Rendu cœur + % + click + badge count, zéro régression
- *
- * 1.0.1 (2026-01-24)
- * - [FIX] Remplace <img> par SVG inline (ESLint @next/next/no-img-element)
- * - [IMPROVED] Meilleure performance (pas de data URI)
- *
- * 1.0.0 (2026-01-24)
- * - [NEW] Composant CountryHeartMarkers
  * =============================================================================
  */
 
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import type { CountryAggregation } from '@/lib/echo/getEchoesAggregatedByCountry';
 import { EMOTION_COLORS, EMOTION_LABELS } from '@/components/map/mapStyle';
 
@@ -39,6 +39,22 @@ type Props = {
   aggregations: CountryAggregation[];
   onCountryClick: (country: string, centroid: [number, number]) => void;
 };
+
+function clampInt(n: number, min: number, max: number): number {
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+// hash simple et stable (évite d’injecter le nom du pays dans un id SVG)
+function hashId(input: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  // positif + base36
+  return `h${(h >>> 0).toString(36)}`;
+}
 
 /**
  * Composant SVG de cœur (inline, pas de data URI)
@@ -54,7 +70,7 @@ function HeartSVG({
   size?: number;
   country: string;
 }) {
-  const filterId = `shadow-${country.replace(/\s+/g, '-')}`;
+  const filterId = useMemo(() => `shadow-${hashId(country)}`, [country]);
 
   return (
     <svg
@@ -63,15 +79,15 @@ function HeartSVG({
       viewBox="0 0 48 48"
       xmlns="http://www.w3.org/2000/svg"
       style={{ display: 'block' }}
+      aria-hidden="true"
+      focusable="false"
     >
-      {/* Ombre portée */}
       <defs>
         <filter id={filterId}>
           <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.3" />
         </filter>
       </defs>
 
-      {/* Cœur */}
       <path
         d="M24 42 C18 38, 6 30, 6 18 C6 10, 12 6, 18 6 C20 6, 22 7, 24 10 C26 7, 28 6, 30 6 C36 6, 42 10, 42 18 C42 30, 30 38, 24 42 Z"
         fill={color}
@@ -80,7 +96,6 @@ function HeartSVG({
         filter={`url(#${filterId})`}
       />
 
-      {/* Pourcentage */}
       <text
         x="24"
         y="26"
@@ -125,12 +140,14 @@ function ECGLine() {
 }
 
 export default function CountryHeartMarkers({ aggregations, onCountryClick }: Props) {
-  // Génère les markers pour MapLibre
+  // Map -> render stable
   const markers = useMemo(() => {
     return aggregations.map((agg) => {
-      const color = EMOTION_COLORS[agg.dominantEmotion];
-      const percentage = agg.emotionPercentages[agg.dominantEmotion];
-      const emotionLabel = EMOTION_LABELS[agg.dominantEmotion];
+      const dominant = agg.dominantEmotion;
+      const color = EMOTION_COLORS[dominant];
+      const pctRaw = agg.emotionPercentages[dominant];
+      const percentage = clampInt(pctRaw, 0, 100);
+      const emotionLabel = EMOTION_LABELS[dominant];
 
       return {
         id: agg.country,
@@ -143,10 +160,23 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
     });
   }, [aggregations]);
 
+  const handleKeyDown = useCallback(
+    (country: string, centroid: [number, number]) => (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onCountryClick(country, centroid);
+      }
+    },
+    [onCountryClick]
+  );
+
   return (
     <>
       {markers.map((marker) => {
         const [lng, lat] = marker.centroid;
+
+        const title = `${marker.id} - ${marker.emotionLabel} (${marker.totalCount} échos)`;
+        const aria = `Ouvrir ${marker.id}, ${marker.emotionLabel}, ${marker.percentage} pour cent, ${marker.totalCount} échos`;
 
         return (
           <div
@@ -155,14 +185,16 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
             data-lng={lng}
             data-lat={lat}
             className="country-heart-marker"
-            style={{
-              position: 'absolute',
-              cursor: 'pointer',
-              transform: 'translate(-50%, -50%)',
-              zIndex: 100,
-            }}
+            role="button"
+            tabIndex={0}
+            aria-label={aria}
+            title={title}
             onClick={() => onCountryClick(marker.id, marker.centroid)}
-            title={`${marker.id} - ${marker.emotionLabel} (${marker.totalCount} échos)`}
+            onKeyDown={handleKeyDown(marker.id, marker.centroid)}
+            style={{
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
           >
             <div
               className="heart-container"
@@ -170,9 +202,9 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
                 position: 'relative',
                 display: 'grid',
                 justifyItems: 'center',
+                transform: 'translate(-50%, -50%)',
               }}
             >
-              {/* Cœur avec animation heartbeat - SVG inline */}
               <div
                 className="heart-anim"
                 style={{
@@ -185,12 +217,10 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
                 <HeartSVG color={marker.color} percentage={marker.percentage} country={marker.id} />
               </div>
 
-              {/* NEW: Ligne ECG animée */}
               <div style={{ marginTop: '2px', opacity: 0.95 }}>
                 <ECGLine />
               </div>
 
-              {/* Badge count (optionnel) */}
               {marker.totalCount > 99 && (
                 <div
                   style={{
@@ -218,7 +248,6 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
         );
       })}
 
-      {/* Styles CSS inline pour animations */}
       <style jsx>{`
         @keyframes heartbeat {
           0%,
@@ -255,10 +284,15 @@ export default function CountryHeartMarkers({ aggregations, onCountryClick }: Pr
           will-change: transform, opacity;
         }
 
-        /* Hover ciblé: uniquement le cœur (pas toute la pile) */
         .country-heart-marker:hover .heart-anim {
           transform: scale(1.12);
           transition: transform 0.2s ease-out;
+        }
+
+        .country-heart-marker:focus-visible .heart-anim {
+          outline: 2px solid rgba(255, 255, 255, 0.6);
+          outline-offset: 4px;
+          border-radius: 999px;
         }
       `}</style>
     </>

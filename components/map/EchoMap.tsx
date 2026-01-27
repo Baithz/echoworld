@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.1.0 (2026-01-27)
+ * Version      : 3.1.2 (2026-01-27)
  * Objet        : Carte EchoWorld - Globe/Detail + Cœurs pays (React Markers) + Échos individuels
  * -----------------------------------------------------------------------------
  * Description  :
@@ -12,18 +12,15 @@
  * - Projection adaptée par mode (globe vs mercator) + fog/sky
  * - Cœurs interactifs : click → cinema vers centroid (zoom 7)
  * - Anti-carte-vide : ne clear pas les markers tant que la nouvelle agrégation n’est pas OK
+ * - IMPORTANT: refresh des cœurs pays sur (zoomend + moveend) avec throttle + anti-race (token)
+ * - NEW: Limitation charge globe : points “echo” limités à 1h en vue globe (si since non défini)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 3.1.0 (2026-01-27)
- * - [NEW] Intègre CountryHeartMarkers (React) dans MapLibre via Marker + createRoot (ECG inclus)
- * - [FIX] Supprime duplication SVG inline (source unique = CountryHeartMarkers)
- * - [FIX] Centralise refresh markers pays (une seule logique, token anti-race)
- * - [IMPROVED] Fallback anti-carte-vide : update atomique (clear après fetch OK)
- * - [KEEP] Tous les comportements v3.0.0 : swap style, projection, pulse, cinéma, filtres, layers, interactions
- *
- * 3.0.0 (2026-01-24)
- * - [NEW] Intégration cœurs pays en vue globe (agrégation par pays)
+ * 3.1.2 (2026-01-27)
+ * - [NEW] Ajoute since '1h' + règle auto en vue globe : si aucun since, on force 1h pour les points (anti 15M)
+ * - [FIX] Supprime le hack m.fire('moveend'/'zoomend') dans reload (régression potentielle), et refresh via fonction dédiée
+ * - [KEEP] Toute la logique 3.1.1 : throttle moveend, anti-race tokens, swap style, layers, interactions, anti-carte-vide
  * =============================================================================
  */
 
@@ -54,7 +51,7 @@ import type { FeatureCollection, Point } from 'geojson';
 
 type Filters = {
   emotion: string | null;
-  since: '24h' | '7d' | null;
+  since: '1h' | '24h' | '7d' | null;
   nearMe: boolean;
 };
 
@@ -75,15 +72,14 @@ type GeoJSONSourceClusterCompat = GeoJSONSource & {
 };
 
 const GLOW_LAYER_ID = 'echo-glow';
-
-// Seuil de bascule (globe->detail) ET (cœurs->échos)
 const DETAIL_ZOOM_THRESHOLD = 5;
 
-// "Vue monde" : bbox globale pour éviter une Terre vide au dézoom.
 const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
 const WORLD_ZOOM_THRESHOLD = 2.8;
 
-// Style spec étendu pour supporter projection/fog/sky sans utiliser `any`
+// GLOBE perf: on limite les points à 1h si since non défini
+const GLOBE_POINTS_MAX_AGE_MS = 60 * 60 * 1000;
+
 type StyleWithExtras = StyleSpecification & {
   projection?: { type: string } | string;
   fog?: {
@@ -97,6 +93,7 @@ type StyleWithExtras = StyleSpecification & {
 function sinceToDate(since: Filters['since']): Date | null {
   if (!since) return null;
   const d = new Date();
+  if (since === '1h') d.setHours(d.getHours() - 1);
   if (since === '24h') d.setHours(d.getHours() - 24);
   if (since === '7d') d.setDate(d.getDate() - 7);
   return d;
@@ -180,7 +177,7 @@ export default function EchoMap({
   onSelectEcho,
 }: {
   focusId?: string;
-  filters?: Filters; // optionnel pour SSR / prerender
+  filters?: Filters;
   onSelectEcho: (id: string) => void;
 }) {
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -193,35 +190,30 @@ export default function EchoMap({
   const cameraTimeoutRef = useRef<number | null>(null);
   const cinemaToRef = useRef<((center: [number, number], targetZoom: number) => void) | null>(null);
 
-  // état courant du style
   const currentStyleRef = useRef<'globe' | 'detail'>('globe');
-
-  // Anti-race swap style (zoom rapide / style.load en retard)
   const styleSwapTokenRef = useRef<number>(0);
   const styleSwappingRef = useRef<boolean>(false);
 
-  // handlers (pour off/on propres)
   const handlersRef = useRef<{
     onPointClick?: (evt: MapMouseEvent) => void;
     onClusterClick?: (evt: MapMouseEvent) => void;
     onEnter?: () => void;
     onLeave?: () => void;
     onZoomEndGlobal?: () => void;
+    onMoveEndGlobal?: () => void;
   }>({});
 
-  // Country markers (React roots)
   const countryMarkersRef = useRef<Map<string, CountryMarkerEntry>>(new Map());
   const countryRefreshTokenRef = useRef<number>(0);
   const countryVisibleRef = useRef<boolean>(true);
   const lastCountryKeyRef = useRef<string>('');
+  const moveThrottleRef = useRef<number | null>(null);
 
-  // Filters "safe" pour SSR / prerender
   const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
   const { emotion, since, nearMe } = safeFilters;
 
   const sinceDate = useMemo(() => sinceToDate(since), [since]);
 
-  // Refs "live" pour éviter la capture des filtres au mount
   const filtersRef = useRef<Filters>(safeFilters);
   const sinceDateRef = useRef<Date | null>(sinceDate);
 
@@ -253,6 +245,7 @@ export default function EchoMap({
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
+
     const applyProjectionForMode = (mode: 'globe' | 'detail') => {
       const m = mapRef.current;
       if (!m) return;
@@ -286,20 +279,10 @@ export default function EchoMap({
             position: [1.5, 90, 80],
           } as unknown as StyleSpecification['light'];
 
-          style.fog = {
-            range: [0.5, 10],
-            'horizon-blend': 0.1,
-            color: '#000000',
-          };
+          style.fog = { range: [0.5, 10], 'horizon-blend': 0.1, color: '#000000' };
         } else {
-          if ('sky' in style) {
-            delete (style as { sky?: unknown }).sky;
-          }
-          style.fog = {
-            range: [0.3, 8],
-            'horizon-blend': 0.08,
-            color: '#ffffff',
-          };
+          if ('sky' in style) delete (style as { sky?: unknown }).sky;
+          style.fog = { range: [0.3, 8], 'horizon-blend': 0.08, color: '#ffffff' };
         }
 
         return style;
@@ -309,9 +292,6 @@ export default function EchoMap({
     const setStyleForMode = (m: maplibregl.Map, mode: 'globe' | 'detail', styleUrl: string) => {
       m.setStyle(styleUrl, { transformStyle: transformForMode(mode) });
     };
-
-    setStyleForMode(map, 'globe', STYLE_GLOBE_URL);
-    currentStyleRef.current = 'globe';
 
     const cancelCamera = () => {
       cameraTokenRef.current += 1;
@@ -359,7 +339,7 @@ export default function EchoMap({
 
     cinemaToRef.current = cinemaTo;
 
-    // --- Pulse
+    // ===================== Pulse =====================
     const stopPulse = () => {
       if (pulseRafRef.current !== null) cancelAnimationFrame(pulseRafRef.current);
       pulseRafRef.current = null;
@@ -398,7 +378,7 @@ export default function EchoMap({
       pulseRafRef.current = requestAnimationFrame(tick);
     };
 
-    // --- bbox unifiée
+    // ===================== BBOX unifiée =====================
     const resolveBbox = async (): Promise<[number, number, number, number]> => {
       const m = mapRef.current;
       if (!m) return WORLD_BBOX;
@@ -429,16 +409,37 @@ export default function EchoMap({
       return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
+    // ===================== Since “safe” (perf globe) =====================
+    const resolveSinceForPoints = (): Date | undefined => {
+      const m = mapRef.current;
+      if (!m) return sinceDateRef.current ?? undefined;
+
+      const z = m.getZoom();
+      const isGlobe = z < DETAIL_ZOOM_THRESHOLD;
+
+      // En détail: on respecte le filtre tel quel
+      if (!isGlobe) return sinceDateRef.current ?? undefined;
+
+      // En globe: si l'utilisateur a choisi un since -> on respecte
+      if (sinceDateRef.current) return sinceDateRef.current;
+
+      // En globe: since non défini => on force 1h
+      const d = new Date(Date.now() - GLOBE_POINTS_MAX_AGE_MS);
+      return d;
+    };
+
+    // ===================== ECHOS (DETAIL) =====================
     const fetchGeojson = async () => {
       const m = mapRef.current;
       if (!m) return null;
 
       const bbox = await resolveBbox();
+      const sinceResolved = resolveSinceForPoints();
 
       const geojson = (await getEchoesForMap({
         bbox,
         emotion: filtersRef.current.emotion ?? undefined,
-        since: sinceDateRef.current ?? undefined,
+        since: sinceResolved,
       })) as unknown as FeatureCollection<Point>;
 
       indexRef.current.clear();
@@ -476,7 +477,7 @@ export default function EchoMap({
       }
     };
 
-    // --- interactions
+    // ===================== Interactions (DETAIL) =====================
     const unbindInteractions = () => {
       const m = mapRef.current;
       if (!m) return;
@@ -536,8 +537,7 @@ export default function EchoMap({
       m.on('mouseleave', 'echo-point', onLeave);
     };
 
-    // ===================== COUNTRY HEARTS (PHASE 4) =====================
-
+    // ===================== COUNTRY HEARTS (GLOBE) =====================
     const setCountryMarkersVisible = (visible: boolean) => {
       if (countryVisibleRef.current === visible) return;
       countryVisibleRef.current = visible;
@@ -564,14 +564,11 @@ export default function EchoMap({
       lastCountryKeyRef.current = '';
     };
 
-    const buildCountryKey = (
-      bbox: [number, number, number, number],
-      f: Filters,
-      sinceD: Date | null
-    ): string => {
+    const buildCountryKey = (bbox: [number, number, number, number], f: Filters, sinceD: Date | null): string => {
       const b = bbox.map((n) => n.toFixed(3)).join(',');
       const s = sinceD ? sinceD.toISOString() : '';
-      return `z:${mapRef.current?.getZoom().toFixed(2) ?? 'na'}|bbox:${b}|emotion:${f.emotion ?? ''}|since:${s}`;
+      const z = mapRef.current ? Math.round(mapRef.current.getZoom() * 10) / 10 : 0;
+      return `z:${z}|bbox:${b}|emotion:${f.emotion ?? ''}|since:${s}`;
     };
 
     const mountCountryMarker = (agg: CountryAggregation): CountryMarkerEntry => {
@@ -603,7 +600,6 @@ export default function EchoMap({
       const z = m.getZoom();
       const wantVisible = z < DETAIL_ZOOM_THRESHOLD;
 
-      // DETAIL => masquer (sans détruire) pour éviter flicker si retour rapide
       if (!wantVisible) {
         setCountryMarkersVisible(false);
         return;
@@ -611,7 +607,6 @@ export default function EchoMap({
 
       setCountryMarkersVisible(true);
 
-      // Anti-race
       const token = ++countryRefreshTokenRef.current;
 
       const f = filtersRef.current;
@@ -628,20 +623,14 @@ export default function EchoMap({
         });
 
         if (countryRefreshTokenRef.current !== token) return;
+        if (!Array.isArray(aggregations) || aggregations.length === 0) return;
 
-        // Fallback anti-vide : si agrégation vide, on ne détruit pas l'existant.
-        if (!Array.isArray(aggregations) || aggregations.length === 0) {
-          return;
-        }
-
-        // Update atomique : construit un nouveau set puis remplace
         const next = new Map<string, CountryMarkerEntry>();
 
         for (const agg of aggregations) {
           try {
             const existing = countryMarkersRef.current.get(agg.country);
             if (existing) {
-              // Re-render dans le root existant (évite remove/re-add)
               existing.root.render(
                 <CountryHeartMarkers
                   aggregations={[agg]}
@@ -657,11 +646,10 @@ export default function EchoMap({
               next.set(agg.country, entry);
             }
           } catch (err) {
-            console.error(`Failed to mount country marker for ${agg.country}:`, err);
+            console.error(`Failed to mount/update country marker for ${agg.country}:`, err);
           }
         }
 
-        // Remove ceux qui ne sont plus présents
         countryMarkersRef.current.forEach((entry, country) => {
           if (next.has(country)) return;
           try {
@@ -676,17 +664,29 @@ export default function EchoMap({
           }
         });
 
+        // NOTE: on conserve ta logique telle quelle (réassign ref) — pas “.current.clear()”
         countryMarkersRef.current = next;
         lastCountryKeyRef.current = key;
       } catch (error) {
-        // Anti-carte-vide : on log, mais on garde l'état précédent.
         console.error('Error refreshing country markers:', error);
       }
     };
 
-    // ===================== FIN COUNTRY HEARTS =====================
+    // ===================== Data refresh (source) =====================
+    const refreshEchoSourceAndIndex = async () => {
+      const m = mapRef.current;
+      if (!m) return;
 
-    // --- Style swap (globe <-> detail)
+      if (!m.isStyleLoaded()) return;
+
+      const geojson = await fetchGeojson();
+      if (!geojson) return;
+
+      const src = m.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+      if (src) src.setData(geojson as unknown as GeoJSON.FeatureCollection);
+    };
+
+    // ===================== Style swap (globe <-> detail) =====================
     const applyStyleIfNeeded = async () => {
       const m = mapRef.current;
       if (!m) return;
@@ -707,6 +707,7 @@ export default function EchoMap({
       currentStyleRef.current = want;
       const nextStyle = want === 'detail' ? STYLE_DETAIL_URL : STYLE_GLOBE_URL;
 
+      // pré-fetch avant swap pour éviter “style vide”
       const geojson = await fetchGeojson();
 
       setStyleForMode(m, want, nextStyle);
@@ -715,11 +716,9 @@ export default function EchoMap({
         if (styleSwapTokenRef.current !== token) return;
 
         applyProjectionForMode(want);
-
         ensureEchoLayers(geojson ?? undefined);
         bindInteractions();
 
-        // restaure caméra
         m.jumpTo({ center, zoom, bearing, pitch });
 
         styleSwappingRef.current = false;
@@ -730,17 +729,42 @@ export default function EchoMap({
       }, 2500);
     };
 
+    const scheduleMoveRefresh = () => {
+      if (moveThrottleRef.current !== null) return;
+      moveThrottleRef.current = window.setTimeout(() => {
+        moveThrottleRef.current = null;
+        void (async () => {
+          const bbox = await resolveBbox();
+          await refreshCountryMarkers(bbox);
+        })();
+      }, 250);
+    };
+
     const onZoomEndGlobal = () => {
       void applyStyleIfNeeded();
       void (async () => {
+        // refresh points (since auto globe) + refresh pays
+        await refreshEchoSourceAndIndex();
         const bbox = await resolveBbox();
         await refreshCountryMarkers(bbox);
       })();
     };
-    handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
-    map.on('zoomend', onZoomEndGlobal);
-    const zoomEndHandler = onZoomEndGlobal;
 
+    const onMoveEndGlobal = () => {
+      // (1) cœurs: throttle
+      scheduleMoveRefresh();
+
+      // (2) points: on évite spam; en moveend seul on ne refetch pas systématiquement (coût).
+      // Si besoin futur: ajouter throttle dédié points.
+    };
+
+    handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
+    handlersRef.current.onMoveEndGlobal = onMoveEndGlobal;
+
+    map.on('zoomend', onZoomEndGlobal);
+    map.on('moveend', onMoveEndGlobal);
+
+    // ===================== Init =====================
     const onLoad = async () => {
       applyProjectionForMode('globe');
 
@@ -764,6 +788,11 @@ export default function EchoMap({
       stopPulse();
       cancelCamera();
 
+      if (moveThrottleRef.current !== null) {
+        window.clearTimeout(moveThrottleRef.current);
+        moveThrottleRef.current = null;
+      }
+
       try {
         unbindInteractions();
       } catch {
@@ -774,7 +803,8 @@ export default function EchoMap({
 
       map.off('load', onLoad);
       try {
-        map.off('zoomend', zoomEndHandler);
+        map.off('zoomend', onZoomEndGlobal);
+        map.off('moveend', onMoveEndGlobal);
       } catch {
         // ignore
       }
@@ -786,7 +816,7 @@ export default function EchoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload data when filters changent (nearMe + monde cohérents)
+  // Reload data when filters changent (sans hack fire events)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -820,10 +850,19 @@ export default function EchoMap({
         bbox = z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
       }
 
+      // points: appliquer auto since globe (1h si since null)
+      const isGlobe = z < DETAIL_ZOOM_THRESHOLD;
+      const sinceResolved =
+        !isGlobe
+          ? sinceDate ?? undefined
+          : sinceDate
+            ? sinceDate
+            : new Date(Date.now() - GLOBE_POINTS_MAX_AGE_MS);
+
       const data = (await getEchoesForMap({
         bbox,
         emotion: emotion ?? undefined,
-        since: sinceDate ?? undefined,
+        since: sinceResolved,
       })) as unknown as FeatureCollection<Point>;
 
       indexRef.current.clear();
@@ -837,85 +876,94 @@ export default function EchoMap({
       const src = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
       if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
 
-      // Refresh pays via fonction centralisée (anti duplication)
-      const m = mapRef.current;
-      if (m) {
-        const wantVisible = m.getZoom() < DETAIL_ZOOM_THRESHOLD;
-        if (!wantVisible) {
-          // masque seulement
+      // cœurs pays: on laisse les events (moveend/zoomend) faire le job,
+      // mais un changement de filtres doit rafraîchir immédiatement.
+      // => on re-déclenche via logique directe (sans dépendre de functions locales).
+      try {
+        
+        const b = map.getBounds();
+        const bboxNow: [number, number, number, number] =
+          z <= WORLD_ZOOM_THRESHOLD ? WORLD_BBOX : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+
+        const f = filtersRef.current;
+        const token = ++countryRefreshTokenRef.current;
+
+        const key = (() => {
+          const bb = bboxNow.map((n) => n.toFixed(3)).join(',');
+          const s = sinceDateRef.current ? sinceDateRef.current.toISOString() : '';
+          const zz = Math.round(map.getZoom() * 10) / 10;
+          return `z:${zz}|bbox:${bb}|emotion:${f.emotion ?? ''}|since:${s}`;
+        })();
+
+        // Si on est en detail, on masque simplement (comme refreshCountryMarkers)
+        if (z >= DETAIL_ZOOM_THRESHOLD) {
           countryMarkersRef.current.forEach((entry) => {
             entry.el.style.display = 'none';
           });
-        } else {
-          countryMarkersRef.current.forEach((entry) => {
-            entry.el.style.display = '';
-          });
-          // refresh complet (bbox + filtres)
-          const token = ++countryRefreshTokenRef.current;
-          try {
-            const aggregations = await getEchoesAggregatedByCountry({
-              bbox,
-              emotion: emotion ?? undefined,
-              since: sinceDate ?? undefined,
-            });
-            if (countryRefreshTokenRef.current !== token) return;
-            if (!Array.isArray(aggregations) || aggregations.length === 0) return;
+          return;
+        }
 
-            const next = new Map<string, CountryMarkerEntry>();
-            for (const agg of aggregations) {
-              const existing = countryMarkersRef.current.get(agg.country);
-              if (existing) {
-                existing.root.render(
-                  <CountryHeartMarkers
-                    aggregations={[agg]}
-                    onCountryClick={(_country, centroid) => {
-                      cinemaToRef.current?.(centroid, 7);
-                    }}
-                  />
-                );
-                existing.el.style.display = '';
-                next.set(agg.country, existing);
-              } else {
-                try {
-                  const el = document.createElement('div');
-                  el.style.cursor = 'pointer';
-                  const marker = new maplibregl.Marker({ element: el }).setLngLat(agg.centroid).addTo(m);
-                  const root = createRoot(el);
-                  root.render(
-                    <CountryHeartMarkers
-                      aggregations={[agg]}
-                      onCountryClick={(_country, centroid) => {
-                        cinemaToRef.current?.(centroid, 7);
-                      }}
-                    />
-                  );
-                  next.set(agg.country, { marker, root, el });
-                } catch (err) {
-                  console.error(`Failed to mount country marker for ${agg.country}:`, err);
-                }
-              }
-            }
+        if (key === lastCountryKeyRef.current) return;
 
-            // remove stale
-            countryMarkersRef.current.forEach((entry, country) => {
-              if (next.has(country)) return;
-              try {
-                entry.root.unmount();
-              } catch {
-                // ignore
-              }
-              try {
-                entry.marker.remove();
-              } catch {
-                // ignore
-              }
-            });
+        const aggregations = await getEchoesAggregatedByCountry({
+          bbox: bboxNow,
+          emotion: f.emotion ?? undefined,
+          since: sinceDateRef.current ?? undefined,
+        });
 
-            countryMarkersRef.current = next;
-          } catch (err) {
-            console.error('Error refreshing country markers (reload):', err);
+        if (countryRefreshTokenRef.current !== token) return;
+        if (!Array.isArray(aggregations) || aggregations.length === 0) return;
+
+        const next = new Map<string, CountryMarkerEntry>();
+
+        for (const agg of aggregations) {
+          const existing = countryMarkersRef.current.get(agg.country);
+          if (existing) {
+            existing.root.render(
+              <CountryHeartMarkers
+                aggregations={[agg]}
+                onCountryClick={(_country, centroid) => {
+                  cinemaToRef.current?.(centroid, 7);
+                }}
+              />
+            );
+            existing.el.style.display = '';
+            next.set(agg.country, existing);
+          } else {
+            const el = document.createElement('div');
+            el.style.cursor = 'pointer';
+            const marker = new maplibregl.Marker({ element: el }).setLngLat(agg.centroid).addTo(map);
+            const root = createRoot(el);
+            root.render(
+              <CountryHeartMarkers
+                aggregations={[agg]}
+                onCountryClick={(_country, centroid) => {
+                  cinemaToRef.current?.(centroid, 7);
+                }}
+              />
+            );
+            next.set(agg.country, { marker, root, el });
           }
         }
+
+        countryMarkersRef.current.forEach((entry, country) => {
+          if (next.has(country)) return;
+          try {
+            entry.root.unmount();
+          } catch {
+            // ignore
+          }
+          try {
+            entry.marker.remove();
+          } catch {
+            // ignore
+          }
+        });
+
+        countryMarkersRef.current = next;
+        lastCountryKeyRef.current = key;
+      } catch {
+        // ignore
       }
     };
 
