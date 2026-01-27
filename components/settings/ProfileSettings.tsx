@@ -36,6 +36,7 @@
 import Link from 'next/link';
 import ProfileHandleForm from '@/components/settings/ProfileHandleForm';
 import ProfileAvatarForm from '@/components/settings/ProfileAvatarForm';
+import AccountDataSection from '@/components/settings/AccountDataSection';
 
 export type IdentityMode = 'real' | 'symbolic' | 'anonymous';
 export type Theme = 'system' | 'light' | 'dark';
@@ -490,29 +491,9 @@ export default function ProfileSettingsView(props: Props) {
         </div>
       </section>
 
-      {/* RGPD */}
-      <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
-        <h2 className="text-lg font-bold text-slate-900">Données & RGPD</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Export et suppression complète seront ajoutés ensuite (prévu dans la roadmap).
-        </p>
-
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            disabled
-            className="cursor-not-allowed rounded-xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-semibold text-slate-500"
-          >
-            Exporter mes données (bientôt)
-          </button>
-          <button
-            type="button"
-            disabled
-            className="cursor-not-allowed rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-300"
-          >
-            Supprimer / anonymiser (bientôt)
-          </button>
-        </div>
+      {/* RGPD - Données et compte */}
+      <section className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-md shadow-lg shadow-black/5">
+        <AccountDataSection />
       </section>
 
       <div className="mt-10 text-xs text-slate-400">
