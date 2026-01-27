@@ -1,32 +1,28 @@
 /**
  * =============================================================================
- * Fichier      : app/explorer/page.tsx
+ * Fichier      : app/explore/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.2.0 (2026-01-27)
- * Objet        : Page Explorer — Map plein écran + filtres + sélection d’un écho
+ * Version      : 1.2.1 (2026-01-27)
+ * Objet        : Page Explore — Map plein écran + filtres + sélection d’un écho
  * -----------------------------------------------------------------------------
  * Description  :
- * - Monte EchoMap en client-only (dynamic import, ssr:false) pour éviter les soucis SSR MapLibre
- * - Branche réellement la map à la page (c’est ici que vit l’UI Explorer)
- * - Gère les filtres (emotion/since/nearMe) et le focus via querystring (?focus=uuid)
- * - Quand un écho est cliqué: met à jour l’URL + affiche un panneau minimal
- * - SAFE: pas de StoryDrawer ici (zéro régression), et pas de setState-in-effect (lint)
- * - NEW: Ajoute une règle UX “Monde = dernière heure” (TTL 1h) pour éviter 15M points
+ * - FIX Next build: wrap useSearchParams() inside a Suspense boundary (CSR bailout)
+ * - KEEP: UI/structure identiques (topbar + panneau minimal + map fullscreen)
+ * - KEEP: TTL monde 1h (since="1h" par défaut)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.2.0 (2026-01-27)
- * - [NEW] Ajoute since="1h" (Dernière heure) + default depuis = 1h (cohérent TTL monde)
- * - [FIX] selectedId URL-driven robuste: pendingId temporaire (clic) sans bloquer back/forward
- * - [KEEP] UI identique : topbar filtres + panneau minimal + map fullscreen
+ * 1.2.1 (2026-01-27)
+ * - [FIX] Ajoute <Suspense> au-dessus du composant qui utilise useSearchParams()
+ * - [KEEP] Zéro régression UI/UX, logique identique
  * =============================================================================
  */
 
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useMemo, useState, useCallback } from 'react';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { Suspense, useCallback, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type Filters = {
   emotion: string | null;
@@ -62,7 +58,7 @@ function safeUuid(v: string | null): string | null {
   return s;
 }
 
-export default function ExplorerPage() {
+function ExploreInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -100,11 +96,8 @@ export default function ExplorerPage() {
 
   const onSelectEcho = useCallback(
     (id: string) => {
-      // rendu immédiat
       setPendingId(id);
-      // pousse l’URL (source de vérité)
       updateUrlFocus(id);
-      // libère pending (l’URL prendra le relais)
       window.setTimeout(() => setPendingId(null), 400);
     },
     [updateUrlFocus]
@@ -123,7 +116,6 @@ export default function ExplorerPage() {
   }, [filters.nearMe]);
 
   const worldTTLHint = useMemo(() => {
-    // Hint discret: la règle 1h concerne surtout la vue monde (sans nearMe)
     if (filters.nearMe) return null;
     if (filters.since !== '1h') return null;
     return 'Vue monde limitée à la dernière heure pour préserver la performance.';
@@ -240,5 +232,19 @@ export default function ExplorerPage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+export default function ExplorePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="h-screen w-screen grid place-items-center">
+          <div className="text-sm opacity-70">Chargement…</div>
+        </div>
+      }
+    >
+      <ExploreInner />
+    </Suspense>
   );
 }
