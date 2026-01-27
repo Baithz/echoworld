@@ -2,18 +2,30 @@
  * =============================================================================
  * Fichier      : components/settings/ProfileSettings.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-26)
+ * Version      : 1.2.2 (2026-01-27)
  * Objet        : Settings — Profil & Préférences (UI modulaire) (SAFE, anti-régression)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Extrait la UI de app/settings/page.tsx en un composant unique et réutilisable
  * - Ne touche pas à Supabase / BDD : aucune requête ici (UI-only)
  * - Reçoit tout via props : states + setters + flags (loading/saving/canSave)
- * - Intègre ProfileHandleForm (commit UI-only) sans logique réseau dans la page
+ * - Intègre ProfileHandleForm (UI-only) sans logique réseau dans la page
+ * - Intègre ProfileAvatarForm (UI-only) sans logique réseau (Phase 4)
  * - SAFE : aucune logique métier nouvelle, aucun effet de bord
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 1.2.2 (2026-01-27)
+ * - [FIX] Alignement du type de ProfileAvatarForm (import vers components/profile/ProfileAvatarForm)
+ * - [SAFE] Aucune modification de contrat de props côté Settings/page
+ * 1.2.1 (2026-01-27)
+ * - [FIX] Suppression de la prop non typée profileId sur ProfileAvatarForm (TS2322)
+ * - [CLEAN] handle source de vérité pour ProfileAvatarForm (plus de fallback DB implicite)
+ * 1.2.0 (2026-01-27)
+ * - [NEW] Intégration ProfileAvatarForm (UI-only) + props avatar_* (source de vérité = page)
+ * - [SAFE] Aucune requête, aucune mutation : setters uniquement
+ * 1.1.0 (2026-01-27)
+ * - [FIX] handle utilisé comme source de vérité pour ProfileHandleForm (plus d’unused-vars, UI cohérente)
  * 1.0.0 (2026-01-26)
  * - [NEW] Composant ProfileSettings (UI-only) + intégration ProfileHandleForm
  * =============================================================================
@@ -23,10 +35,13 @@
 
 import Link from 'next/link';
 import ProfileHandleForm from '@/components/settings/ProfileHandleForm';
+import ProfileAvatarForm from '@/components/settings/ProfileAvatarForm';
 
 export type IdentityMode = 'real' | 'symbolic' | 'anonymous';
 export type Theme = 'system' | 'light' | 'dark';
 export type Visibility = 'world' | 'local' | 'private' | 'semi_anonymous';
+
+export type AvatarType = 'image' | 'symbol' | 'color' | 'constellation';
 
 export type ProfileSettingsProfile = {
   id: string;
@@ -87,6 +102,16 @@ type Props = {
   langPrimary: string;
   setLangPrimary: (v: string) => void;
 
+  // Avatar (Phase 4) — source de vérité côté page
+  avatarType: AvatarType | null;
+  setAvatarType: (v: AvatarType | null) => void;
+
+  avatarUrl: string | null;
+  setAvatarUrl: (v: string | null) => void;
+
+  avatarSeed: string | null;
+  setAvatarSeed: (v: string | null) => void;
+
   // privacy + prefs
   publicProfile: boolean;
   setPublicProfile: (v: boolean) => void;
@@ -139,6 +164,7 @@ export default function ProfileSettingsView(props: Props) {
     ok,
     langs,
 
+    handle,
     setHandle,
     bio,
     setBio,
@@ -146,6 +172,13 @@ export default function ProfileSettingsView(props: Props) {
     setIdentityMode,
     langPrimary,
     setLangPrimary,
+
+    avatarType,
+    setAvatarType,
+    avatarUrl,
+    setAvatarUrl,
+    avatarSeed,
+    setAvatarSeed,
 
     publicProfile,
     setPublicProfile,
@@ -180,7 +213,9 @@ export default function ProfileSettingsView(props: Props) {
       <div className="flex items-start justify-between gap-6">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Paramètres</h1>
-          <p className="mt-2 text-slate-600">Contrôle calme de ton identité, ta confidentialité, et ton expérience.</p>
+          <p className="mt-2 text-slate-600">
+            Contrôle calme de ton identité, ta confidentialité, et ton expérience.
+          </p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -196,7 +231,9 @@ export default function ProfileSettingsView(props: Props) {
             onClick={onSave}
             disabled={!canSave}
             className={`rounded-xl px-4 py-2 text-sm font-semibold shadow-lg transition-transform ${
-              canSave ? 'bg-slate-900 text-white hover:scale-[1.01]' : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+              canSave
+                ? 'bg-slate-900 text-white hover:scale-[1.01]'
+                : 'cursor-not-allowed bg-slate-200 text-slate-500'
             }`}
           >
             {saving ? 'Enregistrement…' : 'Enregistrer'}
@@ -225,12 +262,30 @@ export default function ProfileSettingsView(props: Props) {
         <div className="mt-6 grid gap-5 md:grid-cols-2">
           <div className="md:col-span-2">
             <ProfileHandleForm
-              initialHandle={profile?.handle ?? null}
+              initialHandle={handle || profile?.handle || null}
               disabled={saving}
               onCommit={(next) => setHandle(next ?? '')}
               label="Pseudo (handle)"
               hint="Visible sur ton profil public et dans les URLs : /u/[handle]."
               commitOnBlur={false}
+            />
+          </div>
+
+          {/* Avatar (Phase 4) */}
+          <div className="md:col-span-2">
+            <ProfileAvatarForm
+              disabled={saving}
+              id={profile?.id ?? null}
+              handle={handle.trim() ? handle.trim() : profile?.handle ?? null}
+              displayName={profile?.display_name ?? null}
+              initialType={avatarType ?? null}
+              initialUrl={avatarUrl ?? null}
+              initialSeed={avatarSeed ?? null}
+              onCommit={(patch) => {
+                setAvatarType(patch.avatar_type);
+                setAvatarUrl(patch.avatar_url);
+                setAvatarSeed(patch.avatar_seed);
+              }}
             />
           </div>
 
@@ -265,7 +320,9 @@ export default function ProfileSettingsView(props: Props) {
                 </option>
               ))}
             </select>
-            <div className="mt-2 text-xs text-slate-500">Utilisée par défaut pour ton expérience et tes écrans.</div>
+            <div className="mt-2 text-xs text-slate-500">
+              Utilisée par défaut pour ton expérience et tes écrans.
+            </div>
           </div>
 
           <div className="md:col-span-2">
@@ -286,7 +343,9 @@ export default function ProfileSettingsView(props: Props) {
       {/* Privacy */}
       <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
         <h2 className="text-lg font-bold text-slate-900">Confidentialité</h2>
-        <p className="mt-1 text-sm text-slate-600">Pas de followers, pas de scores. Juste des choix de visibilité.</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Pas de followers, pas de scores. Juste des choix de visibilité.
+        </p>
 
         <div className="mt-6 grid gap-5 md:grid-cols-2">
           <ToggleRow
@@ -315,14 +374,24 @@ export default function ProfileSettingsView(props: Props) {
               <option value="semi_anonymous">Semi-anonyme</option>
               <option value="private">Privé</option>
             </select>
-            <div className="mt-2 text-xs text-slate-500">Tu peux toujours choisir au moment de publier.</div>
+            <div className="mt-2 text-xs text-slate-500">
+              Tu peux toujours choisir au moment de publier.
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white/70 p-4">
             <div className="text-sm font-semibold text-slate-900">Interactions</div>
             <div className="mt-3 space-y-3">
-              <ToggleInline label="Autoriser les réponses" checked={allowResponses} onChange={setAllowResponses} />
-              <ToggleInline label="Autoriser les échos miroirs" checked={allowMirrors} onChange={setAllowMirrors} />
+              <ToggleInline
+                label="Autoriser les réponses"
+                checked={allowResponses}
+                onChange={setAllowResponses}
+              />
+              <ToggleInline
+                label="Autoriser les échos miroirs"
+                checked={allowMirrors}
+                onChange={setAllowMirrors}
+              />
             </div>
           </div>
         </div>
@@ -335,7 +404,8 @@ export default function ProfileSettingsView(props: Props) {
       >
         <h2 className="text-lg font-bold text-slate-900">Pour moi</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Ajuste la résonance : basé sur tes interactions (likes/miroirs) + sujets associés. Rien d’intrusif.
+          Ajuste la résonance : basé sur tes interactions (likes/miroirs) + sujets associés. Rien
+          d’intrusif.
         </p>
 
         <div className="mt-6 grid gap-5 md:grid-cols-2">
@@ -352,7 +422,8 @@ export default function ProfileSettingsView(props: Props) {
               <ToggleInline label="Likes" checked={forMeUseLikes} onChange={setForMeUseLikes} />
               <ToggleInline label="Miroirs" checked={forMeUseMirrors} onChange={setForMeUseMirrors} />
               <div className="text-xs text-slate-500">
-                Si “Miroirs” est désactivé ici ou dans “Interactions”, ils ne compteront pas dans le calcul.
+                Si “Miroirs” est désactivé ici ou dans “Interactions”, ils ne compteront pas dans le
+                calcul.
               </div>
             </div>
           </div>
@@ -381,14 +452,17 @@ export default function ProfileSettingsView(props: Props) {
         </div>
 
         <div className="mt-4 text-xs text-slate-500">
-          Note : si les colonnes “for_me_*” ne sont pas encore présentes en base, la sauvegarde restera OK (fallback).
+          Note : si les colonnes “for_me_*” ne sont pas encore présentes en base, la sauvegarde
+          restera OK (fallback).
         </div>
       </section>
 
       {/* Experience */}
       <section className="mt-6 rounded-3xl border border-slate-200 bg-white/70 p-6 backdrop-blur-md shadow-lg shadow-black/5">
         <h2 className="text-lg font-bold text-slate-900">Expérience</h2>
-        <p className="mt-1 text-sm text-slate-600">Sobriété et douceur : peu de notifications, pas de pression.</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Sobriété et douceur : peu de notifications, pas de pression.
+        </p>
 
         <div className="mt-6 grid gap-5 md:grid-cols-2">
           <div>
@@ -402,7 +476,9 @@ export default function ProfileSettingsView(props: Props) {
               <option value="light">Clair</option>
               <option value="dark">Sombre</option>
             </select>
-            <div className="mt-2 text-xs text-slate-500">(Le switch global sera appliqué via layout à l&apos;étape suivante.)</div>
+            <div className="mt-2 text-xs text-slate-500">
+              (Le switch global sera appliqué via layout à l&apos;étape suivante.)
+            </div>
           </div>
 
           <ToggleRow
@@ -425,14 +501,14 @@ export default function ProfileSettingsView(props: Props) {
           <button
             type="button"
             disabled
-            className="rounded-xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-semibold text-slate-500 cursor-not-allowed"
+            className="cursor-not-allowed rounded-xl border border-slate-200 bg-white/60 px-4 py-3 text-sm font-semibold text-slate-500"
           >
             Exporter mes données (bientôt)
           </button>
           <button
             type="button"
             disabled
-            className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-300 cursor-not-allowed"
+            className="cursor-not-allowed rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-300"
           >
             Supprimer / anonymiser (bientôt)
           </button>
@@ -446,7 +522,12 @@ export default function ProfileSettingsView(props: Props) {
   );
 }
 
-function ToggleRow(props: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void }) {
+function ToggleRow(props: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   const { label, hint, checked, onChange } = props;
 
   return (
@@ -461,7 +542,7 @@ function ToggleRow(props: { label: string; hint: string; checked: boolean; onCha
           type="button"
           onClick={() => onChange(!checked)}
           aria-pressed={checked}
-          className={`shrink-0 inline-flex h-7 w-12 items-center rounded-full border p-0 leading-none transition-colors appearance-none ${
+          className={`inline-flex h-7 w-12 shrink-0 items-center rounded-full border p-0 leading-none appearance-none transition-colors ${
             checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
           }`}
         >
@@ -487,7 +568,7 @@ function ToggleInline(props: { label: string; checked: boolean; onChange: (v: bo
         type="button"
         onClick={() => onChange(!checked)}
         aria-pressed={checked}
-        className={`shrink-0 inline-flex h-7 w-12 items-center rounded-full border p-0 leading-none transition-colors appearance-none ${
+        className={`inline-flex h-7 w-12 shrink-0 items-center rounded-full border p-0 leading-none appearance-none transition-colors ${
           checked ? 'border-slate-900 bg-slate-900' : 'border-slate-300 bg-white'
         }`}
       >

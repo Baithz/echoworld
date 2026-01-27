@@ -1,7 +1,7 @@
 // =============================================================================
 // Fichier      : lib/profile/getProfile.ts
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 1.7.4 (2026-01-26)
+// Version      : 1.8.0 (2026-01-27)
 // Objet        : Helpers serveur pour récupérer un profil + échos/stats (public)
 // ----------------------------------------------------------------------------
 // Description  :
@@ -10,8 +10,13 @@
 // - Récupération échos publics (published + world/local)
 // - Stats publiques (counts + topThemes)
 // - isFollowing via table follows (RLS OK)
+// - Phase 4 Avatar : expose avatar_type + avatar_seed (+ avatar_url) en public
+//   avec select FAIL-SOFT si colonnes absentes (fallback sans avatar_*)
 // ----------------------------------------------------------------------------
 // CHANGELOG
+// 1.8.0 (2026-01-27)
+// - [NEW] Avatar public : avatar_type + avatar_seed (+ avatar_url) dans PublicProfile
+// - [SAFE] Select FAIL-SOFT des colonnes avatar_* (retry sans si absentes)
 // 1.7.4 (2026-01-26)
 // - [FIX] Handle lookup: normalisation unique et stricte (match index unique profiles.handle)
 // - [FIX] Supprime fallbacks ambigus (ilike sans wildcard / 32 chars / '.' autorisé) => moins de 404 incohérents
@@ -25,7 +30,12 @@ export type PublicProfile = {
   id: string;
   handle: string | null;
   display_name: string | null;
+
+  // Avatar (Phase 4)
+  avatar_type: 'image' | 'symbol' | 'color' | 'constellation' | null;
   avatar_url: string | null;
+  avatar_seed: string | null;
+
   bio: string | null;
   public_profile_enabled: boolean | null;
   banner_url: string | null;
@@ -62,7 +72,12 @@ type ProfileRow = {
   id: string;
   handle: string | null;
   display_name: string | null;
-  avatar_url: string | null;
+
+  // Avatar (Phase 4) — peut ne pas exister en DB => FAIL-SOFT (retry select)
+  avatar_type?: 'image' | 'symbol' | 'color' | 'constellation' | null;
+  avatar_url?: string | null;
+  avatar_seed?: string | null;
+
   bio: string | null;
   public_profile_enabled: boolean | null;
   banner_url: string | null;
@@ -89,8 +104,12 @@ type EchoRow = {
 
 const EW_DEBUG = process.env.EW_DEBUG === '1';
 
-const PROFILE_SELECT =
+const PROFILE_SELECT_BASE =
   'id, handle, display_name, avatar_url, bio, public_profile_enabled, banner_url, banner_pos_y' as const;
+
+// Phase 4 : on tente d'abord avec avatar_type + avatar_seed, puis retry sans si colonne absente.
+const PROFILE_SELECT_WITH_AVATAR =
+  'id, handle, display_name, avatar_type, avatar_url, avatar_seed, bio, public_profile_enabled, banner_url, banner_pos_y' as const;
 
 const ECHO_SELECT =
   'id, user_id, title, content, emotion, is_anonymous, country, city, language, created_at, status, visibility, emotion_tags, theme_tags, image_urls' as const;
@@ -122,6 +141,14 @@ function pickSupabaseError(err: unknown) {
     details: e?.details ?? null,
     hint: e?.hint ?? null,
   };
+}
+
+function looksLikeMissingAvatarColumnError(msg: string): boolean {
+  const m = (msg ?? '').toLowerCase();
+  return (
+    (m.includes('does not exist') || m.includes('unknown column') || m.includes('not exist')) &&
+    m.includes('avatar_')
+  );
 }
 
 /**
@@ -157,7 +184,11 @@ function pickProfile(row: ProfileRow): PublicProfile {
     id: String(row.id),
     handle: row.handle ?? null,
     display_name: row.display_name ?? null,
+
+    avatar_type: (row.avatar_type ?? null) as PublicProfile['avatar_type'],
     avatar_url: row.avatar_url ?? null,
+    avatar_seed: row.avatar_seed ?? null,
+
     bio: row.bio ?? null,
     public_profile_enabled: row.public_profile_enabled ?? null,
     banner_url: row.banner_url ?? null,
@@ -185,6 +216,38 @@ function pickEcho(row: EchoRow): PublicEcho {
   };
 }
 
+async function selectProfileFailSoft(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  where: { id?: string; handle?: string }
+): Promise<{ data: ProfileRow | null; error: unknown | null }> {
+  // 1) Try with avatar cols
+  let q = supabase.from('profiles').select(PROFILE_SELECT_WITH_AVATAR);
+
+  if (where.id) q = q.eq('id', where.id);
+  if (where.handle) q = q.eq('handle', where.handle);
+
+  const r1 = await q.maybeSingle<ProfileRow>();
+  if (!r1.error) {
+    return { data: r1.data ?? null, error: null };
+  }
+
+  const msg1 = String((r1.error as { message?: string })?.message ?? r1.error);
+  if (!looksLikeMissingAvatarColumnError(msg1)) {
+    return { data: null, error: r1.error };
+  }
+
+  // 2) Retry without avatar_type/avatar_seed
+  let q2 = supabase.from('profiles').select(PROFILE_SELECT_BASE);
+  if (where.id) q2 = q2.eq('id', where.id);
+  if (where.handle) q2 = q2.eq('handle', where.handle);
+
+  const r2 = await q2.maybeSingle<ProfileRow>();
+  if (r2.error) {
+    return { data: null, error: r2.error };
+  }
+  return { data: r2.data ?? null, error: null };
+}
+
 export async function getProfileById(id: string): Promise<PublicProfile | null> {
   const clean = (id ?? '').trim();
   if (!clean) {
@@ -195,7 +258,7 @@ export async function getProfileById(id: string): Promise<PublicProfile | null> 
   try {
     const supabase = await createSupabaseServerClient();
 
-    const r = await supabase.from('profiles').select(PROFILE_SELECT).eq('id', clean).maybeSingle<ProfileRow>();
+    const r = await selectProfileFailSoft(supabase, { id: clean });
 
     if (r.error) {
       logError(`getProfileById: Supabase error id=${clean}`, pickSupabaseError(r.error));
@@ -232,12 +295,7 @@ export async function getProfileByHandle(handle: string): Promise<PublicProfile 
   try {
     const supabase = await createSupabaseServerClient();
 
-    // Lookup strict = 1 seule source de vérité (match index unique)
-    const r = await supabase
-      .from('profiles')
-      .select(PROFILE_SELECT)
-      .eq('handle', normalized)
-      .maybeSingle<ProfileRow>();
+    const r = await selectProfileFailSoft(supabase, { handle: normalized });
 
     if (r.error) {
       logError('getProfileByHandle: eq(handle) error', { normalized, err: pickSupabaseError(r.error) });

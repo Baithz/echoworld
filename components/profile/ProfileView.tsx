@@ -1,10 +1,20 @@
 // =============================================================================
 // Fichier      : components/profile/ProfileView.tsx
 // Auteur       : Régis KREMER (Baithz) — EchoWorld
-// Version      : 2.1.0 (2026-01-23)
+// Version      : 2.4.0 (2026-01-27)
 // Objet        : Vue UI profil public premium (bannière, avatar, actions, échos)
 // -----------------------------------------------------------------------------
 // CHANGELOG
+// 2.4.0 (2026-01-27)
+// - [PHASE 4] Avatar: utilise avatar_type/avatar_seed quand présents + FAIL-SOFT sans casts "unknown as"
+// - [SAFE] Rendu inchangé si colonnes absentes: fallback sur avatar_url uniquement
+// - [CLEAN] Supprime parsing local AvatarType devenu inutile (délégué à PublicProfile + fallbacks)
+// 2.3.1 (2026-01-27)
+// - [CLEAN] Suppression de la fonction initials non utilisée (ESLint no-unused-vars)
+// 2.3.0 (2026-01-27)
+// - [FIX] Typage AvatarType + suppression fallbackInitials (ESLint/TS OK, rendu inchangé)
+// 2.2.0 (2026-01-27)
+// - [REFACTOR] Avatar délégué au composant unifié ProfileAvatar (même rendu, sans régression)
 // 2.1.0 (2026-01-23)
 // - [FIX] Ajout pt-28 pour compenser le header fixe (évite superposition)
 // 2.0.0 (2026-01-23)
@@ -23,6 +33,7 @@ import { User, MapPin } from 'lucide-react';
 import type { PublicProfile, PublicEcho } from '@/lib/profile/getProfile';
 import ProfileEchoList from '@/components/profile/ProfileEchoList';
 import ProfileActions from '@/components/profile/ProfileActions';
+import ProfileAvatar, { type AvatarType } from '@/components/profile/ProfileAvatar';
 
 type Props = {
   profile: PublicProfile;
@@ -38,18 +49,12 @@ type Props = {
   isFollowing?: boolean;
 };
 
-function initials(name: string) {
-  const parts = (name ?? '')
-    .trim()
-    .split(/\s+/g)
-    .filter(Boolean);
-  const a = parts[0]?.[0] ?? 'U';
-  const b = parts[1]?.[0] ?? '';
-  return (a + b).toUpperCase();
-}
-
 function bannerObjectPosition(offsetY: number): string {
   return `center calc(50% + ${offsetY}px)`;
+}
+
+function isAvatarType(v: unknown): v is AvatarType {
+  return v === 'image' || v === 'symbol' || v === 'color' || v === 'constellation';
 }
 
 export default function ProfileView({
@@ -70,6 +75,23 @@ export default function ProfileView({
   const location = [stats?.location?.city, stats?.location?.country]
     .filter(Boolean)
     .join(', ');
+
+  // ---------------------------------------------------------------------------
+  // Avatar (Phase 4) — FAIL-SOFT :
+  // - si PublicProfile ne contient pas encore avatar_type/avatar_seed => undefined/null
+  // - fallback: si avatar_url existe => image, sinon constellation (ProfileAvatar gère les fallbacks)
+  // ---------------------------------------------------------------------------
+  const avatarType: AvatarType | null =
+    isAvatarType((profile as unknown as { avatar_type?: unknown }).avatar_type)
+      ? ((profile as unknown as { avatar_type?: AvatarType }).avatar_type ?? null)
+      : profile.avatar_url
+        ? 'image'
+        : null;
+
+  const avatarSeed: string | null =
+    typeof (profile as unknown as { avatar_seed?: unknown }).avatar_seed === 'string'
+      ? ((profile as unknown as { avatar_seed?: string }).avatar_seed ?? null)
+      : null;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-8 pt-28">
@@ -99,20 +121,18 @@ export default function ProfileView({
           <div className="px-6 pb-6 pt-20">
             {/* Avatar */}
             <div className="absolute left-6 top-0 -translate-y-1/2">
-              <div className="inline-flex h-32 w-32 items-center justify-center overflow-hidden rounded-3xl border-4 border-white bg-white shadow-xl">
-                {profile.avatar_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={profile.avatar_url}
-                    alt={`Avatar de ${label}`}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span className="text-3xl font-bold text-slate-900">
-                    {initials(label)}
-                  </span>
-                )}
-              </div>
+              <ProfileAvatar
+                id={profile.id}
+                handle={profile.handle ?? null}
+                displayName={profile.display_name ?? null}
+                avatarType={avatarType}
+                avatarUrl={profile.avatar_url ?? null}
+                avatarSeed={avatarSeed}
+                size={128}
+                className="bg-white"
+                borderClassName="border-4 border-white"
+                alt={`Avatar de ${label}`}
+              />
             </div>
 
             {/* Header identity + actions */}
@@ -120,9 +140,7 @@ export default function ProfileView({
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="flex-1">
                   <h1 className="text-2xl font-bold text-slate-900">{label}</h1>
-                  {handle && (
-                    <div className="mt-1 text-sm text-slate-500">{handle}</div>
-                  )}
+                  {handle && <div className="mt-1 text-sm text-slate-500">{handle}</div>}
                 </div>
 
                 {/* Actions (Suivre / Message) */}
@@ -154,27 +172,21 @@ export default function ProfileView({
               <div className="mt-5 flex flex-wrap gap-4 text-sm">
                 {typeof stats?.echoesCount === 'number' && (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.echoesCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.echoesCount}</span>{' '}
                     <span className="text-slate-600">échos</span>
                   </div>
                 )}
 
                 {typeof stats?.followersCount === 'number' && (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.followersCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.followersCount}</span>{' '}
                     <span className="text-slate-600">abonnés</span>
                   </div>
                 )}
 
                 {typeof stats?.followingCount === 'number' && (
                   <div>
-                    <span className="font-bold text-slate-900">
-                      {stats.followingCount}
-                    </span>{' '}
+                    <span className="font-bold text-slate-900">{stats.followingCount}</span>{' '}
                     <span className="text-slate-600">abonnements</span>
                   </div>
                 )}

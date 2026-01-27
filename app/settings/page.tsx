@@ -2,18 +2,25 @@
  * =============================================================================
  * Fichier      : app/settings/page.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 2.3.3 (2026-01-26)
+ * Version      : 2.4.1 (2026-01-27)
  * Objet        : Paramètres utilisateur (EchoWorld) — confidentialité + préférences
  * -----------------------------------------------------------------------------
  * Description  :
  * - Lecture/édition de user_settings (theme, defaults, notifications soft, pour-moi MVP)
- * - Lecture/édition de profiles (handle, bio, identity_mode, lang_primary, public_profile_enabled)
+ * - Lecture/édition de profiles (handle, bio, identity_mode, lang_primary, public_profile_enabled, avatar_*)
  * - Source de vérité “Profil public” = profiles.public_profile_enabled (aligné RLS + search)
- * - FAIL-SOFT : si colonnes "for_me_*" absentes en BDD, sauvegarde fallback sans casser
+ * - FAIL-SOFT : si colonnes "for_me_*" ou "avatar_*" absentes en BDD, sauvegarde fallback sans casser
  * - Validation pseudo (handle) via UI dédiée (ProfileHandleForm) dans ProfileSettingsView
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 2.4.1 (2026-01-27)
+ * - [FIX] Détection plus robuste des colonnes for_me_* manquantes (FAIL-SOFT)
+ * - [FIX] Message OK non écrasé (didSetOk local au lieu de dépendre du state ok)
+ * - [FIX] Resync avatar_* après refresh : fallback clair à null si p absent
+ * 2.4.0 (2026-01-27)
+ * - [NEW] Phase 4 Avatar : states avatar_* + upsert FAIL-SOFT si colonnes absentes
+ * - [NEW] Resync avatar_* après refresh et passage des props à ProfileSettingsView
  * 2.3.3 (2026-01-26)
  * - [REFACTOR] Extraction complète de la UI vers components/settings/ProfileSettings (ProfileSettingsView)
  * - [SAFE] Toute la logique Supabase (auth, load, save, fail-soft, canSave) reste dans la page
@@ -165,7 +172,18 @@ function safeLang(v: string | null | undefined): string {
 
 function looksLikeMissingColumnError(msg: string): boolean {
   const m = msg.toLowerCase();
-  return (m.includes('does not exist') || m.includes('unknown column') || m.includes('not exist')) && m.includes('for_me_');
+  const missing =
+    m.includes('does not exist') || m.includes('unknown column') || m.includes('not exist');
+  // fail-soft: on reste permissif mais ciblé sur les colonnes for_me*
+  return missing && (m.includes('for_me_') || m.includes('for me') || m.includes('for_me'));
+}
+
+function looksLikeMissingAvatarColumnError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (
+    (m.includes('does not exist') || m.includes('unknown column') || m.includes('not exist')) &&
+    m.includes('avatar_')
+  );
 }
 
 export default function SettingsPage() {
@@ -200,6 +218,13 @@ export default function SettingsPage() {
   const [bio, setBio] = useState('');
   const [identityMode, setIdentityMode] = useState<IdentityMode>('symbolic');
   const [langPrimary, setLangPrimary] = useState<string>('en');
+
+  // ---------------------------------------------------------------------------
+  // Avatar (Phase 4) — source de vérité côté page (BDD)
+  // ---------------------------------------------------------------------------
+  const [avatarType, setAvatarType] = useState<ProfileRow['avatar_type'] | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarSeed, setAvatarSeed] = useState<string | null>(null);
 
   const [theme, setTheme] = useState<Theme>('system');
 
@@ -297,6 +322,11 @@ export default function SettingsPage() {
         setProfile(p);
         setSettings(s);
 
+        // Avatar (Phase 4) — hydrate depuis profiles (fail-soft si champs absents -> null)
+        setAvatarType(p?.avatar_type ?? null);
+        setAvatarUrl(p?.avatar_url ?? null);
+        setAvatarSeed(p?.avatar_seed ?? null);
+
         setHandle(p?.handle ?? '');
         setBio(p?.bio ?? '');
         setIdentityMode(p?.identity_mode ?? 'symbolic');
@@ -320,7 +350,7 @@ export default function SettingsPage() {
         setForMeUseMirrors(s?.for_me_use_mirrors ?? true);
         setForMeIncludeFresh(s?.for_me_include_fresh ?? true);
         setForMeMaxItems(
-          typeof s?.for_me_max_items === 'number' && s.for_me_max_items >= 6 ? s.for_me_max_items : 18
+          typeof s?.for_me_max_items === 'number' && s.for_me_max_items >= 6 ? s.for_me_max_items : 18,
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erreur de chargement.');
@@ -349,15 +379,32 @@ export default function SettingsPage() {
     setError(null);
     setOk(null);
 
+    let didSetOk = false;
+
     try {
       const nextHandle = vHandle.normalized ? vHandle.normalized : null;
       const nextBio = bio.trim() ? bio.trim() : null;
       const nextLang = safeLang(langPrimary);
 
       // -----------------------------------------------------------------------
-      // PROFILES (inclut public_profile_enabled)
+      // PROFILES (inclut public_profile_enabled + avatar_*)
+      // FAIL-SOFT : si colonnes avatar_* absentes, on retry sans ces colonnes.
       // -----------------------------------------------------------------------
-      const profilePatch: Database['public']['Tables']['profiles']['Insert'] = {
+      const profilePatchWithAvatar: Database['public']['Tables']['profiles']['Insert'] = {
+        id: userId,
+        handle: nextHandle,
+        bio: nextBio,
+        identity_mode: identityMode,
+        lang_primary: nextLang,
+        public_profile_enabled: publicProfile,
+
+        // Avatar (Phase 4)
+        avatar_type: avatarType ?? 'constellation',
+        avatar_url: avatarUrl ?? null,
+        avatar_seed: avatarSeed ?? null,
+      };
+
+      const profilePatchNoAvatar: Database['public']['Tables']['profiles']['Insert'] = {
         id: userId,
         handle: nextHandle,
         bio: nextBio,
@@ -366,8 +413,20 @@ export default function SettingsPage() {
         public_profile_enabled: publicProfile,
       };
 
-      const pUpsert = await sb.from('profiles').upsert(profilePatch, { onConflict: 'id' });
-      if (pUpsert.error) throw pUpsert.error;
+      const pTry = await sb.from('profiles').upsert(profilePatchWithAvatar, { onConflict: 'id' });
+
+      if (pTry.error) {
+        const msg = String(pTry.error.message ?? pTry.error);
+        if (looksLikeMissingAvatarColumnError(msg)) {
+          const pRetry = await sb.from('profiles').upsert(profilePatchNoAvatar, { onConflict: 'id' });
+          if (pRetry.error) throw pRetry.error;
+
+          setOk('Paramètres enregistrés. (Avatar actif après migration BDD.)');
+          didSetOk = true;
+        } else {
+          throw pTry.error;
+        }
+      }
 
       // -----------------------------------------------------------------------
       // USER_SETTINGS (ne pilote plus la visibilité du profil public)
@@ -392,20 +451,27 @@ export default function SettingsPage() {
         for_me_max_items: Math.max(6, Math.min(60, Math.round(forMeMaxItems))),
       };
 
-      const sTry = await sb.from('user_settings').upsert(extendedSettingsPatch, { onConflict: 'user_id' });
+      const sTry = await sb.from('user_settings').upsert(extendedSettingsPatch, {
+        onConflict: 'user_id',
+      });
 
       if (sTry.error) {
         const msg = String(sTry.error.message ?? sTry.error);
         if (looksLikeMissingColumnError(msg)) {
-          const sRetry = await sb.from('user_settings').upsert(baseSettingsPatch, { onConflict: 'user_id' });
+          const sRetry = await sb.from('user_settings').upsert(baseSettingsPatch, {
+            onConflict: 'user_id',
+          });
           if (sRetry.error) throw sRetry.error;
 
           setOk('Paramètres enregistrés. (Les options "Pour moi" seront actives après migration BDD.)');
+          didSetOk = true;
         } else {
           throw sTry.error;
         }
-      } else {
+      } else if (!didSetOk) {
+        // Ne pas écraser un éventuel message déjà posé (avatar / pour-moi)
         setOk('Paramètres enregistrés avec succès.');
+        didSetOk = true;
       }
 
       const [pRefresh, sRefresh] = await Promise.all([
@@ -427,6 +493,13 @@ export default function SettingsPage() {
       // IMPORTANT: resync depuis profiles
       setPublicProfile(!!p?.public_profile_enabled);
 
+      // Avatar (Phase 4) — resync depuis profiles
+      if (p) {
+        setAvatarType(p.avatar_type ?? null);
+        setAvatarUrl(p.avatar_url ?? null);
+        setAvatarSeed(p.avatar_seed ?? null);
+      }
+
       setTheme(s?.theme ?? theme);
 
       setDefaultVisibility(s?.default_echo_visibility ?? defaultVisibility);
@@ -441,7 +514,9 @@ export default function SettingsPage() {
       setForMeUseMirrors(s?.for_me_use_mirrors ?? forMeUseMirrors);
       setForMeIncludeFresh(s?.for_me_include_fresh ?? forMeIncludeFresh);
       setForMeMaxItems(
-        typeof s?.for_me_max_items === 'number' && s.for_me_max_items >= 6 ? s.for_me_max_items : forMeMaxItems
+        typeof s?.for_me_max_items === 'number' && s.for_me_max_items >= 6
+          ? s.for_me_max_items
+          : forMeMaxItems,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -515,6 +590,13 @@ export default function SettingsPage() {
       setForMeIncludeFresh={setForMeIncludeFresh}
       forMeMaxItems={forMeMaxItems}
       setForMeMaxItems={setForMeMaxItems}
+      // Avatar (Phase 4)
+      avatarType={avatarType}
+      setAvatarType={setAvatarType}
+      avatarUrl={avatarUrl}
+      setAvatarUrl={setAvatarUrl}
+      avatarSeed={avatarSeed}
+      setAvatarSeed={setAvatarSeed}
     />
   );
 }
