@@ -545,7 +545,7 @@ export default function AuthShell() {
 
                     <div className="text-center text-sm text-slate-500">
                       Mot de passe oublié ?{' '}
-                      <Link href="/reset-password" className="font-semibold text-violet-700 hover:text-violet-800">
+                      <Link href="/auth/forgot-password" className="font-semibold text-violet-700 hover:text-violet-800">
                         Réinitialiser
                       </Link>
                     </div>
