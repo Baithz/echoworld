@@ -2,18 +2,25 @@
  * =============================================================================
  * Fichier      : lib/i18n/messages.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.1.0 (2026-01-22)
- * Objet        : Dictionnaires i18n - Ajout navigation + refonte complète
+ * Version      : 3.1.1 (2026-01-27)
+ * Objet        : Dictionnaires i18n - Ajout About via composition (spread) + fix ESLint
  * -----------------------------------------------------------------------------
- * Objectifs update v3.1 :
- * - [NEW] Export de sous-ensembles typés (GlobeI18nKey, PulseI18nKey, etc.)
- *         pour éviter les divergences de types dans les composants.
- * - [SAFE] Aucun changement sur les clés existantes I18nKey (zéro régression).
- * - [SAFE] Contenu des dictionnaires inchangé (zéro régression).
+ * Objectifs update v3.1.1 :
+ * - [NEW] Injection du scope About (about.*) dans MESSAGES via spread (composition)
+ * - [FIX] ABOUT_MESSAGES réellement utilisé (supprime warning no-unused-vars)
+ * - [SAFE] Zéro régression : clés existantes inchangées, contenus existants inchangés
+ * - [SAFE] Types scopes (NavI18nKey, GlobeI18nKey, ...) conservés
+ *
+ * CHANGELOG
+ * -----------------------------------------------------------------------------
+ * 3.1.1 (2026-01-27)
+ * - [NEW] Merge ABOUT_MESSAGES.<lang> dans MESSAGES.<lang>
+ * - [SAFE] Dict élargi (Record<string,string>) pour accepter les scopes additionnels
  * =============================================================================
  */
 
 import type { AppLang } from './i18n';
+import { ABOUT_MESSAGES } from './messages/about';
 
 /**
  * =============================================================================
@@ -23,14 +30,12 @@ import type { AppLang } from './i18n';
 export type I18nKey =
   // Common
   | 'ui.language'
-
   // Navigation
   | 'nav.home'
   | 'nav.explore'
   | 'nav.share'
   | 'nav.about'
   | 'nav.login'
-
   // Hero (redesign)
   | 'hero.badge_prefix'
   | 'hero.badge_suffix'
@@ -40,7 +45,6 @@ export type I18nKey =
   | 'hero.cta_share'
   | 'hero.cta_explore'
   | 'hero.cta_login'
-
   // World Globe (monde vivant)
   | 'world.section_title'
   | 'world.live_indicator'
@@ -49,14 +53,12 @@ export type I18nKey =
   | 'world.hover_tip'
   | 'world.click_explore'
   | 'world.zoom_hint'
-
   // Story overlay (intégré à la carte)
   | 'story.just_shared'
   | 'story.minutes_ago'
   | 'story.from'
   | 'story.read_more'
   | 'story.anonymous'
-
   // Pulse Heart (cœur vivant)
   | 'pulse.title'
   | 'pulse.live_status'
@@ -69,7 +71,6 @@ export type I18nKey =
   | 'pulse.emotion_reflection'
   | 'pulse.emotion_solidarity'
   | 'pulse.breathing_world'
-
   // Connections (rencontres humaines)
   | 'connections.title'
   | 'connections.subtitle'
@@ -145,9 +146,12 @@ export type ConnectionsI18nKey =
 /**
  * =============================================================================
  * DICT
+ * -----------------------------------------------------------------------------
+ * Note: On garde I18nKey typé (source de vérité) mais le dict global accepte
+ * des clés additionnelles (scopes) injectées via composition (about.*, etc.).
  * =============================================================================
  */
-type Dict = Record<I18nKey, string>;
+type Dict = Record<string, string>;
 
 /**
  * =============================================================================
@@ -156,6 +160,8 @@ type Dict = Record<I18nKey, string>;
  */
 export const MESSAGES: Record<AppLang, Dict> = {
   en: {
+    ...ABOUT_MESSAGES.en,
+
     // Common
     'ui.language': 'Language',
 
@@ -217,6 +223,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   fr: {
+    ...ABOUT_MESSAGES.fr,
+
     // Common
     'ui.language': 'Langue',
 
@@ -279,6 +287,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   es: {
+    ...ABOUT_MESSAGES.es,
+
     // Common
     'ui.language': 'Idioma',
 
@@ -341,6 +351,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   de: {
+    ...ABOUT_MESSAGES.de,
+
     // Common
     'ui.language': 'Sprache',
 
@@ -403,6 +415,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   it: {
+    ...ABOUT_MESSAGES.it,
+
     // Common
     'ui.language': 'Lingua',
 
@@ -465,6 +479,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   pt: {
+    ...ABOUT_MESSAGES.pt,
+
     // Common
     'ui.language': 'Idioma',
 
@@ -526,6 +542,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   ar: {
+    ...ABOUT_MESSAGES.ar,
+
     // Common
     'ui.language': 'اللغة',
 
@@ -587,6 +605,8 @@ export const MESSAGES: Record<AppLang, Dict> = {
   },
 
   ja: {
+    ...ABOUT_MESSAGES.ja,
+
     // Common
     'ui.language': '言語',
 
