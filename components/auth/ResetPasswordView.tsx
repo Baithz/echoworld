@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/auth/ResetPasswordView.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-26)
+ * Version      : 1.0.1 (2026-01-27)
  * Objet        : Vue "Réinitialiser le mot de passe" — update password via Supabase
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,18 +10,24 @@
  * - Consomme le lien Supabase (hash tokens) et met à jour la session si nécessaire
  * - Appelle supabase.auth.updateUser({ password }) pour finaliser le reset
  * - UX cohérente Auth (thème clair, arrondis, icônes)
+ * - Header-safe: offset top (h-20) pour ne pas passer sous le header sticky
+ * - Redirect après succès :
+ *    - si session valide => /account
+ *    - sinon => /login
  * - SAFE: messages neutres + fail-soft si lien invalide/expiré
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-26)
- * - [NEW] Vue reset password (form + updateUser)
+ * 1.0.1 (2026-01-27)
+ * - [FIX] Ajoute offset header (pt-28) pour layout cohérent
+ * - [NEW] Redirection après succès (/account si connecté sinon /login)
+ * - [KEEP] Flow tokens hash + updateUser inchangés
  * =============================================================================
  */
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Lock, AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { supabase, getAuthErrorMessage } from '@/lib/supabase/client';
@@ -49,14 +55,23 @@ export default function ResetPasswordView() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
+  const redirectTimerRef = useRef<number | null>(null);
+
   const hashParams = useMemo(() => {
     if (typeof window === 'undefined') return {};
     return parseHashParams(window.location.hash || '');
   }, []);
 
   useEffect(() => {
-    // Objectif: établir une session si le lien Supabase contient access_token/refresh_token
-    // (resetPasswordForEmail inclut typiquement ces tokens dans le hash).
+    return () => {
+      if (redirectTimerRef.current) {
+        window.clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Objectif: établir une session si le lien Supabase contient access_token/refresh_token.
     const init = async () => {
       try {
         if (typeof window === 'undefined') return;
@@ -68,7 +83,6 @@ export default function ResetPasswordView() {
           await supabase.auth.setSession({ access_token, refresh_token });
         }
 
-        // On ne bloque pas l’UI si tokens absents (cas: lien expiré)
         setReady(true);
       } catch (e) {
         console.error('[RESET PASSWORD INIT ERROR]', e);
@@ -78,6 +92,24 @@ export default function ResetPasswordView() {
 
     void init();
   }, [hashParams]);
+
+  const redirectAfterSuccess = async () => {
+    try {
+      const { data } = await supabase.auth.getUser();
+      const isAuthed = Boolean(data.user?.id);
+
+      const target = isAuthed ? '/account' : '/login';
+
+      // Redirection courte (laisse le temps de lire le message)
+      redirectTimerRef.current = window.setTimeout(() => {
+        window.location.replace(target);
+      }, 900);
+    } catch {
+      redirectTimerRef.current = window.setTimeout(() => {
+        window.location.replace('/login');
+      }, 900);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,9 +142,11 @@ export default function ResetPasswordView() {
         return;
       }
 
-      setOk('✅ Mot de passe mis à jour. Vous pouvez vous reconnecter.');
+      setOk('✅ Mot de passe mis à jour. Redirection…');
       setPassword('');
       setPassword2('');
+
+      await redirectAfterSuccess();
     } catch (e2) {
       console.error('[RESET PASSWORD ERROR]', e2);
       setError(
@@ -127,7 +161,7 @@ export default function ResetPasswordView() {
 
   if (!ready) {
     return (
-      <div className="mx-auto w-full max-w-md px-4 py-10">
+      <div className="mx-auto w-full max-w-md px-4 pt-28 pb-10">
         <div className="rounded-3xl border border-slate-200 bg-white/80 p-6 shadow-sm">
           <div className="text-sm text-slate-700">Chargement…</div>
         </div>
@@ -136,7 +170,7 @@ export default function ResetPasswordView() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-md px-4 py-10">
+    <div className="mx-auto w-full max-w-md px-4 pt-28 pb-10">
       <div className="rounded-3xl border border-slate-200 bg-white/80 p-6 shadow-sm">
         <div className="mb-6 space-y-1">
           <h1 className="text-xl font-extrabold text-slate-950">Nouveau mot de passe</h1>
@@ -147,7 +181,9 @@ export default function ResetPasswordView() {
 
         <form onSubmit={submit} className="space-y-4" aria-busy={loading}>
           <label className="block">
-            <span className="mb-1 block text-sm font-semibold text-slate-900">Nouveau mot de passe</span>
+            <span className="mb-1 block text-sm font-semibold text-slate-900">
+              Nouveau mot de passe
+            </span>
             <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm focus-within:border-slate-300">
               <Lock className="h-4 w-4 text-slate-500" />
               <input
