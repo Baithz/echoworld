@@ -2,19 +2,20 @@
  * =============================================================================
  * Fichier      : components/auth/LoginForm.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.3.1 (2026-01-26)
+ * Version      : 1.3.2 (2026-01-27)
  * Objet        : Form Connexion via API Route + lien mot de passe oublié
  * -----------------------------------------------------------------------------
  * Description  :
  * - Utilise /api/auth/login au lieu d'appel direct Supabase (anti-CORS)
  * - Conserve UI/animations + stockage session côté client
  * - Ajoute un lien "Mot de passe oublié ?" vers /auth/forgot-password
+ * - NOTE UI: le padding-top pour le header fixed doit être appliqué par la page/container
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.3.1 (2026-01-26)
- * - [NEW] Lien mot de passe oublié -> /auth/forgot-password
- * - [KEEP] Aucune régression UI/animations + flow login
+ * 1.3.2 (2026-01-27)
+ * - [CLEAN] Ajout scrollMarginTop pour éviter ancrage sous header (si page scrolle)
+ * - [KEEP] Lien /auth/forgot-password inchangé, flow login inchangé
  * =============================================================================
  */
 
@@ -66,7 +67,6 @@ export default function LoginForm({
 
     setLoading(true);
     try {
-      // Appel à la route API (pas de CORS côté serveur)
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,7 +80,6 @@ export default function LoginForm({
         return;
       }
 
-      // Si on a une session, on la stocke dans Supabase client
       if (result.data?.session) {
         await supabase.auth.setSession({
           access_token: result.data.session.access_token,
@@ -111,8 +110,12 @@ export default function LoginForm({
   };
 
   return (
-    <form onSubmit={submit} className="space-y-4" aria-busy={loading}>
-      {/* Email */}
+    <form
+      onSubmit={submit}
+      className="space-y-4"
+      aria-busy={loading}
+      style={{ scrollMarginTop: 96 }}
+    >
       <label className="block">
         <span className="mb-1 block text-sm font-semibold text-slate-900">Email</span>
         <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm focus-within:border-slate-300">
@@ -130,11 +133,8 @@ export default function LoginForm({
         </div>
       </label>
 
-      {/* Password */}
       <label className="block">
-        <span className="mb-1 block text-sm font-semibold text-slate-900">
-          Mot de passe
-        </span>
+        <span className="mb-1 block text-sm font-semibold text-slate-900">Mot de passe</span>
         <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm focus-within:border-slate-300">
           <Lock className="h-4 w-4 text-slate-500" />
           <input
@@ -149,7 +149,6 @@ export default function LoginForm({
         </div>
       </label>
 
-      {/* NEW: Forgot password */}
       <div className="-mt-2 flex justify-end">
         <Link
           href="/auth/forgot-password"
@@ -159,7 +158,6 @@ export default function LoginForm({
         </Link>
       </div>
 
-      {/* Messages */}
       {error && (
         <div
           role="alert"
@@ -176,7 +174,6 @@ export default function LoginForm({
         </div>
       )}
 
-      {/* CTA */}
       <button
         type="submit"
         disabled={loading}
@@ -186,7 +183,6 @@ export default function LoginForm({
         <ArrowRight className="h-4 w-4 opacity-80 transition-transform group-hover:translate-x-0.5" />
       </button>
 
-      {/* Switch (mobile only) */}
       {onSwitchToRegister && (
         <div className="pt-2 text-center text-sm text-slate-600 md:hidden">
           Pas de compte ?{' '}

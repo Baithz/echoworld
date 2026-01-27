@@ -2,7 +2,7 @@
  * =============================================================================
  * Fichier      : components/auth/ForgotPasswordView.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.0 (2026-01-26)
+ * Version      : 1.0.1 (2026-01-27)
  * Objet        : Vue "Mot de passe oublié" — demande email reset (API server-side)
  * -----------------------------------------------------------------------------
  * Description  :
@@ -10,11 +10,13 @@
  * - UX cohérente Auth (thème clair, arrondis, icônes lucide)
  * - Messages succès/erreur + loading + accessibilité de base
  * - SAFE: n’altère pas la session courante, fail-soft sur réponses API
+ * - FIX UI: tient compte du header fixed (padding-top)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.0 (2026-01-26)
- * - [NEW] Vue reset password (request email) via /api/auth/forgot-password
+ * 1.0.1 (2026-01-27)
+ * - [FIX] Ajoute un wrapper <main> avec pt-28 pour éviter le chevauchement du header fixed
+ * - [KEEP] UI/UX, logique API, messages inchangés
  * =============================================================================
  */
 
@@ -86,7 +88,7 @@ export default function ForgotPasswordView() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-md px-4 py-10">
+    <main className="mx-auto w-full max-w-md px-4 pt-28 pb-12">
       <div className="rounded-3xl border border-slate-200 bg-white/80 p-6 shadow-sm">
         <div className="mb-6 space-y-1">
           <h1 className="text-xl font-extrabold text-slate-950">Mot de passe oublié</h1>
@@ -146,6 +148,6 @@ export default function ForgotPasswordView() {
           </div>
         </form>
       </div>
-    </div>
+    </main>
   );
 }
