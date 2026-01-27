@@ -2,33 +2,20 @@
  * =============================================================================
  * Fichier      : lib/echo/getEchoesAggregatedByCountry.ts
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 1.0.3 (2026-01-24)
+ * Version      : 1.0.4 (2026-01-27)
  * Objet        : Service pour récupérer les échos agrégés par pays (vue globe)
  * -----------------------------------------------------------------------------
  * Description  :
  * - Appelle la RPC get_echoes_aggregated_by_country
- * - Fusionne les résultats avec les centroids statiques
- * - Retourne un tableau prêt pour affichage sur la carte
- * - Filtre les pays sans centroid connu
+ * - SAFE: tente bbox array puis bbox object (compat signatures existantes)
+ * - Fusionne avec centroids statiques (countryCentroids) pour l’affichage
+ * - Retourne un tableau prêt pour carte (dominant emotion + %)
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
- * 1.0.3 (2026-01-24)
- * - [FIX] Utilise @ts-expect-error pour RPC non typée (TS2345)
- * - [NOTE] RPC custom pas dans database.types.ts généré par Supabase
- * 
- * 1.0.2 (2026-01-24)
- * - [FIX] Typage RPC correct sans cast complexe (TS2352)
- * - [IMPROVED] Utilise approche standard Supabase avec assertion de type
- * 
- * 1.0.1 (2026-01-24)
- * - [FIX] Typage RPC strict avec cast (évite erreur TS2345)
- * - [FIX] Gestion d'erreur améliorée (return [] au lieu de throw)
- * 
- * 1.0.0 (2026-01-24)
- * - [NEW] Service d'agrégation par pays
- * - [NEW] Fusion automatique avec centroids
- * - [NEW] Calcul des pourcentages d'émotions
+ * 1.0.4 (2026-01-27)
+ * - [FIX] Compat RPC bbox: essaie d’abord bbox=[minLng,minLat,maxLng,maxLat], sinon bboxJson
+ * - [KEEP] API publique inchangée (params/return), centroids statiques conservés
  * =============================================================================
  */
 
@@ -36,9 +23,6 @@ import { supabase } from '@/lib/supabase/client';
 import { getCountryCentroid, hasCountryCentroid } from '@/lib/geo/countryCentroids';
 import type { EmotionKeyDB } from '@/components/map/mapStyle';
 
-/**
- * Compteurs d'émotions pour un pays
- */
 export type EmotionCounts = {
   joy: number;
   hope: number;
@@ -50,9 +34,6 @@ export type EmotionCounts = {
   wonder: number;
 };
 
-/**
- * Pourcentages d'émotions (0-100)
- */
 export type EmotionPercentages = {
   joy: number;
   hope: number;
@@ -64,21 +45,15 @@ export type EmotionPercentages = {
   wonder: number;
 };
 
-/**
- * Agrégation d'échos pour un pays
- */
 export type CountryAggregation = {
   country: string;
-  centroid: [number, number]; // [lng, lat]
+  centroid: [number, number];
   totalCount: number;
   emotionCounts: EmotionCounts;
   emotionPercentages: EmotionPercentages;
   dominantEmotion: EmotionKeyDB;
 };
 
-/**
- * Row retournée par la RPC (typage strict)
- */
 type RpcRow = {
   country: string;
   total_count: number;
@@ -92,23 +67,10 @@ type RpcRow = {
   emotion_wonder: number;
 };
 
-/**
- * Calcule les pourcentages d'émotions
- */
 function calculatePercentages(counts: EmotionCounts, total: number): EmotionPercentages {
   if (total === 0) {
-    return {
-      joy: 0,
-      hope: 0,
-      love: 0,
-      resilience: 0,
-      gratitude: 0,
-      courage: 0,
-      peace: 0,
-      wonder: 0,
-    };
+    return { joy: 0, hope: 0, love: 0, resilience: 0, gratitude: 0, courage: 0, peace: 0, wonder: 0 };
   }
-
   return {
     joy: Math.round((counts.joy / total) * 100),
     hope: Math.round((counts.hope / total) * 100),
@@ -121,18 +83,14 @@ function calculatePercentages(counts: EmotionCounts, total: number): EmotionPerc
   };
 }
 
-/**
- * Trouve l'émotion dominante (max count)
- */
 function findDominantEmotion(counts: EmotionCounts): EmotionKeyDB {
   const entries = Object.entries(counts) as [EmotionKeyDB, number][];
-  const sorted = entries.sort((a, b) => b[1] - a[1]);
-  return sorted[0][0];
+  entries.sort((a, b) => b[1] - a[1]);
+  return entries[0][0];
 }
 
-/**
- * Récupère les échos agrégés par pays
- */
+type RpcCall = (fn: string, args?: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>;
+
 export async function getEchoesAggregatedByCountry(params: {
   bbox: [number, number, number, number];
   emotion?: string;
@@ -140,63 +98,60 @@ export async function getEchoesAggregatedByCountry(params: {
 }): Promise<CountryAggregation[]> {
   const { bbox, emotion, since } = params;
 
-  // Prépare les paramètres RPC
-  const bboxJson = {
-    minLng: bbox[0],
-    minLat: bbox[1],
-    maxLng: bbox[2],
-    maxLat: bbox[3],
-  };
+  const bboxJson = { minLng: bbox[0], minLat: bbox[1], maxLng: bbox[2], maxLat: bbox[3] };
 
   try {
-    // @ts-expect-error - RPC custom non typée dans database.types.ts
-    // Cette fonction existe en DB mais n'est pas dans les types générés
-    const response = await supabase.rpc('get_echoes_aggregated_by_country', {
-      bbox: bboxJson,
+    const rpc = (supabase.rpc as unknown) as RpcCall;
+
+    // 1) Signature préférée: bbox array (cohérente avec get_echoes_in_bbox)
+    const first = await rpc('get_echoes_aggregated_by_country', {
+      bbox, // <-- array
       emotion_filter: emotion ?? null,
       since_ts: since?.toISOString() ?? null,
     });
 
-    const { data, error } = response;
+    // 2) Compat legacy: bbox object
+    const second =
+      first.error != null
+        ? await rpc('get_echoes_aggregated_by_country', {
+            bbox: bboxJson,
+            emotion_filter: emotion ?? null,
+            since_ts: since?.toISOString() ?? null,
+          })
+        : first;
 
-    if (error) {
-      console.error('Error fetching country aggregations:', error);
-      return []; // Return empty array instead of throw (plus graceful)
-    }
-
-    if (!data || !Array.isArray(data)) {
+    if (second.error) {
+      console.error('Error fetching country aggregations:', second.error);
       return [];
     }
 
-    // Assertion de type après validation
-    const rows = data as unknown as RpcRow[];
+    const data = second.data;
+    if (!data || !Array.isArray(data)) return [];
 
-    // Transforme les rows en CountryAggregation
+    const rows = data as RpcRow[];
+
     const aggregations: CountryAggregation[] = [];
-
     for (const row of rows) {
       const country = row.country;
 
-      // Filtre les pays sans centroid
       if (!hasCountryCentroid(country)) {
-        console.warn(`Country "${country}" has no centroid, skipping`);
+        // INFO uniquement (pas warn pour éviter bruit)
         continue;
       }
 
       const centroid = getCountryCentroid(country);
       if (!centroid) continue;
 
-      const totalCount = Number(row.total_count);
-
+      const totalCount = Number(row.total_count) || 0;
       const emotionCounts: EmotionCounts = {
-        joy: Number(row.emotion_joy),
-        hope: Number(row.emotion_hope),
-        love: Number(row.emotion_love),
-        resilience: Number(row.emotion_resilience),
-        gratitude: Number(row.emotion_gratitude),
-        courage: Number(row.emotion_courage),
-        peace: Number(row.emotion_peace),
-        wonder: Number(row.emotion_wonder),
+        joy: Number(row.emotion_joy) || 0,
+        hope: Number(row.emotion_hope) || 0,
+        love: Number(row.emotion_love) || 0,
+        resilience: Number(row.emotion_resilience) || 0,
+        gratitude: Number(row.emotion_gratitude) || 0,
+        courage: Number(row.emotion_courage) || 0,
+        peace: Number(row.emotion_peace) || 0,
+        wonder: Number(row.emotion_wonder) || 0,
       };
 
       const emotionPercentages = calculatePercentages(emotionCounts, totalCount);
@@ -215,6 +170,6 @@ export async function getEchoesAggregatedByCountry(params: {
     return aggregations;
   } catch (error) {
     console.error('Error in getEchoesAggregatedByCountry:', error);
-    return []; // Return empty array instead of throw
+    return [];
   }
 }
