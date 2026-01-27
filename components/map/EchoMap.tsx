@@ -2,30 +2,28 @@
  * =============================================================================
  * Fichier      : components/map/EchoMap.tsx
  * Auteur       : Régis KREMER (Baithz) — EchoWorld
- * Version      : 3.0.0 (2026-01-24)
- * Objet        : Carte EchoWorld - Globe/Detail + Cœurs pays + Échos individuels
+ * Version      : 3.1.0 (2026-01-27)
+ * Objet        : Carte EchoWorld - Globe/Detail + Cœurs pays (React Markers) + Échos individuels
  * -----------------------------------------------------------------------------
  * Description  :
- * - Vue GLOBE (zoom < 5) : Affiche des cœurs par pays avec % émotions dominantes
- * - Vue DETAIL (zoom ≥ 5) : Affiche les échos individuels (clusters/points/heat)
- * - Bascule automatique et fluide entre les deux modes au zoom/dézoom
- * - Projection adaptée : globe (sphère 3D) vs mercator (carte plate)
- * - Cœurs interactifs : click → zoom sur le pays (niveau 7)
+ * - Vue GLOBE (zoom < 5) : affiche des cœurs par pays via CountryHeartMarkers (React) avec % + heartbeat + ECG
+ * - Vue DETAIL (zoom ≥ 5) : affiche les échos individuels (clusters/points/heat + glow)
+ * - Bascule automatique selon zoom (threshold = 5) + swap style globe/détail conservé
+ * - Projection adaptée par mode (globe vs mercator) + fog/sky
+ * - Cœurs interactifs : click → cinema vers centroid (zoom 7)
+ * - Anti-carte-vide : ne clear pas les markers tant que la nouvelle agrégation n’est pas OK
  *
  * CHANGELOG
  * -----------------------------------------------------------------------------
+ * 3.1.0 (2026-01-27)
+ * - [NEW] Intègre CountryHeartMarkers (React) dans MapLibre via Marker + createRoot (ECG inclus)
+ * - [FIX] Supprime duplication SVG inline (source unique = CountryHeartMarkers)
+ * - [FIX] Centralise refresh markers pays (une seule logique, token anti-race)
+ * - [IMPROVED] Fallback anti-carte-vide : update atomique (clear après fetch OK)
+ * - [KEEP] Tous les comportements v3.0.0 : swap style, projection, pulse, cinéma, filtres, layers, interactions
+ *
  * 3.0.0 (2026-01-24)
  * - [NEW] Intégration cœurs pays en vue globe (agrégation par pays)
- * - [NEW] Bascule automatique cœurs/échos selon zoom (threshold = 5)
- * - [NEW] Markers MapLibre avec SVG cœurs colorés par émotion dominante
- * - [NEW] Animation pulse CSS sur les cœurs
- * - [NEW] Click sur cœur → cinema vers le pays (zoom 7)
- * - [KEEP] Tous les comportements v2.6.0 : projection, pulse, cinéma, filtres
- * 
- * 2.6.0 (2026-01-24)
- * - [FIX] CRITIQUE : Projection adaptée selon mode (globe='globe', detail='mercator')
- * - [FIX] Bug ligne 266 : projection était forcée 'globe' même en mode detail
- * - [IMPROVED] Retour globe au dézoom maintenant fonctionnel (projection + style sync)
  * =============================================================================
  */
 
@@ -44,10 +42,14 @@ import type {
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useMemo, useRef } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+
 import { STYLE_DETAIL_URL, STYLE_GLOBE_URL, EMOTION_COLORS } from './mapStyle';
 import { SOURCE_ID, CLUSTER_LAYER, CLUSTER_COUNT_LAYER, POINT_LAYER, HEAT_LAYER } from './echoLayers';
 import { getEchoesForMap } from '@/lib/echo/getEchoesForMap';
 import { getEchoesAggregatedByCountry, type CountryAggregation } from '@/lib/echo/getEchoesAggregatedByCountry';
+import CountryHeartMarkers from '@/components/map/CountryHeartMarkers';
+
 import type { FeatureCollection, Point } from 'geojson';
 
 type Filters = {
@@ -78,9 +80,7 @@ const GLOW_LAYER_ID = 'echo-glow';
 const DETAIL_ZOOM_THRESHOLD = 5;
 
 // "Vue monde" : bbox globale pour éviter une Terre vide au dézoom.
-// (bornes lat réduites pour éviter singularités / antimeridian extrêmes)
 const WORLD_BBOX: [number, number, number, number] = [-179.9, -80, 179.9, 80];
-// Seuil zoom où l'on considère qu'on est en "vue monde"
 const WORLD_ZOOM_THRESHOLD = 2.8;
 
 // Style spec étendu pour supporter projection/fog/sky sans utiliser `any`
@@ -168,6 +168,12 @@ function createGlowLayer(): CircleLayerSpecification {
   };
 }
 
+type CountryMarkerEntry = {
+  marker: maplibregl.Marker;
+  root: Root;
+  el: HTMLDivElement;
+};
+
 export default function EchoMap({
   focusId,
   filters,
@@ -203,13 +209,14 @@ export default function EchoMap({
     onZoomEndGlobal?: () => void;
   }>({});
 
-  // Country markers (cœurs pays en vue globe)
-  const countryMarkersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
+  // Country markers (React roots)
+  const countryMarkersRef = useRef<Map<string, CountryMarkerEntry>>(new Map());
+  const countryRefreshTokenRef = useRef<number>(0);
+  const countryVisibleRef = useRef<boolean>(true);
+  const lastCountryKeyRef = useRef<string>('');
 
   // Filters "safe" pour SSR / prerender
   const safeFilters: Filters = filters ?? { emotion: null, since: null, nearMe: false };
-
-  // Déstructuration pour que les hooks ne dépendent pas de l'objet complet (ESLint friendly)
   const { emotion, since, nearMe } = safeFilters;
 
   const sinceDate = useMemo(() => sinceToDate(since), [since]);
@@ -245,7 +252,6 @@ export default function EchoMap({
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
-    // --- Globe apply helper (garde-fou si un style ignore projection)
     type MapWithProjection = maplibregl.Map & { setProjection?: (p: { type: string } | string) => void };
     const applyProjectionForMode = (mode: 'globe' | 'detail') => {
       const m = mapRef.current;
@@ -264,12 +270,10 @@ export default function EchoMap({
       }
     };
 
-    // --- transformStyle strict : TransformStyleFunction -> StyleSpecification
     const transformForMode = (mode: 'globe' | 'detail'): TransformStyleFunction => {
       return (_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification => {
         const style: StyleWithExtras = { ...(next as StyleWithExtras) };
 
-        // Projection adaptée selon le mode
         style.projection = { type: mode === 'globe' ? 'globe' : 'mercator' };
 
         if (mode === 'globe') {
@@ -306,7 +310,6 @@ export default function EchoMap({
       m.setStyle(styleUrl, { transformStyle: transformForMode(mode) });
     };
 
-    // Force le style globe injecté (projection + sky) dès le départ
     setStyleForMode(map, 'globe', STYLE_GLOBE_URL);
     currentStyleRef.current = 'globe';
 
@@ -395,7 +398,7 @@ export default function EchoMap({
       pulseRafRef.current = requestAnimationFrame(tick);
     };
 
-    // --- Résolution bbox unifiée (nearMe / monde / bounds)
+    // --- bbox unifiée
     const resolveBbox = async (): Promise<[number, number, number, number]> => {
       const m = mapRef.current;
       if (!m) return WORLD_BBOX;
@@ -426,7 +429,6 @@ export default function EchoMap({
       return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
-    // --- Data
     const fetchGeojson = async () => {
       const m = mapRef.current;
       if (!m) return null;
@@ -450,7 +452,6 @@ export default function EchoMap({
       return geojson;
     };
 
-    // --- Inject source/layers
     const ensureEchoLayers = (geojson?: FeatureCollection<Point>) => {
       const m = mapRef.current;
       if (!m) return;
@@ -475,7 +476,7 @@ export default function EchoMap({
       }
     };
 
-    // --- Bind interactions (à rappeler après setStyle)
+    // --- interactions
     const unbindInteractions = () => {
       const m = mapRef.current;
       if (!m) return;
@@ -524,7 +525,6 @@ export default function EchoMap({
         m.getCanvas().style.cursor = '';
       };
 
-      // IMPORTANT : ne jamais écraser handlersRef.current (préserve onZoomEndGlobal)
       handlersRef.current.onPointClick = onPointClick;
       handlersRef.current.onClusterClick = onClusterClick;
       handlersRef.current.onEnter = onEnter;
@@ -536,132 +536,164 @@ export default function EchoMap({
       m.on('mouseleave', 'echo-point', onLeave);
     };
 
-    // ========== COUNTRY HEARTS INTEGRATION (v3.0.0) ==========
+    // ===================== COUNTRY HEARTS (PHASE 4) =====================
 
-    /**
-     * Crée un marker MapLibre avec SVG cœur pour un pays
-     */
-    const createCountryMarker = (agg: CountryAggregation): maplibregl.Marker => {
+    const setCountryMarkersVisible = (visible: boolean) => {
+      if (countryVisibleRef.current === visible) return;
+      countryVisibleRef.current = visible;
+      countryMarkersRef.current.forEach((entry) => {
+        entry.el.style.display = visible ? '' : 'none';
+      });
+    };
+
+    const clearCountryMarkers = () => {
+      const markers = countryMarkersRef.current;
+      markers.forEach((entry) => {
+        try {
+          entry.root.unmount();
+        } catch {
+          // ignore
+        }
+        try {
+          entry.marker.remove();
+        } catch {
+          // ignore
+        }
+      });
+      markers.clear();
+      lastCountryKeyRef.current = '';
+    };
+
+    const buildCountryKey = (
+      bbox: [number, number, number, number],
+      f: Filters,
+      sinceD: Date | null
+    ): string => {
+      const b = bbox.map((n) => n.toFixed(3)).join(',');
+      const s = sinceD ? sinceD.toISOString() : '';
+      return `z:${mapRef.current?.getZoom().toFixed(2) ?? 'na'}|bbox:${b}|emotion:${f.emotion ?? ''}|since:${s}`;
+    };
+
+    const mountCountryMarker = (agg: CountryAggregation): CountryMarkerEntry => {
       const m = mapRef.current;
       if (!m) throw new Error('Map not initialized');
 
-      const color = EMOTION_COLORS[agg.dominantEmotion];
-      const percentage = agg.emotionPercentages[agg.dominantEmotion];
-      const countryId = agg.country.replace(/\s+/g, '-');
-      const filterId = `shadow-${countryId}`;
-
-      // Crée le SVG du cœur
-      const svgString = `
-        <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <filter id="${filterId}">
-              <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
-            </filter>
-          </defs>
-          <path 
-            d="M24 42 C18 38, 6 30, 6 18 C6 10, 12 6, 18 6 C20 6, 22 7, 24 10 C26 7, 28 6, 30 6 C36 6, 42 10, 42 18 C42 30, 30 38, 24 42 Z" 
-            fill="${color}" 
-            stroke="white" 
-            stroke-width="2"
-            filter="url(#${filterId})"
-          />
-          <text 
-            x="24" 
-            y="26" 
-            text-anchor="middle" 
-            font-family="Arial, sans-serif" 
-            font-size="12" 
-            font-weight="bold" 
-            fill="white"
-            stroke="rgba(0,0,0,0.3)"
-            stroke-width="0.5"
-          >${percentage}%</text>
-        </svg>
-      `;
-
       const el = document.createElement('div');
-      el.innerHTML = svgString;
       el.style.cursor = 'pointer';
-      el.className = 'country-heart-marker';
-      el.style.animation = 'heartbeat 2s ease-in-out infinite';
 
-      const [lng, lat] = agg.centroid;
+      const marker = new maplibregl.Marker({ element: el }).setLngLat(agg.centroid).addTo(m);
 
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([lng, lat])
-        .addTo(m);
+      const root = createRoot(el);
+      root.render(
+        <CountryHeartMarkers
+          aggregations={[agg]}
+          onCountryClick={(_country, centroid) => {
+            cinemaToRef.current?.(centroid, 7);
+          }}
+        />
+      );
 
-      // Click handler : zoom sur le pays
-      el.addEventListener('click', () => {
-        cinemaTo(agg.centroid, 7); // Zoom niveau 7 = vue pays
-      });
-
-      return marker;
+      return { marker, root, el };
     };
 
-    /**
-     * Clear tous les markers pays
-     */
-    const clearCountryMarkers = () => {
-      const markers = countryMarkersRef.current;
-      markers.forEach((marker) => marker.remove());
-      markers.clear();
-    };
-
-    /**
-     * Refresh les markers pays selon le zoom actuel
-     */
-    const refreshCountryMarkers = async () => {
+    const refreshCountryMarkers = async (bbox: [number, number, number, number]) => {
       const m = mapRef.current;
       if (!m) return;
 
       const z = m.getZoom();
+      const wantVisible = z < DETAIL_ZOOM_THRESHOLD;
 
-      // Vue globe (zoom < 5) : afficher les cœurs
-      if (z < DETAIL_ZOOM_THRESHOLD) {
-        try {
-          const bbox = await resolveBbox();
-          const aggregations = await getEchoesAggregatedByCountry({
-            bbox,
-            emotion: filtersRef.current.emotion ?? undefined,
-            since: sinceDateRef.current ?? undefined,
-          });
+      // DETAIL => masquer (sans détruire) pour éviter flicker si retour rapide
+      if (!wantVisible) {
+        setCountryMarkersVisible(false);
+        return;
+      }
 
-          // Clear les anciens markers
-          clearCountryMarkers();
+      setCountryMarkersVisible(true);
 
-          // Crée les nouveaux markers
-          aggregations.forEach((agg) => {
-            try {
-              const marker = createCountryMarker(agg);
-              countryMarkersRef.current.set(agg.country, marker);
-            } catch (err) {
-              console.error(`Failed to create marker for ${agg.country}:`, err);
-            }
-          });
-        } catch (error) {
-          console.error('Error refreshing country markers:', error);
+      // Anti-race
+      const token = ++countryRefreshTokenRef.current;
+
+      const f = filtersRef.current;
+      const sinceD = sinceDateRef.current;
+
+      const key = buildCountryKey(bbox, f, sinceD);
+      if (key === lastCountryKeyRef.current) return;
+
+      try {
+        const aggregations = await getEchoesAggregatedByCountry({
+          bbox,
+          emotion: f.emotion ?? undefined,
+          since: sinceD ?? undefined,
+        });
+
+        if (countryRefreshTokenRef.current !== token) return;
+
+        // Fallback anti-vide : si agrégation vide, on ne détruit pas l'existant.
+        if (!Array.isArray(aggregations) || aggregations.length === 0) {
+          return;
         }
-      } else {
-        // Vue detail (zoom ≥ 5) : masquer les cœurs
-        clearCountryMarkers();
+
+        // Update atomique : construit un nouveau set puis remplace
+        const next = new Map<string, CountryMarkerEntry>();
+
+        for (const agg of aggregations) {
+          try {
+            const existing = countryMarkersRef.current.get(agg.country);
+            if (existing) {
+              // Re-render dans le root existant (évite remove/re-add)
+              existing.root.render(
+                <CountryHeartMarkers
+                  aggregations={[agg]}
+                  onCountryClick={(_country, centroid) => {
+                    cinemaToRef.current?.(centroid, 7);
+                  }}
+                />
+              );
+              existing.el.style.display = '';
+              next.set(agg.country, existing);
+            } else {
+              const entry = mountCountryMarker(agg);
+              next.set(agg.country, entry);
+            }
+          } catch (err) {
+            console.error(`Failed to mount country marker for ${agg.country}:`, err);
+          }
+        }
+
+        // Remove ceux qui ne sont plus présents
+        countryMarkersRef.current.forEach((entry, country) => {
+          if (next.has(country)) return;
+          try {
+            entry.root.unmount();
+          } catch {
+            // ignore
+          }
+          try {
+            entry.marker.remove();
+          } catch {
+            // ignore
+          }
+        });
+
+        countryMarkersRef.current = next;
+        lastCountryKeyRef.current = key;
+      } catch (error) {
+        // Anti-carte-vide : on log, mais on garde l'état précédent.
+        console.error('Error refreshing country markers:', error);
       }
     };
 
-    // ========== FIN COUNTRY HEARTS INTEGRATION ==========
+    // ===================== FIN COUNTRY HEARTS =====================
 
-    // --- Style swap (globe <-> detail) (ANTI-RACE + retour globe garanti)
+    // --- Style swap (globe <-> detail)
     const applyStyleIfNeeded = async () => {
       const m = mapRef.current;
       if (!m) return;
 
       const z = m.getZoom();
       const want: 'globe' | 'detail' = z >= DETAIL_ZOOM_THRESHOLD ? 'detail' : 'globe';
-
-      // Si déjà dans le bon mode, rien à faire
       if (want === currentStyleRef.current) return;
-
-      // swap en cours => on attend la fin (évite blocage / race)
       if (styleSwappingRef.current) return;
 
       styleSwappingRef.current = true;
@@ -693,17 +725,17 @@ export default function EchoMap({
         styleSwappingRef.current = false;
       });
 
-      // garde-fou si style.load ne vient pas (rare)
       window.setTimeout(() => {
         if (styleSwapTokenRef.current === token) styleSwappingRef.current = false;
       }, 2500);
     };
 
-    // Handler global zoomend (attach 1 fois)
     const onZoomEndGlobal = () => {
       void applyStyleIfNeeded();
-      // v3.0.0 : Refresh les markers selon le zoom
-      void refreshCountryMarkers();
+      void (async () => {
+        const bbox = await resolveBbox();
+        await refreshCountryMarkers(bbox);
+      })();
     };
     handlersRef.current.onZoomEndGlobal = onZoomEndGlobal;
     map.on('zoomend', onZoomEndGlobal);
@@ -717,8 +749,8 @@ export default function EchoMap({
       bindInteractions();
       startPulse();
 
-      // v3.0.0 : Charge les cœurs pays si zoom < 5
-      await refreshCountryMarkers();
+      const bbox = await resolveBbox();
+      await refreshCountryMarkers(bbox);
 
       if (focusId) {
         const p = indexRef.current.get(focusId);
@@ -727,21 +759,6 @@ export default function EchoMap({
     };
 
     map.on('load', onLoad);
-
-    // Injecte les styles CSS pour l'animation heartbeat
-    const style = document.createElement('style');
-    style.textContent = `
-      @keyframes heartbeat {
-        0%, 100% { transform: scale(1); }
-        10%, 30% { transform: scale(1.1); }
-        20%, 40% { transform: scale(1.05); }
-      }
-      .country-heart-marker:hover {
-        transform: scale(1.15);
-        transition: transform 0.2s ease-out;
-      }
-    `;
-    document.head.appendChild(style);
 
     return () => {
       stopPulse();
@@ -753,20 +770,13 @@ export default function EchoMap({
         // ignore
       }
 
-      // v3.0.0 : Clear les markers pays
       clearCountryMarkers();
 
       map.off('load', onLoad);
-
       try {
         map.off('zoomend', zoomEndHandler);
       } catch {
         // ignore
-      }
-
-      // Retire les styles CSS
-      if (style.parentNode) {
-        document.head.removeChild(style);
       }
 
       map.remove();
@@ -827,89 +837,86 @@ export default function EchoMap({
       const src = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
       if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
 
-      // v3.0.0 : Refresh les cœurs pays aussi
-      const refreshMarkers = async () => {
-        const m = mapRef.current;
-        if (!m) return;
-
-        const currentZoom = m.getZoom();
-
-        if (currentZoom < DETAIL_ZOOM_THRESHOLD) {
+      // Refresh pays via fonction centralisée (anti duplication)
+      const m = mapRef.current;
+      if (m) {
+        const wantVisible = m.getZoom() < DETAIL_ZOOM_THRESHOLD;
+        if (!wantVisible) {
+          // masque seulement
+          countryMarkersRef.current.forEach((entry) => {
+            entry.el.style.display = 'none';
+          });
+        } else {
+          countryMarkersRef.current.forEach((entry) => {
+            entry.el.style.display = '';
+          });
+          // refresh complet (bbox + filtres)
+          const token = ++countryRefreshTokenRef.current;
           try {
             const aggregations = await getEchoesAggregatedByCountry({
               bbox,
               emotion: emotion ?? undefined,
               since: sinceDate ?? undefined,
             });
+            if (countryRefreshTokenRef.current !== token) return;
+            if (!Array.isArray(aggregations) || aggregations.length === 0) return;
 
-            // Clear + recreate
-            const markers = countryMarkersRef.current;
-            markers.forEach((marker) => marker.remove());
-            markers.clear();
-
-            aggregations.forEach((agg) => {
-              try {
-                const color = EMOTION_COLORS[agg.dominantEmotion];
-                const percentage = agg.emotionPercentages[agg.dominantEmotion];
-                const countryId = agg.country.replace(/\s+/g, '-');
-                const filterId = `shadow-${countryId}`;
-
-                const svgString = `
-                  <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                      <filter id="${filterId}">
-                        <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
-                      </filter>
-                    </defs>
-                    <path 
-                      d="M24 42 C18 38, 6 30, 6 18 C6 10, 12 6, 18 6 C20 6, 22 7, 24 10 C26 7, 28 6, 30 6 C36 6, 42 10, 42 18 C42 30, 30 38, 24 42 Z" 
-                      fill="${color}" 
-                      stroke="white" 
-                      stroke-width="2"
-                      filter="url(#${filterId})"
+            const next = new Map<string, CountryMarkerEntry>();
+            for (const agg of aggregations) {
+              const existing = countryMarkersRef.current.get(agg.country);
+              if (existing) {
+                existing.root.render(
+                  <CountryHeartMarkers
+                    aggregations={[agg]}
+                    onCountryClick={(_country, centroid) => {
+                      cinemaToRef.current?.(centroid, 7);
+                    }}
+                  />
+                );
+                existing.el.style.display = '';
+                next.set(agg.country, existing);
+              } else {
+                try {
+                  const el = document.createElement('div');
+                  el.style.cursor = 'pointer';
+                  const marker = new maplibregl.Marker({ element: el }).setLngLat(agg.centroid).addTo(m);
+                  const root = createRoot(el);
+                  root.render(
+                    <CountryHeartMarkers
+                      aggregations={[agg]}
+                      onCountryClick={(_country, centroid) => {
+                        cinemaToRef.current?.(centroid, 7);
+                      }}
                     />
-                    <text 
-                      x="24" 
-                      y="26" 
-                      text-anchor="middle" 
-                      font-family="Arial, sans-serif" 
-                      font-size="12" 
-                      font-weight="bold" 
-                      fill="white"
-                      stroke="rgba(0,0,0,0.3)"
-                      stroke-width="0.5"
-                    >${percentage}%</text>
-                  </svg>
-                `;
+                  );
+                  next.set(agg.country, { marker, root, el });
+                } catch (err) {
+                  console.error(`Failed to mount country marker for ${agg.country}:`, err);
+                }
+              }
+            }
 
-                const el = document.createElement('div');
-                el.innerHTML = svgString;
-                el.style.cursor = 'pointer';
-                el.className = 'country-heart-marker';
-                el.style.animation = 'heartbeat 2s ease-in-out infinite';
-
-                const [lng, lat] = agg.centroid;
-
-                const marker = new maplibregl.Marker({ element: el })
-                  .setLngLat([lng, lat])
-                  .addTo(m);
-
-                el.addEventListener('click', () => {
-                  cinemaToRef.current?.(agg.centroid, 7);
-                });
-
-                markers.set(agg.country, marker);
-              } catch (err) {
-                console.error(`Failed to create marker for ${agg.country}:`, err);
+            // remove stale
+            countryMarkersRef.current.forEach((entry, country) => {
+              if (next.has(country)) return;
+              try {
+                entry.root.unmount();
+              } catch {
+                // ignore
+              }
+              try {
+                entry.marker.remove();
+              } catch {
+                // ignore
               }
             });
-          } catch (error) {
-            console.error('Error refreshing country markers:', error);
+
+            countryMarkersRef.current = next;
+          } catch (err) {
+            console.error('Error refreshing country markers (reload):', err);
           }
         }
-      };
-
-      await refreshMarkers();
+      }
     };
 
     void reload();
